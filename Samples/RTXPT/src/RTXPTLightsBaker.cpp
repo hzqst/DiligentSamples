@@ -201,7 +201,7 @@ bool RTXPTLightsBaker::CreateResources(IRenderDevice* pDevice, IEngineFactory* p
     const bool FillPassOk = ClearPassOk &&
         m_FillLocalSamplingPass.Initialize(pDevice, pEngineFactory, pStateCache, "RTXPT LightsBaker fill local sampling", "FillLocalSamplingCS");
     const bool ProxyBuildOk = FillPassOk && m_ProxyBuildPass.Initialize(pDevice, pEngineFactory, pStateCache);
-    m_Stats.Ready = FeedbackOk && LocalOk && ClearFeedbackPassOk && ClearPassOk && FillPassOk && ProxyBuildOk;
+    m_Stats.Ready           = FeedbackOk && LocalOk && ClearFeedbackPassOk && ClearPassOk && FillPassOk && ProxyBuildOk;
     return m_Stats.Ready;
 }
 
@@ -447,7 +447,7 @@ bool RTXPTLightsBaker::CreateProxyBuffers(IRenderDevice* pDevice, const RTXPTLig
     // Intentional deviation from RTXPT-fork: we floor at max(TotalLightCount, 1) rather than upstream's
     // max(TotalLightCount, RTXPT_LIGHTING_MAX_LIGHTS/10). Unbiased either way; see RTXPT_FORK_MAPPING.md
     // ("proxy budget floor deviation") for the rationale (avoids a fixed ~2.4 MB minimum proxy buffer).
-    m_ProxyBudget = kProxyRatio * std::max(TotalLightCount, 1u);
+    m_ProxyBudget              = kProxyRatio * std::max(TotalLightCount, 1u);
     m_Stats.SamplingProxyCount = m_ProxyBudget; // CPU estimate (UI / local-sampling gating); GPU writes the real count
 
     // Capture the source light buffers for the GPU weight computation (owned by RTXPTLights for the scene's lifetime).
@@ -521,9 +521,9 @@ bool RTXPTLightsBaker::UploadControlBuffer(IRenderDevice* pDevice, const RTXPTLi
     }
 
     RTXPTLightingControlDataCPU Control;
-    Control.TotalLightCount         = m_Stats.TotalLightCount;
-    Control.AnalyticLightCount      = m_Stats.AnalyticLightCount;
-    Control.TriangleLightCount      = m_Stats.TriangleLightCount;
+    Control.TotalLightCount    = m_Stats.TotalLightCount;
+    Control.AnalyticLightCount = m_Stats.AnalyticLightCount;
+    Control.TriangleLightCount = m_Stats.TriangleLightCount;
     // SamplingProxyCount, WeightsSumUINT and ProxyBuildTaskCount are produced by the GPU proxy build
     // (RTXPTLightProxyBuildPass) into this DEFAULT/UAV buffer; initialize them to zero.
     Control.SamplingProxyCount      = 0u;

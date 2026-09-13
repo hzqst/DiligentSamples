@@ -150,7 +150,7 @@ SUPER_RESOLUTION_OPTIMIZATION_TYPE ToSuperResolutionOptimizationType(RTXPTSuperR
 Int32 ResolveActiveSuperResolutionVariantIdx(const RTXPTRealtimeSettings&    RealtimeUI,
                                              const RTXPTSuperResolutionPass& SuperResolutionPass)
 {
-    const auto& Variants = SuperResolutionPass.GetVariants();
+    const auto& Variants   = SuperResolutionPass.GetVariants();
     const Int32 VariantIdx = RealtimeUI.SuperResolutionVariantIdx;
     if (VariantIdx >= 0 && VariantIdx < static_cast<Int32>(Variants.size()) &&
         Variants[static_cast<size_t>(VariantIdx)].Type == SUPER_RESOLUTION_TYPE_TEMPORAL)
@@ -351,7 +351,7 @@ RTXPTFeatureCaps MakeFeatureCaps(const IRenderDevice* pDevice)
     const auto&      DevInfo = pDevice->GetDeviceInfo();
     const auto&      RTProps = pDevice->GetAdapterInfo().RayTracing;
 
-    Caps.RayTracing        = DevInfo.Features.RayTracing == DEVICE_FEATURE_STATE_ENABLED;
+    Caps.RayTracing = DevInfo.Features.RayTracing == DEVICE_FEATURE_STATE_ENABLED;
     // Always true here: ModifyEngineInitInfo hard-requires BindlessResources, so device creation would have
     // failed otherwise. Retained for the InfoGUI readout and as a defensive cap.
     Caps.BindlessResources = DevInfo.Features.BindlessResources == DEVICE_FEATURE_STATE_ENABLED;

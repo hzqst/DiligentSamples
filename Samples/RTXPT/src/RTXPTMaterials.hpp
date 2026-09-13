@@ -161,7 +161,7 @@ constexpr Uint32 kMaterialPathDecompositionFlag_PSDDominantDeltaLobeP1Shift     
 
 // A material is alpha tested only when it uses ALPHA_MODE_MASK and actually has a base-color texture to
 // sample the alpha from. This compatibility overload preserves the single-GLTF path behavior.
-bool                          RTXPTMaterialIsAlphaTested(const GLTF::Material& Material);
+bool RTXPTMaterialIsAlphaTested(const GLTF::Material& Material);
 // Emissive-textured materials are promoted to area lights on the same non-zero emissive-factor test as
 // constant emitters; bindless is mandatory, so the emissive-triangle build shader can always sample the
 // texture (emission = emissiveFactor * texture, so a zero factor still yields no emission).
@@ -179,11 +179,11 @@ bool                          RTXPTMaterialIsEmissiveAreaLight(const GLTF::Mater
                                                                const RTXPTMaterialExtension* pExtension);
 // Transmission is resolved by the closest-hit BSDF. Only non-transmissive BLEND materials use
 // stochastic alpha blending in any-hit.
-bool                          RTXPTMaterialIsAlphaBlended(const GLTF::Material&         Material,
-                                                          const RTXPTMaterialExtension* pExtension);
-bool                          RTXPTMaterialNeedsAnyHit(const GLTF::Material&         Material,
-                                                       const RTXPTMaterialExtension* pExtension,
-                                                       bool                          HasBaseColorTexture);
+bool RTXPTMaterialIsAlphaBlended(const GLTF::Material&         Material,
+                                 const RTXPTMaterialExtension* pExtension);
+bool RTXPTMaterialNeedsAnyHit(const GLTF::Material&         Material,
+                              const RTXPTMaterialExtension* pExtension,
+                              bool                          HasBaseColorTexture);
 
 struct RTXPTMaterialStats
 {

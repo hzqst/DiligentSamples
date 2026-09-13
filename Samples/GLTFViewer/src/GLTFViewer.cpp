@@ -1,5 +1,5 @@
 /*
- *  Copyright 2019-2026 Diligent Graphics LLC
+ *  Copyright 2019-2025 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
@@ -72,7 +72,6 @@ SampleBase* CreateSample()
 // clang-format off
 const std::pair<const char*, const char*> DefaultGLTFModels[] =
 {
-    {"Kitchen",                      "models/Kitchen/kitchen.gltf"},
     {"Damaged Helmet",               "models/DamagedHelmet/DamagedHelmet.gltf"},
 #if !PLATFORM_WEB
     {"Barbie Dodge Pickup",          "models/BarbieDodgePickup/scene.gltf"},
@@ -169,6 +168,7 @@ void GLTFViewer::LoadModel(const char* Path)
     m_Model = std::make_unique<GLTF::Model>(m_pDevice, m_pImmediateContext, ModelCI);
 
     m_ModelResourceBindings = m_GLTFRenderer->CreateResourceBindings(*m_Model, m_FrameAttribsCB);
+    BindIBLResourceViews();
 
     m_RenderParams.SceneIndex = m_Model->DefaultSceneId;
     UpdateScene();
@@ -211,16 +211,16 @@ void GLTFViewer::LoadEnvironmentMap(const char* Path)
     CreateTextureFromFile(Path, TextureLoadInfo{"Environment map"}, m_pDevice, &pEnvironmentMap);
     VERIFY_EXPR(pEnvironmentMap);
 
-    if (m_GLTFRenderer)
-        m_GLTFRenderer->PrecomputeCubemaps(m_pImmediateContext, pEnvironmentMap->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
-
     StateTransitionDesc Barriers[] = {
         {pEnvironmentMap, RESOURCE_STATE_UNKNOWN, RESOURCE_STATE_SHADER_RESOURCE, STATE_TRANSITION_FLAG_UPDATE_STATE},
     };
     m_pImmediateContext->TransitionResourceStates(_countof(Barriers), Barriers);
 
     m_EnvironmentMapSRV = pEnvironmentMap->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
-    m_pCurrentEnvMapSRV = m_EnvironmentMapSRV;
+    if (m_GLTFRenderer)
+        SetEnvironmentMap(m_EnvironmentMapSRV);
+    else
+        m_pCurrentEnvMapSRV = m_EnvironmentMapSRV;
 }
 
 void GLTFViewer::UpdateScene()
@@ -391,9 +391,54 @@ bool GLTFViewer::SetEnvironmentMap(ITextureView* pEnvMap)
         return false;
 
     m_pCurrentEnvMapSRV = pEnvMap;
-    m_GLTFRenderer->PrecomputeCubemaps(m_pImmediateContext, m_pCurrentEnvMapSRV);
+    PrecomputeIBLCubemaps(m_pCurrentEnvMapSRV);
 
     return true;
+}
+
+bool GLTFViewer::CreateIBLCubemaps()
+{
+    if (m_IrradianceCubeSRV != nullptr && m_PrefilteredEnvMapSRV != nullptr)
+        return true;
+
+    m_IrradianceCubeSRV.Release();
+    m_PrefilteredEnvMapSRV.Release();
+
+    RefCntAutoPtr<ITexture> pIrradianceCube    = m_GLTFRenderer->CreateIrradianceCube(m_pImmediateContext, "GLTF viewer irradiance cube map");
+    RefCntAutoPtr<ITexture> pPrefilteredEnvMap = m_GLTFRenderer->CreatePrefilteredEnvMap(m_pImmediateContext, "GLTF viewer prefiltered environment map");
+    if (pIrradianceCube == nullptr || pPrefilteredEnvMap == nullptr)
+        return false;
+
+    m_IrradianceCubeSRV    = pIrradianceCube->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
+    m_PrefilteredEnvMapSRV = pPrefilteredEnvMap->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
+    return m_IrradianceCubeSRV != nullptr && m_PrefilteredEnvMapSRV != nullptr;
+}
+
+void GLTFViewer::PrecomputeIBLCubemaps(ITextureView* pEnvironmentMapSRV)
+{
+    if (m_GLTFRenderer == nullptr || pEnvironmentMapSRV == nullptr)
+    {
+        return;
+    }
+
+    PBR_Renderer::PrecomputeCubemapsAttribs Attribs;
+    Attribs.pEnvironmentMapSRV       = pEnvironmentMapSRV;
+    Attribs.pIrradianceCube          = m_IrradianceCubeSRV->GetTexture();
+    Attribs.pPrefilteredEnvMap       = m_PrefilteredEnvMapSRV->GetTexture();
+    Attribs.SphereMapRow0IsNegativeY = true;
+    m_GLTFRenderer->PrecomputeCubemaps(m_pImmediateContext, Attribs);
+}
+
+void GLTFViewer::BindIBLResourceViews()
+{
+    if (m_GLTFRenderer == nullptr)
+        return;
+
+    for (RefCntAutoPtr<IShaderResourceBinding>& pMaterialSRB : m_ModelResourceBindings.MaterialSRB)
+    {
+        if (pMaterialSRB != nullptr)
+            m_GLTFRenderer->SetIBLResourceViews(pMaterialSRB, m_IrradianceCubeSRV, m_PrefilteredEnvMapSRV);
+    }
 }
 
 static PBR_Renderer::CreateInfo::PSMainSourceInfo GetPbrPSMainSource(PBR_Renderer::PSO_FLAGS PSOFlags)
@@ -517,8 +562,6 @@ void GLTFViewer::CreateGLTFRenderer()
     if (m_bEnablePostProcessing)
         RendererCI.GetPSMainSource = GetPbrPSMainSource;
 
-    RendererCI.SheenAlbedoScalingLUTPath    = "textures/sheen_albedo_scaling.jpg";
-    RendererCI.PreintegratedCharlieBRDFPath = "textures/charlie_preintegrated.jpg";
 
     RendererCI.ShaderTexturesArrayMode = m_TextureArrayMode;
 
@@ -534,11 +577,6 @@ void GLTFViewer::CreateGLTFRenderer()
         GLTF_PBR_Renderer::PSO_FLAG_ENABLE_TEXCOORD_TRANSFORM;
     if (m_bUseResourceCache)
         m_RenderParams.Flags |= GLTF_PBR_Renderer::PSO_FLAG_USE_TEXTURE_ATLAS;
-
-    if (RendererCI.EnableTransmission)
-    {
-        m_RenderParams.Flags |= GLTF_PBR_Renderer::PSO_FLAG_ENABLE_TRANSMISSION_COMPOSITE;
-    }
 
     if (m_bEnablePostProcessing)
     {
@@ -571,7 +609,12 @@ void GLTFViewer::CreateGLTFRenderer()
         GLTF_PBR_Renderer::CreateInfo::TEX_COLOR_CONVERSION_MODE_NONE :
         GLTF_PBR_Renderer::CreateInfo::TEX_COLOR_CONVERSION_MODE_SRGB_TO_LINEAR;
 
+    m_CacheBindings.pSRB.Release();
+    m_CacheBindings.Version = ~0u;
+
     m_GLTFRenderer = std::make_unique<GLTF_PBR_Renderer>(m_pDevice, nullptr, m_pImmediateContext, RendererCI);
+    if (!CreateIBLCubemaps())
+        LOG_ERROR_MESSAGE("Failed to create GLTF viewer IBL cubemaps");
 
     if (m_bUseResourceCache)
     {
@@ -674,37 +717,6 @@ void GLTFViewer::CreateVectorFieldRenderer()
     CI.RTVFormats[0]    = m_pSwapChain->GetDesc().ColorBufferFormat;
 
     m_VectorFieldRenderer = std::make_unique<VectorFieldRenderer>(CI);
-}
-
-void GLTFViewer::PrepareTransmissionSceneColor(Uint32 Width, Uint32 Height, TEXTURE_FORMAT Format)
-{
-    if (Width == 0 || Height == 0 || Format == TEX_FORMAT_UNKNOWN)
-    {
-        m_TransmissionSceneColor.Release();
-        return;
-    }
-
-    if (m_TransmissionSceneColor)
-    {
-        const TextureDesc& Desc = m_TransmissionSceneColor->GetDesc();
-        if (Desc.Width == Width && Desc.Height == Height && Desc.Format == Format)
-            return;
-
-        m_TransmissionSceneColor.Release();
-    }
-
-    TextureDesc Desc;
-    Desc.Name      = "GLTFViewer transmission scene color";
-    Desc.Type      = RESOURCE_DIM_TEX_2D;
-    Desc.Width     = Width;
-    Desc.Height    = Height;
-    Desc.Format    = Format;
-    Desc.MipLevels = 0;
-    Desc.BindFlags = BIND_SHADER_RESOURCE | BIND_RENDER_TARGET;
-    Desc.MiscFlags = MISC_TEXTURE_FLAG_GENERATE_MIPS;
-
-    m_pDevice->CreateTexture(Desc, nullptr, &m_TransmissionSceneColor);
-    VERIFY_EXPR(m_TransmissionSceneColor);
 }
 
 void GLTFViewer::Initialize(const SampleInitInfo& InitInfo)
@@ -1009,6 +1021,8 @@ void GLTFViewer::UpdateUI()
                 {GLTF_PBR_Renderer::DebugViewType::Sheen, "Sheen"},
                 {GLTF_PBR_Renderer::DebugViewType::SheenColor, "Sheen Color"},
                 {GLTF_PBR_Renderer::DebugViewType::SheenRoughness, "Sheen Roughness"},
+                {GLTF_PBR_Renderer::DebugViewType::SpecularFactor, "Specular Factor"},
+                {GLTF_PBR_Renderer::DebugViewType::SpecularColorFactor, "Specular Color Factor"},
                 {GLTF_PBR_Renderer::DebugViewType::AnisotropyStrength, "Anisotropy Strength"},
                 {GLTF_PBR_Renderer::DebugViewType::AnisotropyDirection, "Anisotropy Direction"},
                 {GLTF_PBR_Renderer::DebugViewType::Iridescence, "Iridescence"},
@@ -1017,7 +1031,7 @@ void GLTFViewer::UpdateUI()
                 {GLTF_PBR_Renderer::DebugViewType::Transmission, "Transmission"},
                 {GLTF_PBR_Renderer::DebugViewType::Thickness, "Volume Thickness"},
             };
-            static_assert(static_cast<size_t>(GLTF_PBR_Renderer::DebugViewType::NumDebugViews) == 35, "Did you add a new debug view mode? You may want to handle it here");
+            static_assert(static_cast<size_t>(GLTF_PBR_Renderer::DebugViewType::NumDebugViews) == 37, "Did you add a new debug view mode? You may want to handle it here");
 
             ImGui::Combo("Debug view", &m_RenderParams.DebugView, DebugViews, _countof(DebugViews), 15);
         }
@@ -1159,7 +1173,6 @@ void GLTFViewer::Render()
     ITextureView*        pRTV   = m_pSwapChain->GetCurrentBackBufferRTV();
     ITextureView*        pDSV   = m_pSwapChain->GetDepthBufferDSV();
     const SwapChainDesc& SCDesc = m_pSwapChain->GetDesc();
-    Uint32               GBufferRenderMask = 0;
 
     if (m_bEnablePostProcessing)
     {
@@ -1177,15 +1190,12 @@ void GLTFViewer::Render()
         m_SSR->PrepareResources(m_pDevice, m_pImmediateContext, m_PostFXContext.get(), ScreenSpaceReflection::FEATURE_FLAG_NONE);
 
         m_GBuffer->Resize(m_pDevice, SCDesc.Width, SCDesc.Height);
-        PrepareTransmissionSceneColor(SCDesc.Width, SCDesc.Height, m_GBuffer->GetElementDesc(GBUFFER_RT_RADIANCE).Format);
 
-        GBufferRenderMask = GBUFFER_RT_FLAG_ALL_COLOR_TARGETS | ((m_CurrentFrameNumber & 0x01) ? GBUFFER_RT_FLAG_DEPTH1 : GBUFFER_RT_FLAG_DEPTH0);
-        m_GBuffer->Bind(m_pImmediateContext, GBufferRenderMask, nullptr, GBufferRenderMask);
+        Uint32 BuffersMask = GBUFFER_RT_FLAG_ALL_COLOR_TARGETS | ((m_CurrentFrameNumber & 0x01) ? GBUFFER_RT_FLAG_DEPTH1 : GBUFFER_RT_FLAG_DEPTH0);
+        m_GBuffer->Bind(m_pImmediateContext, BuffersMask, nullptr, BuffersMask);
     }
     else
     {
-        PrepareTransmissionSceneColor(SCDesc.Width, SCDesc.Height, pRTV->GetTexture()->GetDesc().Format);
-
         // Clear the back buffer
         const float ClearColor[] = {0.032f, 0.032f, 0.032f, 0.0f};
         m_pImmediateContext->ClearRenderTarget(pRTV, ClearColor, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
@@ -1270,7 +1280,7 @@ void GLTFViewer::Render()
         }
         {
             HLSL::PBRRendererShaderParameters& Renderer = FrameAttribs->Renderer;
-            m_GLTFRenderer->SetInternalShaderParameters(Renderer);
+            m_GLTFRenderer->SetInternalShaderParameters(Renderer, m_PrefilteredEnvMapSRV);
 
             Renderer.OcclusionStrength = m_ShaderAttribs.OcclusionStrength;
             Renderer.EmissionScale     = m_ShaderAttribs.EmissionScale;
@@ -1289,28 +1299,19 @@ void GLTFViewer::Render()
 
     if (m_pResourceMgr)
     {
-        m_GLTFRenderer->Begin(m_pDevice, m_pImmediateContext, m_CacheUseInfo, m_CacheBindings, m_FrameAttribsCB);
+        m_GLTFRenderer->Begin(m_pDevice, m_pImmediateContext, m_CacheUseInfo, m_CacheBindings,
+                              m_FrameAttribsCB, m_IrradianceCubeSRV, m_PrefilteredEnvMapSRV);
     }
     else
     {
         m_GLTFRenderer->Begin(m_pImmediateContext);
     }
 
-    auto RenderModel = [&](GLTF_PBR_Renderer::RenderInfo::ALPHA_MODE_FLAGS AlphaModes,
-                           GLTF_PBR_Renderer::RenderInfo::SURFACE_FLAGS    SurfaceFlags,
-                           ITextureView*                                    pTransmissionSceneColorSRV,
-                           const float3*                                    pCameraPosition) {
+    auto RenderModel = [&](GLTF_PBR_Renderer::RenderInfo::ALPHA_MODE_FLAGS AlphaModes) {
         const GLTF_PBR_Renderer::RenderInfo::ALPHA_MODE_FLAGS OrigAlphaModes = m_RenderParams.AlphaModes;
-        const GLTF_PBR_Renderer::RenderInfo::SURFACE_FLAGS    OrigSurfaceFlags = m_RenderParams.SurfaceFlags;
-        ITextureView* const                                    pOrigTransmissionSceneColorSRV = m_RenderParams.pTransmissionSceneColorSRV;
-        const float3* const                                    pOrigCameraPosition = m_RenderParams.pCameraPosition;
 
         m_RenderParams.AlphaModes &= AlphaModes;
-        m_RenderParams.SurfaceFlags &= SurfaceFlags;
-        m_RenderParams.pTransmissionSceneColorSRV = pTransmissionSceneColorSRV;
-        m_RenderParams.pCameraPosition            = pCameraPosition;
-        if (m_RenderParams.AlphaModes != GLTF_PBR_Renderer::RenderInfo::ALPHA_MODE_FLAG_NONE &&
-            m_RenderParams.SurfaceFlags != GLTF_PBR_Renderer::RenderInfo::SURFACE_FLAG_NONE)
+        if (m_RenderParams.AlphaModes != GLTF_PBR_Renderer::RenderInfo::ALPHA_MODE_FLAG_NONE)
         {
             if (m_pResourceMgr)
             {
@@ -1322,15 +1323,9 @@ void GLTFViewer::Render()
             }
         }
 
-        m_RenderParams.AlphaModes                 = OrigAlphaModes;
-        m_RenderParams.SurfaceFlags               = OrigSurfaceFlags;
-        m_RenderParams.pTransmissionSceneColorSRV = pOrigTransmissionSceneColorSRV;
-        m_RenderParams.pCameraPosition            = pOrigCameraPosition;
+        m_RenderParams.AlphaModes = OrigAlphaModes;
     };
-    RenderModel(GLTF_PBR_Renderer::RenderInfo::ALPHA_MODE_FLAG_OPAQUE | GLTF_PBR_Renderer::RenderInfo::ALPHA_MODE_FLAG_MASK,
-                GLTF_PBR_Renderer::RenderInfo::SURFACE_FLAG_OPAQUE | GLTF_PBR_Renderer::RenderInfo::SURFACE_FLAG_MASK,
-                nullptr,
-                nullptr);
+    RenderModel(GLTF_PBR_Renderer::RenderInfo::ALPHA_MODE_FLAG_OPAQUE | GLTF_PBR_Renderer::RenderInfo::ALPHA_MODE_FLAG_MASK);
 
     if (m_BackgroundMode != BackgroundMode::None)
     {
@@ -1342,11 +1337,11 @@ void GLTFViewer::Render()
                 break;
 
             case BackgroundMode::Irradiance:
-                pEnvMapSRV = m_GLTFRenderer->GetIrradianceCubeSRV();
+                pEnvMapSRV = m_IrradianceCubeSRV;
                 break;
 
             case BackgroundMode::PrefilteredEnvMap:
-                pEnvMapSRV = m_GLTFRenderer->GetPrefilteredEnvMapSRV();
+                pEnvMapSRV = m_PrefilteredEnvMapSRV;
                 break;
 
             default:
@@ -1362,10 +1357,11 @@ void GLTFViewer::Render()
         TMAttribs.fLuminanceSaturation = 1.0;
 
         EnvMapRenderer::RenderAttribs EnvMapAttribs;
-        EnvMapAttribs.pEnvMap       = pEnvMapSRV;
-        EnvMapAttribs.AverageLogLum = m_ShaderAttribs.AverageLogLum;
-        EnvMapAttribs.MipLevel      = m_EnvMapMipLevel;
-        EnvMapAttribs.Alpha         = 0.0;
+        EnvMapAttribs.pEnvMap                  = pEnvMapSRV;
+        EnvMapAttribs.AverageLogLum            = m_ShaderAttribs.AverageLogLum;
+        EnvMapAttribs.MipLevel                 = m_EnvMapMipLevel;
+        EnvMapAttribs.Alpha                    = 0.0;
+        EnvMapAttribs.SphereMapRow0IsNegativeY = true;
         if ((m_RenderParams.Flags & GLTF_PBR_Renderer::PSO_FLAG_CONVERT_OUTPUT_TO_SRGB) != 0)
             EnvMapAttribs.Options |= EnvMapRenderer::OPTION_FLAG_CONVERT_OUTPUT_TO_SRGB;
         if (m_bEnablePostProcessing)
@@ -1375,47 +1371,7 @@ void GLTFViewer::Render()
         m_EnvMapRenderer->Render(m_pImmediateContext);
     }
 
-    ITextureView* pTransmissionSceneColorSRV = nullptr;
-    if (m_TransmissionSceneColor &&
-        (m_RenderParams.Flags & GLTF_PBR_Renderer::PSO_FLAG_ENABLE_TRANSMISSION) != 0 &&
-        (m_RenderParams.Flags & GLTF_PBR_Renderer::PSO_FLAG_ENABLE_TRANSMISSION_COMPOSITE) != 0)
-    {
-        m_pImmediateContext->SetRenderTargets(0, nullptr, nullptr, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-
-        CopyTextureAttribs CopyAttribs;
-        CopyAttribs.pSrcTexture              = m_bEnablePostProcessing ? m_GBuffer->GetBuffer(GBUFFER_RT_RADIANCE) : pRTV->GetTexture();
-        CopyAttribs.pDstTexture              = m_TransmissionSceneColor;
-        CopyAttribs.SrcMipLevel              = 0;
-        CopyAttribs.DstMipLevel              = 0;
-        CopyAttribs.SrcSlice                 = 0;
-        CopyAttribs.DstSlice                 = 0;
-        CopyAttribs.SrcTextureTransitionMode = RESOURCE_STATE_TRANSITION_MODE_TRANSITION;
-        CopyAttribs.DstTextureTransitionMode = RESOURCE_STATE_TRANSITION_MODE_TRANSITION;
-        m_pImmediateContext->CopyTexture(CopyAttribs);
-
-        pTransmissionSceneColorSRV = m_TransmissionSceneColor->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
-        m_pImmediateContext->GenerateMips(pTransmissionSceneColorSRV);
-
-        if (m_bEnablePostProcessing)
-        {
-            m_GBuffer->Bind(m_pImmediateContext, GBufferRenderMask, nullptr, 0);
-        }
-        else
-        {
-            m_pImmediateContext->SetRenderTargets(1, &pRTV, pDSV, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-        }
-    }
-
-    const float3 CameraPosition = float3::MakeVector(CurrCamAttribs.f4Position);
-    RenderModel(GLTF_PBR_Renderer::RenderInfo::ALPHA_MODE_FLAG_ALL,
-                GLTF_PBR_Renderer::RenderInfo::SURFACE_FLAG_TRANSMISSION,
-                pTransmissionSceneColorSRV,
-                &CameraPosition);
-
-    RenderModel(GLTF_PBR_Renderer::RenderInfo::ALPHA_MODE_FLAG_BLEND,
-                GLTF_PBR_Renderer::RenderInfo::SURFACE_FLAG_BLEND,
-                nullptr,
-                nullptr);
+    RenderModel(GLTF_PBR_Renderer::RenderInfo::ALPHA_MODE_FLAG_BLEND);
 
     if (m_BoundBoxMode != BoundBoxMode::None)
     {

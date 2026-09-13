@@ -163,9 +163,9 @@ private:
     RefCntAutoPtr<IPipelineState>         m_EnvCubeBakePSOSphere;
     RefCntAutoPtr<IShaderResourceBinding> m_EnvCubeBakeSRBSphere;
     Uint32                                m_EnvironmentCubeResolution = 0;
-    IRenderStateCache*                  m_pStateCache = nullptr; // Owned by RTXPTSample; set in CreateResources.
-    RTXPTEnvMapBakerPass                m_BuildImportanceBasePass;
-    RTXPTEnvMapBakerPass                m_ReduceImportanceMipPass;
+    IRenderStateCache*                    m_pStateCache               = nullptr; // Owned by RTXPTSample; set in CreateResources.
+    RTXPTEnvMapBakerPass                  m_BuildImportanceBasePass;
+    RTXPTEnvMapBakerPass                  m_ReduceImportanceMipPass;
 
     RTXPTEnvMapConstants       m_Constants;
     LightsBakerEnvMapParamsCPU m_LightsBakerParams;

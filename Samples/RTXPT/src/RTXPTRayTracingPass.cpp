@@ -178,9 +178,9 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
     }
 
     // Material data is read by raygen for nested dielectric media and by hit shaders for surface shading.
-    const SHADER_TYPE HitStages         = UseAnyHit ?
-                (SHADER_TYPE_RAY_CLOSEST_HIT | SHADER_TYPE_RAY_ANY_HIT) :
-                SHADER_TYPE_RAY_CLOSEST_HIT;
+    const SHADER_TYPE HitStages = UseAnyHit ?
+        (SHADER_TYPE_RAY_CLOSEST_HIT | SHADER_TYPE_RAY_ANY_HIT) :
+        SHADER_TYPE_RAY_CLOSEST_HIT;
     const SHADER_TYPE MaterialStages    = HitStages | SHADER_TYPE_RAY_GEN;
     const SHADER_TYPE EnvStages         = SHADER_TYPE_RAY_GEN | SHADER_TYPE_RAY_MISS | HitStages;
     const SHADER_TYPE ConstStages       = EnvStages | HitStages;

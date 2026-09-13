@@ -151,8 +151,8 @@ private:
     bool DispatchPathTraceLoop(bool UseStablePlanes, const RTXPTRayTracingDispatch& BaseDispatch);
     void RecordRealtimePathTraceStatus(const char* Status);
 
-    RefCntAutoPtr<IRenderStateCache>                       m_pStateCache;
-    RTXPTFeatureCaps                                       m_FeatureCaps;
+    RefCntAutoPtr<IRenderStateCache>                        m_pStateCache;
+    RTXPTFeatureCaps                                        m_FeatureCaps;
     std::string                                             m_AssetsRoot;
     std::vector<std::string>                                m_AvailableScenes;
     std::string                                             m_CurrentSceneName;

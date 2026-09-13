@@ -211,7 +211,7 @@ inline void SanitizeRealtimeSettings(RTXPTRealtimeSettings& Settings)
 
     // The upper bound of the variant index depends on the live provider count, which is
     // enforced at runtime by the super resolution pass; here we only reject negatives.
-    Settings.SuperResolutionVariantIdx = std::max(Settings.SuperResolutionVariantIdx, Int32{0});
+    Settings.SuperResolutionVariantIdx  = std::max(Settings.SuperResolutionVariantIdx, Int32{0});
     const Uint32 SuperResolutionQuality = std::clamp(static_cast<Uint32>(Settings.SuperResolutionQuality),
                                                      0u,
                                                      kRTXPTSuperResolutionQualityCount - 1u);

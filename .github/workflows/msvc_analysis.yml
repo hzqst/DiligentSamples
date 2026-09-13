@@ -13,10 +13,10 @@ jobs:
             build_type:      "Debug"
             # Only build Direct3D11 backend as Core libraries are analysed in the Core module
             cmake_args:      "-DDILIGENT_NO_OPENGL=ON -DDILIGENT_NO_DIRECT3D12=ON -DDILIGENT_NO_VULKAN=ON"
-            cmake_generator: "Visual Studio 17 2022"
+            cmake_generator: "Visual Studio 18 2026"
             build_args:      "-- -restore"
 
-    runs-on: windows-2022
+    runs-on: windows-2025
     name: ${{ matrix.host_name }} -> MSVC Analysis, ${{ matrix.toolset }}, ${{ matrix.build_type }}
 
     permissions:
@@ -28,18 +28,18 @@ jobs:
 
     steps:
     - name: Checkout
-      uses: DiligentGraphics/github-action/checkout@v14
+      uses: DiligentGraphics/github-action/checkout@v25
 
     - name: Set up build environment
       if: success()
-      uses: DiligentGraphics/github-action/setup-build-env@v14
+      uses: DiligentGraphics/github-action/setup-build-env@v25
       with:
         platform:        ${{ matrix.platform }}
         cmake-generator: ${{ matrix.cmake_generator }}
 
     - name: Configure CMake
       if: success()
-      uses: DiligentGraphics/github-action/configure-cmake@v14
+      uses: DiligentGraphics/github-action/configure-cmake@v25
       with:
         generator:  ${{ matrix.cmake_generator }}
         vs-arch:    ${{ matrix.toolset }}
@@ -48,12 +48,12 @@ jobs:
 
     - name: Build
       if: success()
-      uses: DiligentGraphics/github-action/build@v14
+      uses: DiligentGraphics/github-action/build@v25
       with:
         build-args: ${{ matrix.build_args }}
 
     - name: Run MSVC Code Analysis
-      uses: microsoft/msvc-code-analysis-action@v0.1.1
+      uses: DiligentGraphics/msvc-code-analysis-action@main
       # Provide a unique ID to access the sarif output path
       id: run-analysis
       with:
@@ -62,7 +62,7 @@ jobs:
         # Ruleset file that will determine what checks will be run
         ruleset: NativeRecommendedRules.ruleset
         # Paths to ignore analysis of CMake targets and includes
-        ignoredPaths: '${{ github.workspace }}/DiligentCore;${{ github.workspace }}/DiligentTools;${{ github.workspace }}/DiligentFX;${{ github.workspace }}/DiligentSamples/ThirdParty'
+        ignoredPaths: '${{ github.workspace }}/DiligentCore;${{ github.workspace }}/DiligentTools;${{ github.workspace }}/DiligentFX;${{ github.workspace }}/DiligentSamples/ThirdParty;${{ env.DILIGENT_BUILD_DIR }}/_deps'
 
     # Upload SARIF file to GitHub Code Scanning Alerts
     - name: Upload SARIF to GitHub

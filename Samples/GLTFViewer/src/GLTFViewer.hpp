@@ -1,5 +1,5 @@
 /*
- *  Copyright 2019-2026 Diligent Graphics LLC
+ *  Copyright 2019-2025 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
@@ -75,11 +75,13 @@ private:
     void CreateGLTFResourceCache();
     void UpdateModelsList(const std::string& Dir, const std::string& Ext);
     bool SetEnvironmentMap(ITextureView* pEnvMap);
+    bool CreateIBLCubemaps();
+    void PrecomputeIBLCubemaps(ITextureView* pEnvironmentMapSRV);
+    void BindIBLResourceViews();
     void CreateGLTFRenderer();
     void CrateEnvMapRenderer();
     void CrateBoundBoxRenderer();
     void CreateVectorFieldRenderer();
-    void PrepareTransmissionSceneColor(Uint32 Width, Uint32 Height, TEXTURE_FORMAT Format);
 
     enum class BackgroundMode : int
     {
@@ -147,11 +149,12 @@ private:
     RefCntAutoPtr<IBuffer>               m_FrameAttribsCB;
     RefCntAutoPtr<ITextureView>          m_EnvironmentMapSRV;
     RefCntAutoPtr<ITextureView>          m_WhiteFurnaceEnvMapSRV;
+    RefCntAutoPtr<ITextureView>          m_IrradianceCubeSRV;
+    RefCntAutoPtr<ITextureView>          m_PrefilteredEnvMapSRV;
 
     ITextureView* m_pCurrentEnvMapSRV = nullptr;
 
     std::unique_ptr<GBuffer> m_GBuffer;
-    RefCntAutoPtr<ITexture>  m_TransmissionSceneColor;
 
     struct ApplyPosteffects
     {

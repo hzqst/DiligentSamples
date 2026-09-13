@@ -647,9 +647,23 @@ bool RTXPTEnvMapBaker::PrecomputeCubemap(IRenderDevice* pDevice, IDeviceContext*
     if (!m_IBLPrecompute)
         m_IBLPrecompute = std::make_unique<PBR_Renderer>(pDevice, nullptr, pContext, PBR_Renderer::CreateInfo{});
 
-    m_IBLPrecompute->PrecomputeCubemaps(pContext, m_SourceSRV);
-    m_EnvironmentMapSRV    = m_IBLPrecompute->GetPrefilteredEnvMapSRV();
-    m_DiffuseIrradianceSRV = m_IBLPrecompute->GetIrradianceCubeSRV();
+    auto pIrradianceCube    = m_IBLPrecompute->CreateIrradianceCube(pContext, "RTXPT irradiance cube map");
+    auto pPrefilteredEnvMap = m_IBLPrecompute->CreatePrefilteredEnvMap(pContext, "RTXPT prefiltered environment map");
+    if (!pIrradianceCube || !pPrefilteredEnvMap)
+    {
+        m_Stats.Ready     = false;
+        m_Stats.LastError = "Failed to create RTXPT IBL cubemaps";
+        LOG_ERROR_MESSAGE(m_Stats.LastError.c_str());
+        return false;
+    }
+
+    PBR_Renderer::PrecomputeCubemapsAttribs Attribs;
+    Attribs.pEnvironmentMapSRV = m_SourceSRV;
+    Attribs.pIrradianceCube    = pIrradianceCube;
+    Attribs.pPrefilteredEnvMap = pPrefilteredEnvMap;
+    m_IBLPrecompute->PrecomputeCubemaps(pContext, Attribs);
+    m_EnvironmentMapSRV    = pPrefilteredEnvMap->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
+    m_DiffuseIrradianceSRV = pIrradianceCube->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
     m_BRDFLUTSRV           = m_IBLPrecompute->GetPreintegratedGGX_SRV();
 
     if (!m_EnvironmentMapSRV || !m_DiffuseIrradianceSRV || !m_BRDFLUTSRV)
