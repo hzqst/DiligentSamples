@@ -807,6 +807,68 @@ No #20 UI/frame scheduling, native RR evaluation or real path-traced scene image
 quality is claimed by these tests. Interactive window resize, history behavior,
 and producer→NGX→post-processing validation require that next stage.
 
+## DLSS-RR Stages 3 and 4: Execution and Runtime (#20, #21)
+
+`RTXPTRayReconstructionPass` owns the native factory and reconstruction object.
+It enumerates the DLSS variant, queries the requested output/quality dimensions,
+creates a fixed-resolution object, obtains pixel jitter and executes the #19
+adapter. Output size, quality or preset changes recreate the object. Release
+submits pending work and waits for the owning immediate context before destroying
+NGX resources; mode exit and sample shutdown use the same path. Creation and
+execution failures are latched until configuration changes or explicit retry.
+Unavailable capability, source-query failure, creation failure and execution
+failure have separate status values and readable UI/log messages.
+
+`RTXPTSample::UpdateRenderTargetDimensions` resolves RR before target allocation
+and frame constants. `GetJitterOffset` supplies the same pixel jitter to ray
+generation and the RR adapter. Target recreation happens before the frame's reset
+scope is consumed. Existing scene/camera-selection, render-target, material,
+lighting and realtime-cache reset signals invalidate RR history. Continuous
+camera and skinned-object motion preserve temporal history; skipped/failed RR
+frames invalidate it. Reference rendering never enables RR denoising constants.
+
+The realtime RR route is BUILD/FILL and shared guides -> RR input preparation ->
+native Execute -> ProcessedOutputColor -> bloom -> tone mapping -> blit. It skips
+standalone NRD, no-denoiser merge, TAA and ordinary SR. Execute runs outside render
+passes; neither the sample scheduler nor SampleBase opens a query across it.
+Following passes bind their pipeline/resources with transitions after native
+execution invalidates context state. A failed frame follows the existing fallback
+clear path and never consumes the previous RR output.
+
+CMake conditionally links `Diligent-RayReconstruction-static` and uses Core's
+`copy_diligent_ngx_runtime` / `copy_dlssd_dlls` helpers. The optional
+`RTXPT_RAY_RECONSTRUCTION_SHARED=ON` selects and deploys the shared RR module.
+`DILIGENT_NO_RAY_RECONSTRUCTION=ON` builds a capability-unavailable stub. SR and RR
+share Core's pinned SDK and NGX runtime; no Streamline or additional SDK is added.
+Vulkan sets `EngineVkCreateInfo::EnableRayReconstruction` before device creation;
+`--vk_rr false` allows launching other modes without requesting those extensions.
+Missing explicitly requested extensions remain a device-creation error.
+
+Preset F remains the default on every backend. Preset E is selected explicitly in
+the UI or with `--rr_preset E`; Vulkan F's known SDK layout error is not suppressed.
+The UI's retry action rebuilds the capability factory and invalidates history.
+See `tests/README.md` for command-line execution and the opt-in real-scene sequence.
+
+The integration exposed a Core Vulkan cross-module bug: RR's internal inline
+`GetCommandBuffer().EndRenderScope()` used the provider module's uninitialized
+Vulkan dispatch pointers when flushing pending barriers from an engine-DLL
+context. `DLSSProviderVk::PrepareContext` now submits through virtual
+`IDeviceContext::Flush`; subsequent native handles also come through the public
+virtual interface. `RayReconstructionTest.EvaluateAndReadback` covers queued
+barriers and a shared RR object. This is independent of the known SDK preset-F
+layout failure and does not alter the public RR interface.
+
+Real-scene Vulkan validation also exposed a vertex storage ABI mismatch predating
+RR. CPU GLTF vertices are 32 bytes (position/normal/UV at offsets 0/12/24), while
+default SPIR-V layout of adjacent float3 members produced offsets 0/16/32 and
+stride 48. `GeometryVertexData` is now only an unpacked shading value;
+`PackedGeometryVertexData` stores two float4 values with matching 32-byte layout
+on both backends. Shared pack/unpack helpers are used by hit, emissive-triangle
+and skinning shaders. The CPU stream and BLAS layout remain the same. The GPU
+regression checks the production skinning shader against independent CPU vertex
+values and catches the old Vulkan mismatch. See the validation record for the
+separate reference-startup device-loss limitation.
+
 ## Skinned glTF Current Geometry
 
 The Diligent RTXPT port uses a Diligent-native current-geometry path for skinned glTF:

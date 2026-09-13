@@ -14,8 +14,8 @@ ConstantBuffer<EmissiveTriangleBuildConstants> g_EmissiveTriangleBuildConstants;
 StructuredBuffer<MaterialPTData>     t_PTMaterialData;
 StructuredBuffer<SubInstanceData>    t_SubInstanceData;
 StructuredBuffer<float4x4>           t_SubInstanceTransforms;
-StructuredBuffer<GeometryVertexData> t_VertexBuffer;
-StructuredBuffer<GeometryVertexData> t_SkinnedVertexBuffer;
+StructuredBuffer<PackedGeometryVertexData> t_VertexBuffer;
+StructuredBuffer<PackedGeometryVertexData> t_SkinnedVertexBuffer;
 Buffer<uint>                         t_IndexBuffer;
 RWStructuredBuffer<EmissiveTriangle> u_EmissiveTriangles;
 
@@ -42,9 +42,9 @@ uint3 getTriangleIndices(SubInstanceData subInstance, uint localPrimitiveIndex)
 GeometryVertexData getGeometryVertex(SubInstanceData subInstance, uint vertexIndex)
 {
     if ((subInstance.Flags & kSubInstanceFlagSkinned) != 0u)
-        return t_SkinnedVertexBuffer[subInstance.VertexOffset + vertexIndex];
+        return UnpackGeometryVertex(t_SkinnedVertexBuffer[subInstance.VertexOffset + vertexIndex]);
 
-    return t_VertexBuffer[subInstance.VertexOffset + vertexIndex];
+    return UnpackGeometryVertex(t_VertexBuffer[subInstance.VertexOffset + vertexIndex]);
 }
 
 float3 transformPosition(float4x4 transform, float3 position)

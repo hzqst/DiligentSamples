@@ -107,6 +107,7 @@ public:
     virtual void        WindowResize(Uint32 Width, Uint32 Height) override final;
     virtual const Char* GetSampleName() const override final { return "RTXPT"; }
     virtual void        ModifyEngineInitInfo(const ModifyEngineInitInfoAttribs& Attribs) override final;
+    CommandLineStatus   ProcessCommandLine(int argc, const char* const* argv) override;
 
 protected:
     virtual void UpdateUI() override final;
@@ -131,7 +132,7 @@ private:
     bool BuildEmissiveTriangles();
     bool EnsureRenderTargets();
     void ClearFallback(const float4& ClearColor);
-    void RequestAccumulationReset(const char* Reason);
+    void RequestAccumulationReset(const char* Reason, bool ResetTemporalHistory = true);
     void RequestRealtimeReset(RTXPTRealtimeResetFlags Flags, const char* Reason);
     void RequestRealtimeCachesReset(const char* Reason);
     void BeginRealtimeFrameResetScope();
@@ -145,6 +146,7 @@ private:
     bool PresentRealtimeFinalOutput();
     bool RunRealtimePathTraceOnly();
     bool PathTrace();
+    void RunRayReconstructionValidation(double CurrTime);
     bool BakeDenoisingGuides();
     bool PresentRealtimeGuideDebug();
     bool DispatchPathTracePrePass(const RTXPTRayTracingDispatch& BaseDispatch);
@@ -156,6 +158,7 @@ private:
     std::string                                             m_AssetsRoot;
     std::vector<std::string>                                m_AvailableScenes;
     std::string                                             m_CurrentSceneName;
+    std::string                                             m_InitialSceneName;
     RTXPTScene                                              m_Scene;
     RTXPTMaterials                                          m_Materials;
     RTXPTLights                                             m_Lights;
@@ -183,43 +186,51 @@ private:
     RTXPTRealtimeResetFlags                                 m_RealtimeResetPending = RTXPT_REALTIME_RESET_REALTIME_CACHES |
         RTXPT_REALTIME_RESET_NRD_HISTORY |
         RTXPT_REALTIME_RESET_TAA_SR_HISTORY;
-    RTXPTRealtimeResetFlags       m_CurrentFrameRealtimeReset   = RTXPT_REALTIME_RESET_NONE;
-    RTXPTRenderTargetDimensions   m_CurrentTargetDimensions     = {};
-    RTXPTSuperResolutionFrameDesc m_CurrentSuperResolutionFrame = {};
-    float2                        m_CurrentRealtimeCameraJitter = float2{0.0f, 0.0f};
-    float                         m_LastElapsedTimeSeconds      = 0.0f;
-    float4x4                      m_LastCameraView              = float4x4::Identity();
-    float4x4                      m_LastCameraProj              = float4x4::Identity();
-    PathTracerCameraData          m_PreviousFrameCamera         = {};
-    PathTracerViewData            m_PreviousFrameView           = {};
-    bool                          m_HasPreviousFrameConstants   = false;
-    Uint32                        m_RealtimeSampleIndex         = 0;
-    Uint32                        m_LastSampleBaseIndex         = 0;
-    float                         m_CameraVerticalFov           = PI_F / 4.0f;
-    float                         m_CameraNearPlane             = 1.0f;
-    float                         m_CameraFarPlane              = 10000.0f;
-    Uint32                        m_FrameIndex                  = 0;
-    Uint32                        m_AccumulationFrame           = 0;
-    Uint32                        m_MaxBounces                  = 20;
-    Uint32                        m_MinBounces                  = 3;
-    Uint32                        m_MaxNEEBounces               = 16;
-    bool                          m_EnableNEE                   = true;
-    bool                          m_EnableEnvNEE                = true;
-    bool                          m_EnableEmissiveNEE           = true;
-    bool                          m_HasDynamicGeometry          = false;
-    bool                          m_EmissiveTrianglesDirty      = true;
-    float                         m_EnvIntensity                = 1.0f;
-    float                         m_LightIntensityScale         = 1.0f;
-    int                           m_SelectedSceneCamera         = -1;
-    int                           m_SelectedEnvMapSource        = 0;
-    bool                          m_EnableSceneAnimations       = false;
-    bool                          m_ResetAccumulationPending    = true;
-    bool                          m_AccumulationActive          = false;
-    bool                          m_HasLastCameraMatrices       = false;
-    bool                          m_LightsBakerSettingsDirty    = false;
-    bool                          m_RayTracingPassSettingsDirty = false;
-    bool                          m_EnvMapBakerDirty            = true;
-    bool                          m_EnvMapBakerSettingsDirty    = true;
+    RTXPTRealtimeResetFlags        m_CurrentFrameRealtimeReset   = RTXPT_REALTIME_RESET_NONE;
+    RTXPTRenderTargetDimensions    m_CurrentTargetDimensions     = {};
+    RTXPTSuperResolutionFrameDesc  m_CurrentSuperResolutionFrame = {};
+    RTXPTRayReconstructionSettings m_RayReconstructionSettings;
+    bool                           m_RayReconstructionFrameReady           = false;
+    bool                           m_ValidateRayReconstruction             = false;
+    bool                           m_EnableVulkanRayReconstruction         = true;
+    bool                           m_LastFrameSucceeded                    = false;
+    double                         m_RayReconstructionValidationStageStart = 0;
+    Uint32                         m_RayReconstructionValidationFrame      = 0;
+    Uint32                         m_RayReconstructionValidationFailures   = 0;
+    float2                         m_CurrentRealtimeCameraJitter           = float2{0.0f, 0.0f};
+    float                          m_LastElapsedTimeSeconds                = 0.0f;
+    float4x4                       m_LastCameraView                        = float4x4::Identity();
+    float4x4                       m_LastCameraProj                        = float4x4::Identity();
+    PathTracerCameraData           m_PreviousFrameCamera                   = {};
+    PathTracerViewData             m_PreviousFrameView                     = {};
+    bool                           m_HasPreviousFrameConstants             = false;
+    Uint32                         m_RealtimeSampleIndex                   = 0;
+    Uint32                         m_LastSampleBaseIndex                   = 0;
+    float                          m_CameraVerticalFov                     = PI_F / 4.0f;
+    float                          m_CameraNearPlane                       = 1.0f;
+    float                          m_CameraFarPlane                        = 10000.0f;
+    Uint32                         m_FrameIndex                            = 0;
+    Uint32                         m_AccumulationFrame                     = 0;
+    Uint32                         m_MaxBounces                            = 20;
+    Uint32                         m_MinBounces                            = 3;
+    Uint32                         m_MaxNEEBounces                         = 16;
+    bool                           m_EnableNEE                             = true;
+    bool                           m_EnableEnvNEE                          = true;
+    bool                           m_EnableEmissiveNEE                     = true;
+    bool                           m_HasDynamicGeometry                    = false;
+    bool                           m_EmissiveTrianglesDirty                = true;
+    float                          m_EnvIntensity                          = 1.0f;
+    float                          m_LightIntensityScale                   = 1.0f;
+    int                            m_SelectedSceneCamera                   = -1;
+    int                            m_SelectedEnvMapSource                  = 0;
+    bool                           m_EnableSceneAnimations                 = false;
+    bool                           m_ResetAccumulationPending              = true;
+    bool                           m_AccumulationActive                    = false;
+    bool                           m_HasLastCameraMatrices                 = false;
+    bool                           m_LightsBakerSettingsDirty              = false;
+    bool                           m_RayTracingPassSettingsDirty           = false;
+    bool                           m_EnvMapBakerDirty                      = true;
+    bool                           m_EnvMapBakerSettingsDirty              = true;
 };
 
 } // namespace Diligent

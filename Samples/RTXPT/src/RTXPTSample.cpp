@@ -36,11 +36,19 @@
 #include "FileWrapper.hpp"
 #include "DataBlobImpl.hpp"
 #include "imgui.h"
+#include "CommandLineParser.hpp"
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <limits>
+#if PLATFORM_WIN32
+#    ifndef NOMINMAX
+#        define NOMINMAX
+#    endif
+#    include <Windows.h>
+#endif
 
 namespace Diligent
 {
@@ -65,7 +73,6 @@ constexpr int         kExposureModeMax                = static_cast<int>(RTXPTEx
 static_assert(kToneMapOperatorMin == 0 && kToneMapOperatorMax == 5, "Tone-map UI assumes contiguous operator values");
 static_assert(kExposureModeMin == 0 && kExposureModeMax == 1, "Tone-map UI assumes contiguous exposure mode values");
 
-constexpr bool        kRTXPTDlssRrAvailable = false;
 constexpr const char* kRTXPTRealtimeRoutePendingReason =
     "Realtime mode uses standalone NRD when available; otherwise it uses no-denoiser final merge and presentation.";
 constexpr Uint32 kRTXPTRealtimeNoisePeriod = 8192u;
@@ -94,7 +101,7 @@ const char* GetStandaloneNrdControlsDisabledReason(const RTXPTRealtimeSettings& 
     if (!RealtimeUI.RealtimeMode)
         return "Not available in reference mode.";
     if (RealtimeUI.RealtimeAA == RTXPTRealtimeAAMode::DLSSRR)
-        return "Standalone NRD is disabled for DLSS-RR; TODO(RTXPT-Realtime-DLSS-RR).";
+        return "Standalone NRD is disabled for DLSS-RR.";
     if (!IsStandaloneNrdAvailable())
         return GetStandaloneNrdDisabledReason();
     if (!RealtimeUI.ActualUseStandaloneDenoiser())
@@ -377,12 +384,15 @@ RTXPTRenderTargetCreateInfo MakeRenderTargetCreateInfo(const RTXPTRenderTargetDi
                                                        bool                               RayTracingAvailable)
 {
     RTXPTRenderTargetCreateInfo CreateInfo;
-    CreateInfo.Dimensions                = Dimensions;
-    CreateInfo.Formats                   = {};
-    CreateInfo.CreateComputeOutput       = false;
-    CreateInfo.CreateAccumulatedRadiance = RayTracingAvailable;
-    CreateInfo.CreateRealtimeResources   = RealtimeUI.RealtimeMode;
-    CreateInfo.CreateDenoiserValidation  = false;
+    CreateInfo.Dimensions                       = Dimensions;
+    CreateInfo.Formats                          = {};
+    CreateInfo.CreateComputeOutput              = false;
+    CreateInfo.CreateAccumulatedRadiance        = RayTracingAvailable;
+    CreateInfo.CreateRealtimeResources          = RealtimeUI.RealtimeMode;
+    CreateInfo.CreateDenoiserValidation         = false;
+    CreateInfo.CreateRayReconstructionResources = RealtimeUI.RealtimeMode && RealtimeUI.RealtimeAA == RTXPTRealtimeAAMode::DLSSRR;
+    if (CreateInfo.CreateRayReconstructionResources)
+        CreateInfo.CreateAccumulatedRadiance = false;
     return CreateInfo;
 }
 
@@ -617,10 +627,32 @@ void RTXPTSample::ModifyEngineInitInfo(const ModifyEngineInitInfoAttribs& Attrib
     // (e.g. WebGPU) rather than silently degrading to a factor-only path. Supported by default on D3D12/Vulkan.
     Attribs.EngineCI.Features.BindlessResources = DEVICE_FEATURE_STATE_ENABLED;
 
+#if RTXPT_HAS_RAY_RECONSTRUCTION && VULKAN_SUPPORTED
+    if (Attribs.DeviceType == RENDER_DEVICE_TYPE_VULKAN)
+        static_cast<EngineVkCreateInfo&>(Attribs.EngineCI).EnableRayReconstruction = m_EnableVulkanRayReconstruction;
+#endif
+
 #ifdef DILIGENT_DEBUG
     Attribs.EngineCI.EnableValidation = true;
     Attribs.EngineCI.SetValidationLevel(VALIDATION_LEVEL_2);
 #endif
+}
+
+RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const char* const* argv)
+{
+    CommandLineParser Args{argc, argv};
+    Args.Parse("realtime", m_RealtimeUI.RealtimeMode);
+    Args.Parse("scene", m_InitialSceneName);
+    Args.Parse("nrd", m_RealtimeUI.StandaloneDenoiser);
+    Args.Parse("rr_validation", m_ValidateRayReconstruction);
+    Args.Parse("vk_rr", m_EnableVulkanRayReconstruction);
+    Args.ParseEnum<RTXPTRealtimeAAMode>("aa", 0,
+                                        {{"off", RTXPTRealtimeAAMode::Disabled}, {"taa", RTXPTRealtimeAAMode::TAA}, {"sr", RTXPTRealtimeAAMode::SuperResolution}, {"rr", RTXPTRealtimeAAMode::DLSSRR}}, m_RealtimeUI.RealtimeAA);
+    Args.ParseEnum<RAY_RECONSTRUCTION_QUALITY>("rr_quality", 0,
+                                               {{"native", RAY_RECONSTRUCTION_QUALITY_NATIVE}, {"quality", RAY_RECONSTRUCTION_QUALITY_QUALITY}, {"balanced", RAY_RECONSTRUCTION_QUALITY_BALANCED}, {"performance", RAY_RECONSTRUCTION_QUALITY_PERFORMANCE}, {"ultra_performance", RAY_RECONSTRUCTION_QUALITY_ULTRA_PERFORMANCE}}, m_RayReconstructionSettings.Quality);
+    Args.ParseEnum<RAY_RECONSTRUCTION_DLSS_PRESET>("rr_preset", 0,
+                                                   {{"F", RAY_RECONSTRUCTION_DLSS_PRESET_F}, {"E", RAY_RECONSTRUCTION_DLSS_PRESET_E}}, m_RayReconstructionSettings.Preset);
+    return CommandLineStatus::OK;
 }
 
 void RTXPTSample::CreateFrameResources()
@@ -908,6 +940,9 @@ bool RTXPTSample::ApplySceneCamera(Uint32 CameraIndex)
 
 RTXPTSample::~RTXPTSample()
 {
+    const auto& RRStats = m_PostProcessPipeline.GetRayReconstructionPass().GetStats();
+    LOG_INFO_MESSAGE("DLSS-RR totals: created=", RRStats.CreateCount, ", executed=", RRStats.ExecuteCount, ", resets=", RRStats.ResetCount);
+    m_PostProcessPipeline.GetRayReconstructionPass().Reset();
     if (!m_pStateCache)
         return;
 
@@ -976,6 +1011,8 @@ void RTXPTSample::Initialize(const SampleInitInfo& InitInfo)
         InitialScene = *PreferredIt;
     else if (!m_AvailableScenes.empty())
         InitialScene = m_AvailableScenes.front();
+    if (!m_InitialSceneName.empty())
+        InitialScene = m_InitialSceneName;
 
     if (!InitialScene.empty())
     {
@@ -1004,7 +1041,18 @@ void RTXPTSample::UpdateRenderTargetDimensions(float TimeDeltaSeconds)
                                                               Formats.ProcessedOutputColor,
                                                               false,
                                                               TimeDeltaSeconds);
-    m_CurrentTargetDimensions = m_CurrentSuperResolutionFrame.Dimensions;
+    m_CurrentTargetDimensions     = m_CurrentSuperResolutionFrame.Dimensions;
+    auto& RR                      = m_PostProcessPipeline.GetRayReconstructionPass();
+    m_RayReconstructionFrameReady = false;
+    if (m_RealtimeUI.RealtimeMode && m_RealtimeUI.RealtimeAA == RTXPTRealtimeAAMode::DLSSRR)
+    {
+        m_RayReconstructionFrameReady = RR.PrepareFrame(m_pImmediateContext, m_RayReconstructionSettings,
+                                                        SCDesc.Width, SCDesc.Height, m_FrameIndex);
+        if (m_RayReconstructionFrameReady)
+            m_CurrentTargetDimensions = RTXPTRayReconstructionInputs::MakeRenderTargetCreateInfo(RR.GetDesc()).Dimensions;
+    }
+    else
+        RR.Deactivate();
 }
 
 void RTXPTSample::UpdateFrameConstants(double CurrTime)
@@ -1037,6 +1085,8 @@ void RTXPTSample::UpdateFrameConstants(double CurrTime)
         CameraJitter = m_CurrentSuperResolutionFrame.Jitter;
     }
     m_CurrentRealtimeCameraJitter = CameraJitter;
+    if (RealtimeMode && m_RealtimeUI.RealtimeAA == RTXPTRealtimeAAMode::DLSSRR && m_RayReconstructionFrameReady)
+        CameraJitter = m_CurrentRealtimeCameraJitter = m_PostProcessPipeline.GetRayReconstructionPass().GetJitter();
 
     const float3   CameraPosition = m_Camera.GetPos();
     const float4x4 CameraView     = m_Camera.GetViewMatrix();
@@ -1117,8 +1167,7 @@ void RTXPTSample::UpdateFrameConstants(double CurrTime)
             m_ReferenceUI.ReferenceFireflyFilterThreshold :
             DisabledFireflyThreshold;
     }
-    PtConsts.denoisingEnabled = (m_RealtimeUI.ActualUseStandaloneDenoiser() ||
-                                 m_RealtimeUI.RealtimeAA == RTXPTRealtimeAAMode::DLSSRR) ?
+    PtConsts.denoisingEnabled = RealtimeMode && (m_RealtimeUI.ActualUseStandaloneDenoiser() || m_RealtimeUI.RealtimeAA == RTXPTRealtimeAAMode::DLSSRR) ?
         1u :
         0u;
 
@@ -1333,10 +1382,17 @@ bool RTXPTSample::EnsureRenderTargets()
     const bool                        WasAccumulationActive = m_AccumulationActive;
     const bool                        WasRealtimeRequested  = m_RenderTargets.AreRealtimeRenderTargetsRequested();
     const bool                        WasRealtimeAllocated  = m_RenderTargets.HasRealtimeRenderTargets();
+    const bool                        WasRR                 = m_RenderTargets.HasRayReconstructionRenderTargets();
 
     SanitizeRealtimeSettings(m_RealtimeUI);
     const RTXPTRenderTargetCreateInfo CreateInfo =
         MakeRenderTargetCreateInfo(m_CurrentTargetDimensions, m_RealtimeUI, m_FeatureCaps.RayTracing);
+    if (WasRR && (!(OldDimensions == CreateInfo.Dimensions) || !CreateInfo.CreateRayReconstructionResources))
+    {
+        m_pImmediateContext->SetRenderTargets(0, nullptr, nullptr, RESOURCE_STATE_TRANSITION_MODE_NONE);
+        m_pImmediateContext->Flush();
+        m_pImmediateContext->WaitForIdle();
+    }
     const bool Ok             = m_RenderTargets.Resize(m_pDevice, CreateInfo);
     const bool ResourcesValid = m_PostProcessPipeline.ValidateRenderTargets(m_RenderTargets);
 
@@ -1349,6 +1405,7 @@ bool RTXPTSample::EnsureRenderTargets()
          !(OldDimensions == m_CurrentTargetDimensions) ||
          WasAccumulationActive != m_AccumulationActive ||
          WasRealtimeRequested != m_RenderTargets.AreRealtimeRenderTargetsRequested() ||
+         WasRR != m_RenderTargets.HasRayReconstructionRenderTargets() ||
          WasRealtimeAllocated != m_RenderTargets.HasRealtimeRenderTargets()))
     {
         RequestAccumulationReset("Render targets (re)created");
@@ -1679,8 +1736,20 @@ bool RTXPTSample::PresentRealtimeFinalOutput()
 
         case RTXPTRealtimeAAMode::DLSSRR:
         {
-            RecordRealtimePathTraceStatus("DLSS-RR is unavailable in this phase; TODO(RTXPT-Realtime-DLSS-RR).");
-            return false;
+            auto&      RR           = m_PostProcessPipeline.GetRayReconstructionPass();
+            const bool ResetHistory = ResetTaaSrHistory ||
+                HasRealtimeResetFlag(m_CurrentFrameRealtimeReset, RTXPT_REALTIME_RESET_REALTIME_CACHES) ||
+                HasRealtimeResetFlag(m_RealtimeResetPending, RTXPT_REALTIME_RESET_TAA_SR_HISTORY);
+            if (!m_RayReconstructionFrameReady ||
+                !m_PostProcessPipeline.RunRayReconstruction(m_pImmediateContext, m_RenderTargets, m_LastFrameConstants, ResetHistory))
+            {
+                RecordRealtimePathTraceStatus(RR.GetStats().Message.c_str());
+                RR.InvalidateHistory();
+                return false;
+            }
+            m_LastRealtimeFinalMergeReady = true;
+            RecordRealtimePathTraceStatus("DLSS-RR executed");
+            break;
         }
 
         default:
@@ -1836,6 +1905,8 @@ bool RTXPTSample::Denoise()
 
 bool RTXPTSample::RunRealtimePostProcess()
 {
+    if (m_RealtimeUI.RealtimeAA == RTXPTRealtimeAAMode::DLSSRR)
+        return PresentRealtimeFinalOutput();
     if (ShouldRunStandaloneNrd(m_RealtimeUI))
     {
         if (!Denoise())
@@ -1861,12 +1932,16 @@ bool RTXPTSample::RunRealtimePathTraceOnly()
     const bool PathTraceOk = PathTrace();
     if (!PathTraceOk)
     {
+        m_PostProcessPipeline.GetRayReconstructionPass().InvalidateHistory();
         ClearFallback(float4{0.9f, 0.15f, 0.05f, 1.0f});
         return false;
     }
 
     if (PresentRealtimeGuideDebug())
+    {
+        m_PostProcessPipeline.GetRayReconstructionPass().InvalidateHistory();
         return true;
+    }
 
     if (!RunRealtimePostProcess())
     {
@@ -1879,6 +1954,7 @@ bool RTXPTSample::RunRealtimePathTraceOnly()
 
 void RTXPTSample::Render()
 {
+    m_LastFrameSucceeded = false;
     if (m_RealtimeUI.RealtimeMode)
     {
         m_LastRealtimePathTraceExecuted = false;
@@ -1900,15 +1976,22 @@ void RTXPTSample::Render()
 
     if (m_RealtimeUI.RealtimeMode)
     {
-        RunRealtimePathTraceOnly();
+        if (m_RealtimeUI.RealtimeAA == RTXPTRealtimeAAMode::DLSSRR && !m_RayReconstructionFrameReady)
+        {
+            RecordRealtimePathTraceStatus(m_PostProcessPipeline.GetRayReconstructionPass().GetStats().Message.c_str());
+            ClearFallback(float4{0.08f, 0.08f, 0.10f, 1.0f});
+            return;
+        }
+        m_LastFrameSucceeded = RunRealtimePathTraceOnly();
         return;
     }
 
-    RunReferencePathTraceAndPostProcess();
+    m_LastFrameSucceeded = RunReferencePathTraceAndPostProcess();
 }
 
 void RTXPTSample::Update(double CurrTime, double ElapsedTime, bool DoUpdateUI)
 {
+    RunRayReconstructionValidation(CurrTime);
     SampleBase::Update(CurrTime, ElapsedTime, DoUpdateUI);
 
     m_Camera.Update(m_InputController, static_cast<float>(ElapsedTime));
@@ -1916,7 +1999,7 @@ void RTXPTSample::Update(double CurrTime, double ElapsedTime, bool DoUpdateUI)
         (m_Camera.GetViewMatrix() != m_LastCameraView ||
          m_Camera.GetProjMatrix() != m_LastCameraProj))
     {
-        RequestAccumulationReset("Camera changed");
+        RequestAccumulationReset("Camera changed", false);
     }
     m_LastCameraView        = m_Camera.GetViewMatrix();
     m_LastCameraProj        = m_Camera.GetProjMatrix();
@@ -1939,7 +2022,7 @@ void RTXPTSample::Update(double CurrTime, double ElapsedTime, bool DoUpdateUI)
                 // The emissive-triangle buffer was rebuilt in place; re-run the per-triangle power proxy build
                 // on the next LightsBaker UpdateEnd so the sampling weights track the deformed emitters.
                 m_LightsBaker.RequestProxyRebuild();
-                RequestAccumulationReset("Skinned geometry updated");
+                RequestAccumulationReset("Skinned geometry updated", false);
                 m_Scene.ClearGeometryDirty();
             }
         }
@@ -1966,6 +2049,7 @@ void RTXPTSample::Update(double CurrTime, double ElapsedTime, bool DoUpdateUI)
 
     m_LastElapsedTimeSeconds = static_cast<float>(ElapsedTime);
     UpdateRenderTargetDimensions(m_LastElapsedTimeSeconds);
+    EnsureRenderTargets();
     UpdateFrameConstants(CurrTime);
 }
 
@@ -1979,10 +2063,7 @@ void RTXPTSample::WindowResize(Uint32 Width, Uint32 Height)
     m_HasLastCameraMatrices = false;
     InvalidatePreviousFrameConstants();
 
-    SanitizeRealtimeSettings(m_RealtimeUI);
-    const RTXPTRenderTargetCreateInfo CreateInfo =
-        MakeRenderTargetCreateInfo(m_CurrentTargetDimensions, m_RealtimeUI, m_FeatureCaps.RayTracing);
-    const bool Ok = m_RenderTargets.Resize(m_pDevice, CreateInfo);
+    const bool Ok = EnsureRenderTargets();
     ResetNrdIntegrations();
     const bool ResourcesValid = m_PostProcessPipeline.ValidateRenderTargets(m_RenderTargets);
     m_AccumulationActive =
@@ -2200,7 +2281,7 @@ void RTXPTSample::UpdateUI()
                             Item == static_cast<int>(RTXPTRealtimeAAMode::Disabled) ||
                             (Item == static_cast<int>(RTXPTRealtimeAAMode::TAA) && TaaAvailable) ||
                             (Item == static_cast<int>(RTXPTRealtimeAAMode::SuperResolution) && SrAvailable) ||
-                            (Item == static_cast<int>(RTXPTRealtimeAAMode::DLSSRR) && kRTXPTDlssRrAvailable);
+                            (Item == static_cast<int>(RTXPTRealtimeAAMode::DLSSRR) && m_PostProcessPipeline.GetRayReconstructionPass().GetStats().Available);
 
                         ImGui::BeginDisabled(!Enabled);
                         const bool Selected = AAMode == Item;
@@ -2242,13 +2323,41 @@ void RTXPTSample::UpdateUI()
                                 ImGui::SetTooltip("%s", SRDisabledReason);
                             }
                             else if (Item == static_cast<int>(RTXPTRealtimeAAMode::DLSSRR))
-                                ImGui::SetTooltip("DLSS-RR is reserved by TODO(RTXPT-Realtime-DLSS-RR).");
+                                ImGui::SetTooltip("%s", m_PostProcessPipeline.GetRayReconstructionPass().GetStats().Message.c_str());
                         }
                     }
                     ImGui::EndCombo();
                 }
                 if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                    ImGui::SetTooltip("TAA and Super Resolution execute in G10. DLSS-RR is reserved by TODO(RTXPT-Realtime-DLSS-RR).");
+                    ImGui::SetTooltip("DLSS-RR reconstructs noisy radiance and replaces standalone denoising and temporal upscaling.");
+
+                if (m_RealtimeUI.RealtimeAA == RTXPTRealtimeAAMode::DLSSRR)
+                {
+                    int         Quality     = static_cast<int>(m_RayReconstructionSettings.Quality);
+                    const char* Qualities[] = {"Native", "Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance"};
+                    if (ImGui::Combo("RR Quality", &Quality, Qualities, _countof(Qualities)))
+                    {
+                        m_RayReconstructionSettings.Quality = static_cast<RAY_RECONSTRUCTION_QUALITY>(Quality);
+                        ResetTaaSrOnChange(true, "RR quality changed");
+                    }
+                    int Preset = m_RayReconstructionSettings.Preset == RAY_RECONSTRUCTION_DLSS_PRESET_E ? 1 : 0;
+                    if (ImGui::Combo("RR Preset", &Preset, "F (default)\0E\0"))
+                    {
+                        m_RayReconstructionSettings.Preset = Preset == 1 ? RAY_RECONSTRUCTION_DLSS_PRESET_E : RAY_RECONSTRUCTION_DLSS_PRESET_F;
+                        ResetTaaSrOnChange(true, "RR preset changed");
+                    }
+                    if (m_pDevice->GetDeviceInfo().IsVulkanDevice())
+                        ImGui::TextWrapped("Vulkan preset F has a known SDK validation failure. Preset E executes, but RTXPT Vulkan image quality is not yet validated.");
+                    ResetRealtimeOnChange(ImGui::SliderFloat("RR Micro Jitter", &m_RealtimeUI.DLSSRRMicroJitter, 0.0f, 1.0f), "RR micro jitter changed");
+                    ResetRealtimeOnChange(ImGui::InputFloat("RR Brightness Clamp", &m_RealtimeUI.DLSSRRBrightnessClampK), "RR brightness clamp changed");
+                }
+                const auto& RRStats = m_PostProcessPipeline.GetRayReconstructionPass().GetStats();
+                ImGui::TextWrapped("%s", RRStats.Message.c_str());
+                if (ImGui::Button("Retry DLSS-RR detection"))
+                {
+                    m_PostProcessPipeline.GetRayReconstructionPass().Initialize(m_pDevice);
+                    ResetTaaSrOnChange(true, "RR retry");
+                }
 
                 if (m_RealtimeUI.RealtimeAA == RTXPTRealtimeAAMode::SuperResolution &&
                     m_PostProcessPipeline.GetSuperResolutionPass().HasTemporalVariant())
@@ -2323,7 +2432,7 @@ void RTXPTSample::UpdateUI()
                 ImGui::EndDisabled();
                 if (DenoiserDisabled)
                     DrawDisabledTooltip(m_RealtimeUI.RealtimeAA == RTXPTRealtimeAAMode::DLSSRR ?
-                                            "Standalone NRD is disabled for DLSS-RR; TODO(RTXPT-Realtime-DLSS-RR)." :
+                                            "Standalone NRD is disabled for DLSS-RR." :
                                             GetStandaloneNrdDisabledReason());
 
                 const char* GuideDebugItems[] = {
@@ -2983,13 +3092,13 @@ void RTXPTSample::UpdateUI()
     ImGui::End();
 }
 
-void RTXPTSample::RequestAccumulationReset(const char* /*Reason*/)
+void RTXPTSample::RequestAccumulationReset(const char* /*Reason*/, bool ResetTemporalHistory)
 {
     m_AccumulationFrame        = 0;
     m_ResetAccumulationPending = true;
     m_LightsBaker.RequestFeedbackReset();
 
-    if (!m_RealtimeUI.RealtimeMode)
+    if (!m_RealtimeUI.RealtimeMode || ResetTemporalHistory)
     {
         m_RealtimeResetPending |= RTXPT_REALTIME_RESET_REALTIME_CACHES |
             RTXPT_REALTIME_RESET_NRD_HISTORY |
@@ -3032,5 +3141,7 @@ void RTXPTSample::InvalidatePreviousFrameConstants()
 {
     m_HasPreviousFrameConstants = false;
 }
+
+#include "../tests/RRSceneValidation.hpp"
 
 } // namespace Diligent

@@ -8,10 +8,10 @@ cbuffer cbSkinningConstants
     uint g_VertexCount;
 };
 
-StructuredBuffer<GeometryVertexData>   t_SourceVertices;
+StructuredBuffer<PackedGeometryVertexData> t_SourceVertices;
 StructuredBuffer<SkinVertexData>       t_SourceSkinData;
 StructuredBuffer<float4x4>             t_JointMatrices;
-RWStructuredBuffer<GeometryVertexData> u_SkinnedVertices;
+RWStructuredBuffer<PackedGeometryVertexData> u_SkinnedVertices;
 
 [numthreads(128, 1, 1)]
 void main(uint3 dispatchThreadId : SV_DispatchThreadID)
@@ -21,7 +21,7 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
         return;
 
     const uint               sourceIndex = g_SourceVertexBase + localVertex;
-    const GeometryVertexData src         = t_SourceVertices[sourceIndex];
+    const GeometryVertexData src         = UnpackGeometryVertex(t_SourceVertices[sourceIndex]);
     const SkinVertexData     skin        = t_SourceSkinData[sourceIndex];
 
     float4 skinnedPosition = float4(0.0, 0.0, 0.0, 0.0);
@@ -46,5 +46,5 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
     dst.normal            = normalLen > 1e-6 ? skinnedNormal / normalLen : src.normal;
     dst.texCoord0         = src.texCoord0;
 
-    u_SkinnedVertices[g_DestVertexBase + localVertex] = dst;
+    u_SkinnedVertices[g_DestVertexBase + localVertex] = PackGeometryVertex(dst);
 }

@@ -81,6 +81,106 @@ The one-pixel wrapper fixtures upload eight-byte texels before four-byte texels
 to keep Vulkan upload-buffer offsets aligned. They do not test arbitrary mixed
 format upload ordering in Core.
 
-Actual NGX evaluation, interactive window resize, history behavior, full BUILD/FILL
-scene integration and final RR image quality remain #20 validation. These tests
-validate the resource/parameter boundary and cannot replace those checks.
+These resource tests do not replace the real-scene validation below.
+
+`GeometryVertexLayoutTest.hpp` also runs the production skinning shader on two
+distinct CPU vertices with the default 32-byte position/normal/UV layout. GPU
+readback checks every component after a known joint translation. The old Vulkan
+shader fails this test; the packed storage layout passes on both backends. This
+covers vertex array stride as well as member offsets, without testing generated
+SPIR-V text.
+
+## Real-scene execution (#20 / #21)
+
+Build `RTXPT` with RR enabled (the Core default). The target deploys the shared
+NGX runtime and `nvngx_dlssd.dll` alongside SR's existing runtime. To exercise the
+shared RR loader, configure `RTXPT_RAY_RECONSTRUCTION_SHARED=ON`. To check the
+unavailable build, configure `DILIGENT_NO_RAY_RECONSTRUCTION=ON` and rebuild.
+
+Run from the sample directory or its deployed runtime directory, for example:
+
+```bat
+RTXPT.exe --mode d3d12 --width 640 --height 360 --realtime true --aa rr --rr_quality quality --rr_preset F
+RTXPT.exe --mode vk --width 640 --height 360 --realtime true --aa rr --rr_quality native --rr_preset E
+```
+
+`--scene convergence-test.scene.json` selects the reflection/transmission test
+scene explicitly. `--aa off|taa|sr|rr`, `--realtime true|false` and `--nrd true|false`
+provide reproducible baseline runs. Vulkan requests RR extensions before device
+creation; `--vk_rr false` launches without that request and must leave RR
+unavailable. F is the default on both backends: selecting Vulkan E is explicit.
+The known Vulkan F SDK layout failure is not a passing configuration.
+
+`--rr_validation true` opts into `RRSceneValidation.hpp`, which drives the real
+sample for eleven 32-frame stages: Quality, smooth camera motion, explicit history
+reset, Native, native-window resize to 768x432, reference accumulation, TAA,
+ordinary SR, standalone NRD, return to Quality RR, and a lighting/preset change.
+D3D12 starts at F and explicitly changes to E in the final stage. Vulkan should
+be launched with E; its existing NRD RGB10A2 UAV limitation means the three
+NRD/TAA/SR stages are reported as skipped and remain reference-mode stages.
+Automatic window resize is implemented for Windows; other platforms require a
+manual resize check. Windows resizing goes through the actual window's WM_SIZE
+path, preserving the framework's window/ImGui/swap-chain dimension contract.
+
+The sequence reports failed production frames, RR create/execute/reset counts,
+and stage wall time per frame (including stage setup/compilation). It keeps the
+window running afterwards for inspection; close normally to exercise shutdown.
+Inspect graphics validation logs as well as the sequence counters. For captures,
+use SampleBase's `--capture_path`, `--capture_name`, `--capture_frames`,
+`--capture_fps` and `--capture_format png` options. Capture comparison must still
+assess temporal artifacts and exposure; successful API returns alone do not
+establish image-quality equivalence.
+
+### Integration validation record (2026-09-13/14, RTX 5060)
+
+- Debug RR enabled, Debug RR disabled, and Release builds succeeded. The disabled
+  build rendered the D3D12 reference scene. Static and shared factory evaluation
+  with queued barriers is covered by the Core regression.
+- D3D12 F ran 14,983 consecutive real-scene RR evaluations with one history reset.
+  The final 352-frame mode sequence reported zero failed frames, 224 RR
+  evaluations, five objects and six history resets, including TAA/SR/NRD round trips.
+- Vulkan E completed the final sequence with zero failed frames, 224 RR evaluations,
+  four objects and six resets. NRD/TAA/SR stages were explicitly skipped for the
+  existing RGB10A2 UAV limitation. No SDK F layout errors are suppressed; Vulkan F
+  remains an unpassed configuration.
+- A new queued-barrier test reproduced `0xc0000005` before the Core Vulkan
+  provider fix. After the fix, all five Core RR tests passed on Vulkan E.
+- Removing the deployed `nvngx_dlssd.dll` made RR unavailable without crashing;
+  D3D12 NRD+TAA continued to render. The DLL was restored after the test.
+- D3D12 captures show substantial RR noise reduction and some small-highlight
+  smoothing. Mean 8-bit RGB intensity stabilized at about 163 for RR F and 161
+  for NRD+TAA, versus 139 for reference accumulation. These are rendered-image
+  observations, not a linear-radiance equivalence metric or an image-quality pass.
+- Final Debug sequence wall times were 14.4 ms/frame during D3D12 camera
+  motion and 16.8 ms/frame after returning to Quality RR; Vulkan E measured 17.3
+  and 22.8 ms/frame respectively. These include capture, whole-frame work and stage setup,
+  and are not isolated RR GPU timings. Resize/first-use shader compilation costs
+  are included in their respective stage logs and should not be compared as steady
+  rendering performance.
+
+The initial Vulkan black triangles were traced to a separate vertex-buffer ABI
+bug before NGX: the original no-denoiser merge and prepared noisy radiance both
+already contained the artifacts. CPU offsets 0/12/24 and stride 32 did not match
+DXC SPIR-V offsets 0/16/32 and stride 48. `PackedGeometryVertexData` now fixes the
+storage layout to two float4 values, shared by hit, emissive and skinning shaders.
+The old shader failed GPU readback; the fixed shader passes on both backends, and
+Vulkan Native E / Quality E captures no longer show those black triangles.
+
+**Remaining validation blocker:** directly starting Vulkan reference rendering in
+the room still triggers `VK_ERROR_DEVICE_LOST` while capturing output, including
+a post-layout-fix run with `--realtime false --aa off --vk_rr false`.
+An isolated baseline built from
+the #19 `c1124d68` Sample and post-process scheduler (with only reference mode
+selected at startup) reproduces the same failure. Its first errors occur in
+`FenceVkImpl::Wait`, followed by invalid-fence/command-buffer reports after device
+loss. The underlying startup/reference failure is not diagnosed by those
+follow-on errors. In contrast, the final RR -> reference -> RR sequence succeeds
+with the camera kept inside the room. Full Vulkan image-quality comparison from
+an independently started reference capture therefore remains open.
+Per the execution-scope decision on 2026-09-14, this pre-existing failure is
+tracked separately and remains an unpassed #20 acceptance item for this delivery.
+
+The initial resize test changed only the swap chain and triggered an ImGui/window
+size assertion. The harness now resizes the actual Win32 window; reruns above use
+that corrected path. Final sequences also use the reduced 0.0025-unit camera step
+to keep the camera inside the room rather than crossing a wall.

@@ -28,6 +28,7 @@ set(SOURCE
     src/RTXPTAccumulationPass.cpp
     src/RTXPTBloomPass.cpp
     src/RTXPTSuperResolutionPass.cpp
+    src/RTXPTRayReconstructionPass.cpp
     src/RTXPTTemporalAAPass.cpp
     src/RTXPTToneMappingPass.cpp
     src/RTXPTBlitPass.cpp
@@ -62,10 +63,13 @@ set(INCLUDE
     src/RTXPTAccumulationPass.hpp
     src/RTXPTBloomPass.hpp
     src/RTXPTSuperResolutionPass.hpp
+    src/RTXPTRayReconstructionPass.hpp
+    src/RTXPTRayReconstructionInputs.hpp
     src/RTXPTTemporalAAPass.hpp
     src/RTXPTToneMappingPass.hpp
     src/RTXPTBlitPass.hpp
     RTXPT_FORK_MAPPING.md
+    tests/RRSceneValidation.hpp
 )
 
 set(SHADERS
@@ -75,6 +79,7 @@ set(SHADERS
     shaders/PathTracer/PathTracerHelpers.hlsli
     shaders/PathTracer/PathTracerShared.h
     shaders/PathTracer/PathTracerBridge.hlsli
+    shaders/PathTracer/PathTracerCamera.hlsli
     shaders/PathTracer/PathPayload.hlsli
     shaders/PathTracer/PathState.hlsli
     shaders/PathTracer/PathTracerTypes.hlsli
@@ -421,4 +426,23 @@ endif()
 
 if (DILIGENT_DLSS_SUPPORTED)
     copy_dlss_dlls(RTXPT)
+endif()
+
+# Share Core's NGX runtime and pinned DLSS SDK with the SR module.
+option(RTXPT_RAY_RECONSTRUCTION_SHARED "Use the shared ray reconstruction module" OFF)
+if(RAY_RECONSTRUCTION_SUPPORTED)
+    target_compile_definitions(RTXPT PRIVATE RTXPT_HAS_RAY_RECONSTRUCTION=1)
+    if(RTXPT_RAY_RECONSTRUCTION_SHARED)
+        target_link_libraries(RTXPT PRIVATE Diligent-RayReconstruction-shared)
+        add_custom_command(TARGET RTXPT POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:Diligent-RayReconstruction-shared>" "$<TARGET_FILE_DIR:RTXPT>"
+            VERBATIM)
+    else()
+        target_link_libraries(RTXPT PRIVATE Diligent-RayReconstruction-static)
+    endif()
+    copy_diligent_ngx_runtime(RTXPT)
+    copy_dlssd_dlls(RTXPT)
+else()
+    target_compile_definitions(RTXPT PRIVATE RTXPT_HAS_RAY_RECONSTRUCTION=0)
 endif()

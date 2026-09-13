@@ -318,15 +318,39 @@ struct EmissiveTriangle
     float4 radiance; // rgb: emitted radiance (.w unused)
 };
 
-// Per-vertex layout for vertex buffer 0 of the default Diligent GLTF model
-// (POSITION + NORMAL + TEXCOORD_0). Total size = 32 bytes; must equal the
-// vertex stride captured by RTXPTScene::GetVertexStride0().
+// Unpacked geometry used by shading. Do not use this type in structured buffers:
+// Vulkan aligns the second float3 to 16 bytes and gives the element a 48-byte stride.
 struct GeometryVertexData
 {
     float3 position;
     float3 normal;
     float2 texCoord0;
 };
+
+// Default GLTF buffer 0: POSITION + NORMAL + TEXCOORD_0, at offsets 0/12/24.
+// Two float4 values preserve the 32-byte CPU layout on both D3D12 and Vulkan.
+struct PackedGeometryVertexData
+{
+    float4 positionAndNormalX;
+    float4 normalYZAndTexCoord0;
+};
+
+inline GeometryVertexData UnpackGeometryVertex(PackedGeometryVertexData packed)
+{
+    GeometryVertexData vertex;
+    vertex.position  = packed.positionAndNormalX.xyz;
+    vertex.normal    = float3(packed.positionAndNormalX.w, packed.normalYZAndTexCoord0.xy);
+    vertex.texCoord0 = packed.normalYZAndTexCoord0.zw;
+    return vertex;
+}
+
+inline PackedGeometryVertexData PackGeometryVertex(GeometryVertexData vertex)
+{
+    PackedGeometryVertexData packed;
+    packed.positionAndNormalX   = float4(vertex.position, vertex.normal.x);
+    packed.normalYZAndTexCoord0 = float4(vertex.normal.yz, vertex.texCoord0);
+    return packed;
+}
 
 // Mirrors the default GLTF skin stream in vertex buffer 1: JOINTS_0 followed by WEIGHTS_0.
 struct SkinVertexData

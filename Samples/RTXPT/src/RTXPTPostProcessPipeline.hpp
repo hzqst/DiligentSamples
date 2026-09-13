@@ -38,6 +38,7 @@
 #include "RTXPTPostProcessPass.hpp"
 #include "RTXPTRenderTargets.hpp"
 #include "RTXPTSuperResolutionPass.hpp"
+#include "RTXPTRayReconstructionPass.hpp"
 #include "RTXPTTemporalAAPass.hpp"
 #include "RTXPTToneMappingPass.hpp"
 #include "SwapChain.h"
@@ -115,6 +116,9 @@ public:
 
     float2 GetRealtimeTAAPixelJitter(Uint32 FrameIndex) const;
 
+    bool                        RunRayReconstruction(IDeviceContext* pContext, const RTXPTRenderTargets& RenderTargets, const SampleConstants& FrameConstants, bool ResetHistory);
+    RTXPTRayReconstructionPass& GetRayReconstructionPass() { return m_RayReconstructionPass; }
+
     bool CopyRealtimeOutputToProcessed(IDeviceContext*           pContext,
                                        const RTXPTRenderTargets& RenderTargets);
 
@@ -156,6 +160,7 @@ private:
     RTXPTAccumulationPass          m_AccumulationPass;
     RTXPTPostProcessPass           m_PostProcessPass;
     RTXPTSuperResolutionPass       m_SuperResolutionPass;
+    RTXPTRayReconstructionPass     m_RayReconstructionPass;
     RTXPTTemporalAAPass            m_TemporalAAPass;
     RTXPTBloomPass                 m_BloomPass;
     RTXPTToneMappingPass           m_ToneMappingPass;

@@ -53,6 +53,7 @@ void RTXPTPostProcessPipeline::Reset()
     m_AccumulationPass.Reset();
     m_PostProcessPass.Reset();
     m_SuperResolutionPass.Reset();
+    m_RayReconstructionPass.Reset();
     m_TemporalAAPass.Reset();
     m_BloomPass.Reset();
     m_ToneMappingPass.Reset();
@@ -82,6 +83,7 @@ bool RTXPTPostProcessPipeline::Initialize(IRenderDevice*     pDevice,
     }
 
     m_Device = pDevice;
+    m_RayReconstructionPass.Initialize(pDevice);
 
     PostFXContext::CreateInfo RealtimeCopyCI;
     RealtimeCopyCI.EnableAsyncCreation = false;
@@ -291,6 +293,19 @@ bool RTXPTPostProcessPipeline::RunSuperResolution(IDeviceContext*               
 float2 RTXPTPostProcessPipeline::GetRealtimeTAAPixelJitter(Uint32 FrameIndex) const
 {
     return RTXPTTemporalAAPass::ComputePixelJitter(FrameIndex);
+}
+
+bool RTXPTPostProcessPipeline::RunRayReconstruction(IDeviceContext* pContext, const RTXPTRenderTargets& RenderTargets, const SampleConstants& FrameConstants, bool ResetHistory)
+{
+    m_Stats.LastRealtimeCopyExecuted  = false;
+    m_Stats.LastTemporalAAActive      = false;
+    m_Stats.LastSuperResolutionActive = false;
+    if (!m_PostProcessPass.RunDLSSRRDenoiserPrepareInputs(pContext, RenderTargets))
+    {
+        m_RayReconstructionPass.NotifyInputPreparationFailed();
+        return false;
+    }
+    return m_RayReconstructionPass.Execute(pContext, RenderTargets, FrameConstants, ResetHistory);
 }
 
 bool RTXPTPostProcessPipeline::CopyRealtimeOutputToProcessed(IDeviceContext*           pContext,

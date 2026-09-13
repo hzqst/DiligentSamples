@@ -26,8 +26,8 @@ Texture2D<float4>                      t_EnvironmentRadianceMap;
 SamplerState                           s_EnvironmentMapSampler;
 SamplerState                           s_EnvironmentImportanceSampler;
 StructuredBuffer<EmissiveTriangle>     t_EmissiveTriangles;
-StructuredBuffer<GeometryVertexData>   t_VertexBuffer;
-StructuredBuffer<GeometryVertexData>   t_SkinnedVertexBuffer;
+StructuredBuffer<PackedGeometryVertexData> t_VertexBuffer;
+StructuredBuffer<PackedGeometryVertexData> t_SkinnedVertexBuffer;
 Buffer<uint>                           t_IndexBuffer;
 
 VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4>       u_OutputColor;
@@ -93,9 +93,9 @@ namespace Bridge
     GeometryVertexData getGeometryVertex(SubInstanceData subInstance, uint vertexIndex)
     {
         if ((subInstance.Flags & kSubInstanceFlagSkinned) != 0u)
-            return t_SkinnedVertexBuffer[subInstance.VertexOffset + vertexIndex];
+            return UnpackGeometryVertex(t_SkinnedVertexBuffer[subInstance.VertexOffset + vertexIndex]);
 
-        return t_VertexBuffer[subInstance.VertexOffset + vertexIndex];
+        return UnpackGeometryVertex(t_VertexBuffer[subInstance.VertexOffset + vertexIndex]);
     }
 
     // Fetch the 3 vertex records for the current closest-hit triangle.

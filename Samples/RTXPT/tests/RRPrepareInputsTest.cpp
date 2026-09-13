@@ -5,6 +5,7 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <cstring>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -64,6 +65,7 @@ Plane Surface(float Roughness, float Radiance)
 } // namespace
 
 #include "RRResourceContractTest.hpp"
+#include "GeometryVertexLayoutTest.hpp"
 
 int main(int Argc, char** Argv)
 try
@@ -99,6 +101,7 @@ try
 
     RefCntAutoPtr<IShaderSourceInputStreamFactory> Source;
     Factory->CreateDefaultShaderSourceStreamFactory(Argv[2], &Source);
+    CheckGeometryVertexLayout(Device, Context, Source);
     ShaderMacro      Macros[] = {{"RTXPT_POST_PROCESS_MODE", "9"}, {"RTXPT_HAS_NRD_HEADERS", "0"}};
     ShaderCreateInfo ShaderCI;
     ShaderCI.Desc                       = {"RR input regression", SHADER_TYPE_COMPUTE, false};
