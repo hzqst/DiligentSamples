@@ -3,12 +3,14 @@
 // Standalone GPU regression test. See README.md for build/run instructions.
 #include <Windows.h>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
 
 #include "../../../../DiligentCore/Graphics/GraphicsEngineD3D12/interface/EngineFactoryD3D12.h"
+#include "../../../../DiligentCore/Graphics/GraphicsEngineVulkan/interface/EngineFactoryVk.h"
 #include "../../../../DiligentCore/Common/interface/RefCntAutoPtr.hpp"
 #include "../../../../DiligentCore/Common/interface/Float16.hpp"
 #include "../src/RTXPTFrameConstants.hpp"
@@ -18,6 +20,16 @@ using namespace Diligent;
 
 namespace
 {
+std::atomic<Uint32> ValidationErrors{0};
+
+void DILIGENT_CALL_TYPE TestMessageCallback(DEBUG_MESSAGE_SEVERITY Severity, const Char* Message, const Char*, const Char*, int)
+{
+    if (Severity >= DEBUG_MESSAGE_SEVERITY_ERROR)
+        ++ValidationErrors;
+    if (Severity >= DEBUG_MESSAGE_SEVERITY_WARNING)
+        std::cerr << (Severity >= DEBUG_MESSAGE_SEVERITY_ERROR ? "ERROR: " : "Warning: ") << Message << '\n';
+}
+
 void Require(bool Condition, const char* Message)
 {
     if (!Condition)
@@ -51,21 +63,39 @@ Plane Surface(float Roughness, float Radiance)
 }
 } // namespace
 
+#include "RRResourceContractTest.hpp"
+
 int main(int Argc, char** Argv)
 try
 {
-    Require(Argc == 3, "Usage: RRPrepareInputsTest <GraphicsEngineD3D12 DLL> <RTXPT shaders directory>");
+    Require(Argc == 4, "Usage: RRPrepareInputsTest <D3D12 or Vulkan engine DLL> <RTXPT shaders directory> <RR factory DLL>");
     HMODULE Library = LoadLibraryA(Argv[1]);
     Require(Library != nullptr, "Cannot load D3D12 engine DLL");
-    auto GetFactory = reinterpret_cast<IEngineFactoryD3D12* (*)()>(GetProcAddress(Library, "GetEngineFactoryD3D12"));
-    Require(GetFactory != nullptr, "Missing D3D12 factory");
-    IEngineFactoryD3D12*          Factory = GetFactory();
+    auto                          GetFactory = reinterpret_cast<IEngineFactoryD3D12* (*)()>(GetProcAddress(Library, "GetEngineFactoryD3D12"));
+    IEngineFactory*               Factory    = nullptr;
     RefCntAutoPtr<IRenderDevice>  Device;
     RefCntAutoPtr<IDeviceContext> Context;
-    EngineD3D12CreateInfo         EngineCI;
-    EngineCI.EnableValidation = true;
-    Factory->CreateDeviceAndContextsD3D12(EngineCI, &Device, &Context);
-    Require(Device && Context, "Cannot create D3D12 device");
+    if (GetFactory)
+    {
+        Factory = GetFactory();
+        Factory->SetMessageCallback(TestMessageCallback);
+        EngineD3D12CreateInfo EngineCI;
+        EngineCI.EnableValidation = true;
+        GetFactory()->CreateDeviceAndContextsD3D12(EngineCI, &Device, &Context);
+    }
+    else
+    {
+        auto GetVkFactory = reinterpret_cast<IEngineFactoryVk* (*)()>(GetProcAddress(Library, "GetEngineFactoryVk"));
+        Require(GetVkFactory != nullptr, "Missing engine factory");
+        Factory = GetVkFactory();
+        Factory->SetMessageCallback(TestMessageCallback);
+        EngineVkCreateInfo EngineCI;
+        EngineCI.EnableValidation        = true;
+        EngineCI.EnableRayReconstruction = true;
+        GetVkFactory()->CreateDeviceAndContextsVk(EngineCI, &Device, &Context);
+    }
+    Require(Device && Context, "Cannot create graphics device");
+    CheckRRResourceContract(Device, Context, Argv[3]);
 
     RefCntAutoPtr<IShaderSourceInputStreamFactory> Source;
     Factory->CreateDefaultShaderSourceStreamFactory(Argv[2], &Source);
@@ -74,6 +104,7 @@ try
     ShaderCI.Desc                       = {"RR input regression", SHADER_TYPE_COMPUTE, false};
     ShaderCI.SourceLanguage             = SHADER_SOURCE_LANGUAGE_HLSL;
     ShaderCI.ShaderCompiler             = SHADER_COMPILER_DXC;
+    ShaderCI.CompileFlags               = SHADER_COMPILE_FLAG_PACK_MATRIX_ROW_MAJOR;
     ShaderCI.FilePath                   = "PostProcessing/RTXPTPostProcess.csh";
     ShaderCI.EntryPoint                 = "main";
     ShaderCI.Macros                     = {Macros, 2};
@@ -81,6 +112,7 @@ try
     RefCntAutoPtr<IShader> Shader;
     Device->CreateShader(ShaderCI, &Shader);
     Require(Shader != nullptr, "RR shader compilation failed");
+    CheckRRPrepareWrapper(Device, Context, Factory, Argv[2]);
     ComputePipelineStateCreateInfo PSOCI;
     PSOCI.PSODesc.Name                               = "RR input regression";
     PSOCI.PSODesc.PipelineType                       = PIPELINE_TYPE_COMPUTE;
@@ -90,8 +122,38 @@ try
     Device->CreateComputePipelineState(PSOCI, &PSO);
     Require(PSO != nullptr, "RR pipeline creation failed");
 
+    // A planar scene uses the same ray/motion producers as BUILD. Independent
+    // expectations below check view Z and pixel-motion direction after prepare.
+    ShaderCI.FilePath = nullptr;
+    ShaderCI.Source   = R"(
+#include "PathTracer/PathTracerCamera.hlsli"
+cbuffer g_Const { SampleConstants g_Frame; };
+#ifndef VK_IMAGE_FORMAT
+#define VK_IMAGE_FORMAT(format)
+#endif
+VK_IMAGE_FORMAT("r32f") RWTexture2D<float> u_Depth;
+VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4> u_Motion;
+[numthreads(1, 1, 1)]
+void main(uint3 tid : SV_DispatchThreadID)
+{
+    CameraRay ray = ComputePathTracerCameraRay(g_Frame.ptConsts, tid.xy, g_Frame.ptConsts.sampleBaseIndex);
+    float distance = (3.0 - ray.origin.z) / ray.dir.z;
+    float3 worldPos = ray.origin + ray.dir * distance;
+    u_Depth[tid.xy] = distance;
+    u_Motion[tid.xy] = float4(ComputePathTracerMotionVector(worldPos, worldPos + float3(0.5, 0, 0),
+        g_Frame.view, g_Frame.previousView), 0);
+})";
+    ShaderCI.Macros   = {};
+    Shader.Release();
+    Device->CreateShader(ShaderCI, &Shader);
+    Require(Shader != nullptr, "RR planar scene shader failed");
+    PSOCI.pCS = Shader;
+    RefCntAutoPtr<IPipelineState> ScenePSO;
+    Device->CreateComputePipelineState(PSOCI, &ScenePSO);
+    Require(ScenePSO != nullptr, "RR planar scene pipeline failed");
+
     // One-pixel inputs deliberately dispatch an 8x8 group to exercise bounds checks.
-    for (int Test = 0; Test < 10; ++Test)
+    for (int Test = 0; Test < 14; ++Test)
     {
         SampleConstants Frame     = {};
         Frame.ptConsts.imageWidth = Frame.ptConsts.imageHeight = 1;
@@ -99,6 +161,24 @@ try
         Frame.ptConsts.genericTSLineStride                     = 8;
         Frame.ptConsts.genericTSPlaneStride                    = 64;
         Frame.ptConsts.DLSSRRBrightnessClampK                  = Test == 3 ? 2.0f : 0.0f;
+        Frame.ptConsts.camera.CameraW                          = float3{0, 0, 1};
+        Frame.ptConsts.camera.NearZ                            = 0.1f;
+        Frame.ptConsts.camera.FarZ                             = 100;
+        Frame.ptConsts.perPixelJitterAAScale                   = 0;
+        if (Test >= 10)
+        {
+            Frame.ptConsts.camera.Jitter = float2{0.25f, -0.125f};
+            if (Test >= 11)
+                Frame.previousView.MatWorldToClipNoOffset = float4x4::Translation(-2, 4, 0);
+            if (Test == 12)
+                Frame.previousView.MatWorldToClipNoOffset[3][3] = -1;
+            if (Test == 13)
+            {
+                Frame.ptConsts.perPixelJitterAAScale = 0.5f;
+                Frame.ptConsts.camera.ApertureRadius = 0.25f;
+                Frame.ptConsts.sampleBaseIndex       = 17;
+            }
+        }
         BufferDesc CBDesc;
         CBDesc.Name      = "RR test constants";
         CBDesc.Size      = sizeof(Frame);
@@ -161,9 +241,36 @@ try
         TexDesc.Name      = "RR test stable radiance";
         RefCntAutoPtr<ITexture> StableRadiance;
         Device->CreateTexture(TexDesc, &StableInit, &StableRadiance);
-        std::array<RefCntAutoPtr<ITexture>, 4> Outputs;
-        for (auto& Output : Outputs)
-            Device->CreateTexture(TexDesc, nullptr, &Output);
+        std::array<RefCntAutoPtr<ITexture>, 6> Outputs;
+        for (size_t Index = 0; Index < Outputs.size(); ++Index)
+        {
+            TexDesc.Format = Index < 4 ? TEX_FORMAT_RGBA16_FLOAT : Index == 4 ? TEX_FORMAT_R32_FLOAT : TEX_FORMAT_RG16_FLOAT;
+            Device->CreateTexture(TexDesc, nullptr, &Outputs[Index]);
+        }
+        const float       RawDepth = Test == 0 ? 0.0f : Test == 1 ? std::numeric_limits<float>::infinity() : 2.0f;
+        TextureSubResData DepthData{&RawDepth, sizeof(RawDepth)};
+        TextureData       DepthInit{&DepthData, 1};
+        TexDesc.Format    = TEX_FORMAT_R32_FLOAT;
+        TexDesc.BindFlags = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
+        RefCntAutoPtr<ITexture> Depth;
+        Device->CreateTexture(TexDesc, &DepthInit, &Depth);
+        const std::array<Uint16, 4> Motion = {{Float16{2.0f}.Raw(), Float16{-3.0f}.Raw(), 0, 0}};
+        TextureSubResData           MotionData{Motion.data(), sizeof(Motion)};
+        TextureData                 MotionInit{&MotionData, 1};
+        TexDesc.Format = TEX_FORMAT_RGBA16_FLOAT;
+        RefCntAutoPtr<ITexture> MotionTexture;
+        Device->CreateTexture(TexDesc, &MotionInit, &MotionTexture);
+        if (Test >= 10)
+        {
+            RefCntAutoPtr<IShaderResourceBinding> SceneSRB;
+            ScenePSO->CreateShaderResourceBinding(&SceneSRB, true);
+            SceneSRB->GetVariableByName(SHADER_TYPE_COMPUTE, "g_Const")->Set(Constants);
+            SceneSRB->GetVariableByName(SHADER_TYPE_COMPUTE, "u_Depth")->Set(Depth->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
+            SceneSRB->GetVariableByName(SHADER_TYPE_COMPUTE, "u_Motion")->Set(MotionTexture->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
+            Context->SetPipelineState(ScenePSO);
+            Context->CommitShaderResources(SceneSRB, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+            Context->DispatchCompute(DispatchComputeAttribs{1, 1, 1});
+        }
 
         RefCntAutoPtr<IShaderResourceBinding> SRB;
         PSO->CreateShaderResourceBinding(&SRB, true);
@@ -177,17 +284,19 @@ try
         Bind("u_StablePlanesBuffer", StablePlanes->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS));
         Bind("u_StablePlanesHeader", HeaderTexture->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
         Bind("u_StableRadiance", StableRadiance->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
-        const char* Names[] = {"u_OutputColor", "u_RRDiffuseAlbedo", "u_RRSpecAlbedo", "u_RRNormalsAndRoughness"};
+        Bind("t_Depth", Depth->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
+        Bind("t_MotionVectors", MotionTexture->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
+        const char* Names[] = {"u_OutputColor", "u_RRDiffuseAlbedo", "u_RRSpecAlbedo", "u_RRNormalsAndRoughness", "u_RRDepth", "u_RRMotionVectors"};
         for (size_t Index = 0; Index < Outputs.size(); ++Index)
             Bind(Names[Index], Outputs[Index]->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
         Context->SetPipelineState(PSO);
         Context->CommitShaderResources(SRB, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
         Context->DispatchCompute(DispatchComputeAttribs{1, 1, 1});
 
-        std::array<std::array<float, 4>, 4> Results;
+        std::array<std::array<float, 4>, 6> Results = {};
         for (size_t Index = 0; Index < Outputs.size(); ++Index)
         {
-            TextureDesc ReadDesc    = TexDesc;
+            TextureDesc ReadDesc    = Outputs[Index]->GetDesc();
             ReadDesc.BindFlags      = BIND_NONE;
             ReadDesc.Usage          = USAGE_STAGING;
             ReadDesc.CPUAccessFlags = CPU_ACCESS_READ;
@@ -202,15 +311,18 @@ try
             MappedTextureSubresource Mapped;
             Context->MapTextureSubresource(Readback, 0, 0, MAP_READ, MAP_FLAG_DO_NOT_WAIT, nullptr, Mapped);
             Require(Mapped.pData != nullptr, "Readback failed");
-            for (size_t Channel = 0; Channel < 4; ++Channel)
+            for (size_t Channel = 0; Channel < (Index < 4 ? 4u : Index == 4 ? 1u : 2u); ++Channel)
             {
-                float Value = Float16::HalfBitsToFloat(static_cast<const Uint16*>(Mapped.pData)[Channel]);
+                float Value = Index == 4 ? *static_cast<const float*>(Mapped.pData) : Float16::HalfBitsToFloat(static_cast<const Uint16*>(Mapped.pData)[Channel]);
                 Require(std::isfinite(Value), "Non-finite RR output");
                 Results[Index][Channel] = Value;
             }
             Context->UnmapTextureSubresource(Readback, 0, 0);
         }
         const auto& Normal = Results[3];
+        Near(Test < 2 ? 5000000.0f : Test < 10 ? 2.1f : 3.0f, Results[4][0]);
+        Near(Test < 10 ? 2.0f : Test == 10 ? 0.25f : Test == 12 ? 0.0f : -0.75f, Results[5][0]);
+        Near(Test < 10 ? -3.0f : Test == 10 || Test == 12 ? 0.0f : -2.0f, Results[5][1]);
         Near(1, std::sqrt(Normal[0] * Normal[0] + Normal[1] * Normal[1] + Normal[2] * Normal[2]));
         Require(Normal[3] >= 0 && Normal[3] <= 1, "Roughness outside [0,1]");
         for (size_t Guide = 1; Guide <= 2; ++Guide)
@@ -252,12 +364,13 @@ try
             Near(2, Results[0][0]);
             Near(1, Normal[3]);
         }
-        if (Test >= 8) Near(0, Results[0][0]);
+        if (Test == 8 || Test == 9) Near(0, Results[0][0]);
         std::cout << "RR input case " << Test << " passed\n";
         Context->Flush();
         Context->FinishFrame();
     }
     Context->WaitForIdle();
+    Require(ValidationErrors == 0, "Graphics validation reported errors");
     return 0;
 }
 catch (const std::exception& Error)

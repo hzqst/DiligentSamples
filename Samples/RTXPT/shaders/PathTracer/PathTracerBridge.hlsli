@@ -6,6 +6,7 @@
 #include "Lighting/LightingTypes.hlsli"
 
 #include "PathTracerTypes.hlsli"
+#include "PathTracerCamera.hlsli"
 
 // Global shader resources used by the scene bridge. C++ binds these as static SRVs/UAVs.
 RaytracingAccelerationStructure     t_SceneBVH;
@@ -230,30 +231,14 @@ namespace Bridge
 
     Ray computeCameraRay(const uint2 pixelPos)
     {
-        SampleGenerator sg = SampleGenerator_makeStateless(pixelPos, 0u, getSampleIndex(), kSampleEffect_Base);
-        const float2 subPixelOffset =
-            g_Const.ptConsts.camera.Jitter +
-            (sampleNext2D(sg) - 0.5.xx) * g_Const.ptConsts.perPixelJitterAAScale;
-        const float2 cameraDoFSample = sampleNext2D(sg);
-        CameraRay cameraRay = ComputeRayThinlens(g_Const.ptConsts.camera, pixelPos, subPixelOffset, cameraDoFSample);
+        CameraRay cameraRay = ComputePathTracerCameraRay(g_Const.ptConsts, pixelPos, getSampleIndex());
         return Ray::make(cameraRay.origin, cameraRay.dir, cameraRay.tMin, cameraRay.tMax);
     }
 
 #if PATH_TRACER_MODE != PATH_TRACER_MODE_REFERENCE || defined(__INTELLISENSE__)
     float3 computeMotionVector(float3 posW, float3 prevPosW)
     {
-        float4 clipPos = mul(float4(posW, 1.0), g_Const.view.MatWorldToClipNoOffset);
-        float4 prevClipPos = mul(float4(prevPosW, 1.0), g_Const.previousView.MatWorldToClipNoOffset);
-        clipPos.xyz /= clipPos.w;
-        prevClipPos.xyz /= prevClipPos.w;
-
-        if (clipPos.w <= 0.0 || prevClipPos.w <= 0.0)
-            return float3(0.0, 0.0, 0.0);
-
-        float3 motion;
-        motion.xy = (prevClipPos.xy - clipPos.xy) * g_Const.view.ClipToWindowScale;
-        motion.z  = prevClipPos.w - clipPos.w;
-        return motion;
+        return ComputePathTracerMotionVector(posW, prevPosW, g_Const.view, g_Const.previousView);
     }
 #endif
 

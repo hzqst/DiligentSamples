@@ -186,8 +186,10 @@ bool BindDispatchResources(IShaderResourceBinding*                pSRB,
     return SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_RRDiffuseAlbedo", Attribs.pRRDiffuseAlbedoUAV, RRPreparePass, Pass, "RR diffuse albedo UAV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_RRSpecAlbedo", Attribs.pRRSpecAlbedoUAV, RRPreparePass, Pass, "RR specular albedo UAV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_RRNormalsAndRoughness", Attribs.pRRNormalsAndRoughnessUAV, RRPreparePass, Pass, "RR normals and roughness UAV") &&
-        SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "t_Depth", RenderTargets.GetDepthSRV(), false, Pass, "depth SRV") &&
-        SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "t_MotionVectors", RenderTargets.GetScreenMotionVectorsSRV(), false, Pass, "motion vectors SRV") &&
+        SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_RRDepth", Attribs.pRRDepthUAV, RRPreparePass, Pass, "RR view depth UAV") &&
+        SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_RRMotionVectors", Attribs.pRRMotionVectorsUAV, RRPreparePass, Pass, "RR pixel motion UAV") &&
+        SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "t_Depth", RenderTargets.GetDepthSRV(), RRPreparePass, Pass, "depth SRV") &&
+        SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "t_MotionVectors", RenderTargets.GetScreenMotionVectorsSRV(), RRPreparePass, Pass, "motion vectors SRV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "t_SpecularHitT", RenderTargets.GetSpecularHitTSRV(), PreparePass, Pass, "specular hit T SRV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "t_DenoiserOutDiffRadianceHitDist", pDenoiserOutDiffRadianceHitDistSRV, FinalMergePass, Pass, "denoiser output diffuse radiance hit distance SRV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "t_DenoiserOutSpecRadianceHitDist", RenderTargets.GetDenoiserOutSpecRadianceHitDistSRV(Attribs.PlaneIndex), FinalMergePass, Pass, "denoiser output specular radiance hit distance SRV") &&
@@ -336,7 +338,10 @@ bool RTXPTPostProcessPass::CreatePostProcessPSO(IRenderDevice*          pDevice,
     ShaderCI.Macros           = Macros;
 
     RefCntAutoPtr<IShader> pCS;
-    pStateCache->CreateShader(ShaderCI, &pCS);
+    if (pStateCache != nullptr)
+        pStateCache->CreateShader(ShaderCI, &pCS);
+    else
+        pDevice->CreateShader(ShaderCI, &pCS);
     VERIFY(pCS, "Failed to create shader: ", GetPassName(Pass));
     if (!pCS)
         return false;
@@ -363,6 +368,8 @@ bool RTXPTPostProcessPass::CreatePostProcessPSO(IRenderDevice*          pDevice,
         .AddVariable(SHADER_TYPE_COMPUTE, "u_RRDiffuseAlbedo", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_RRSpecAlbedo", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_RRNormalsAndRoughness", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
+        .AddVariable(SHADER_TYPE_COMPUTE, "u_RRDepth", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
+        .AddVariable(SHADER_TYPE_COMPUTE, "u_RRMotionVectors", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_StableRadiance", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_StablePlanesHeader", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_StablePlanesBuffer", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
@@ -375,7 +382,10 @@ bool RTXPTPostProcessPass::CreatePostProcessPSO(IRenderDevice*          pDevice,
         .AddVariable(SHADER_TYPE_COMPUTE, "u_CombinedHistoryClampRelax", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC);
     PSOCreateInfo.PSODesc.ResourceLayout = ResourceLayout;
 
-    pStateCache->CreateComputePipelineState(PSOCreateInfo, &State.PSO);
+    if (pStateCache != nullptr)
+        pStateCache->CreateComputePipelineState(PSOCreateInfo, &State.PSO);
+    else
+        pDevice->CreateComputePipelineState(PSOCreateInfo, &State.PSO);
     VERIFY(State.PSO, "Failed to create RTXPT post-process PSO: ", GetPassName(Pass));
     if (!State.PSO)
         return false;
@@ -505,34 +515,78 @@ bool RTXPTPostProcessPass::RunNoDenoiserFinalMerge(IDeviceContext* pContext, con
 
 bool RTXPTPostProcessPass::RunDLSSRRDenoiserPrepareInputs(IDeviceContext* pContext, const RTXPTDenoiserPostProcessAttribs& Attribs)
 {
-    if (Attribs.pRenderTargets == nullptr ||
+    if (!IsReady() || pContext == nullptr || Attribs.pRenderTargets == nullptr ||
+        Attribs.pRenderTargets->GetDepthSRV() == nullptr ||
+        Attribs.pRenderTargets->GetScreenMotionVectorsSRV() == nullptr ||
         Attribs.pRenderTargets->GetStableRadianceUAV() == nullptr ||
         Attribs.pRenderTargets->GetStablePlanesHeaderUAV() == nullptr ||
         Attribs.pRenderTargets->GetStablePlanesBufferUAV() == nullptr)
         return false;
 
-    // Reject missing/stale/aliased outputs before touching the SRB. Resource
-    // allocation and the subsequent IRayReconstruction dispatch belong to #19/#20.
-    const std::array<ITextureView*, 4> Outputs = {{Attribs.pMergeOutputUAV, Attribs.pRRDiffuseAlbedoUAV,
-                                                   Attribs.pRRSpecAlbedoUAV, Attribs.pRRNormalsAndRoughnessUAV}};
+    // Reject missing/stale/aliased outputs before touching the SRB.
+    // The subsequent IRayReconstruction dispatch belongs to the frame scheduler.
+    const std::array<ITextureView*, 6>  Outputs = {{Attribs.pMergeOutputUAV, Attribs.pRRDiffuseAlbedoUAV,
+                                                   Attribs.pRRSpecAlbedoUAV, Attribs.pRRNormalsAndRoughnessUAV, Attribs.pRRDepthUAV, Attribs.pRRMotionVectorsUAV}};
+    const std::array<TEXTURE_FORMAT, 6> Formats = {{TEX_FORMAT_RGBA16_FLOAT, TEX_FORMAT_RGBA16_FLOAT,
+                                                    TEX_FORMAT_RGBA16_FLOAT, TEX_FORMAT_RGBA16_FLOAT, TEX_FORMAT_R32_FLOAT, TEX_FORMAT_RG16_FLOAT}};
     for (size_t Index = 0; Index < Outputs.size(); ++Index)
     {
         ITextureView* pView = Outputs[Index];
         if (pView == nullptr || pView->GetDesc().ViewType != TEXTURE_VIEW_UNORDERED_ACCESS)
             return false;
         const TextureDesc& Desc = pView->GetTexture()->GetDesc();
-        if (Desc.Type != RESOURCE_DIM_TEX_2D || Desc.Format != TEX_FORMAT_RGBA16_FLOAT ||
-            pView->GetDesc().Format != TEX_FORMAT_RGBA16_FLOAT ||
+        if (Desc.Type != RESOURCE_DIM_TEX_2D || Desc.Format != Formats[Index] ||
+            pView->GetDesc().Format != Formats[Index] ||
             Desc.Width != Attribs.pRenderTargets->GetRenderWidth() ||
             Desc.Height != Attribs.pRenderTargets->GetRenderHeight() ||
             Desc.MipLevels != 1 || Desc.SampleCount != 1 ||
-            pView->GetTexture() == Attribs.pRenderTargets->GetStableRadianceUAV()->GetTexture())
+            pView->GetTexture() == Attribs.pRenderTargets->GetStableRadianceUAV()->GetTexture() ||
+            pView->GetTexture() == Attribs.pRenderTargets->GetDepthSRV()->GetTexture() ||
+            pView->GetTexture() == Attribs.pRenderTargets->GetScreenMotionVectorsSRV()->GetTexture())
             return false;
         for (size_t Previous = 0; Previous < Index; ++Previous)
             if (pView->GetTexture() == Outputs[Previous]->GetTexture())
                 return false;
     }
-    return DispatchPass(pContext, RTXPTPostProcessPassId::DLSSRRDenoiserPrepareInputs, Attribs);
+    // BUILD/FILL and prepare access stable planes through UAVs. An explicit UAV
+    // dependency is needed even when their tracked state does not change.
+    pContext->SetRenderTargets(0, nullptr, nullptr, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+    const RTXPTRenderTargets& Targets            = *Attribs.pRenderTargets;
+    StateTransitionDesc       ProducerBarriers[] = {
+        {Targets.GetStableRadianceUAV()->GetTexture(), RESOURCE_STATE_UNKNOWN, RESOURCE_STATE_UNORDERED_ACCESS, STATE_TRANSITION_FLAG_UPDATE_STATE},
+        {Targets.GetStablePlanesHeaderUAV()->GetTexture(), RESOURCE_STATE_UNKNOWN, RESOURCE_STATE_UNORDERED_ACCESS, STATE_TRANSITION_FLAG_UPDATE_STATE},
+        {Targets.GetStablePlanesBuffer(), RESOURCE_STATE_UNKNOWN, RESOURCE_STATE_UNORDERED_ACCESS, STATE_TRANSITION_FLAG_UPDATE_STATE}};
+    pContext->TransitionResourceStates(3, ProducerBarriers);
+    if (!DispatchPass(pContext, RTXPTPostProcessPassId::DLSSRRDenoiserPrepareInputs, Attribs))
+        return false;
+    std::array<StateTransitionDesc, 6> ConsumerBarriers;
+    for (size_t Index = 0; Index < Outputs.size(); ++Index)
+        ConsumerBarriers[Index] = StateTransitionDesc{Outputs[Index]->GetTexture(), RESOURCE_STATE_UNORDERED_ACCESS,
+                                                      RESOURCE_STATE_SHADER_RESOURCE, STATE_TRANSITION_FLAG_UPDATE_STATE};
+    pContext->TransitionResourceStates(static_cast<Uint32>(ConsumerBarriers.size()), ConsumerBarriers.data());
+    // Do not keep resized/mode-specific textures alive through cached bindings.
+    auto* SRB = m_Passes[static_cast<size_t>(RTXPTPostProcessPassId::DLSSRRDenoiserPrepareInputs)].SRB.RawPtr();
+    for (const char* Name : {"t_Depth", "t_MotionVectors", "u_OutputColor", "u_RRDiffuseAlbedo", "u_RRSpecAlbedo",
+                             "u_RRNormalsAndRoughness", "u_RRDepth", "u_RRMotionVectors", "u_StableRadiance",
+                             "u_StablePlanesHeader", "u_StablePlanesBuffer"})
+        if (auto* Variable = SRB->GetVariableByName(SHADER_TYPE_COMPUTE, Name))
+            Variable->Set(nullptr);
+    return true;
+}
+
+bool RTXPTPostProcessPass::RunDLSSRRDenoiserPrepareInputs(IDeviceContext* pContext, const RTXPTRenderTargets& RenderTargets)
+{
+    if (!RenderTargets.HasRayReconstructionRenderTargets())
+        return false;
+    RTXPTDenoiserPostProcessAttribs Attribs;
+    Attribs.pRenderTargets            = &RenderTargets;
+    Attribs.pMergeOutputUAV           = RenderTargets.GetOutputColorUAV();
+    Attribs.pRRDiffuseAlbedoUAV       = RenderTargets.GetRRDiffuseAlbedoUAV();
+    Attribs.pRRSpecAlbedoUAV          = RenderTargets.GetRRSpecAlbedoUAV();
+    Attribs.pRRNormalsAndRoughnessUAV = RenderTargets.GetRRNormalsAndRoughnessUAV();
+    Attribs.pRRDepthUAV               = RenderTargets.GetRRDepthUAV();
+    Attribs.pRRMotionVectorsUAV       = RenderTargets.GetRRMotionVectorsUAV();
+    return RunDLSSRRDenoiserPrepareInputs(pContext, Attribs);
 }
 
 } // namespace Diligent

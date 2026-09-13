@@ -69,10 +69,13 @@ struct RTXPTDenoiserPostProcessAttribs
     Uint32                    PlaneIndex      = 0;
     bool                      InitOutput      = false;
     bool                      HasValidation   = false;
-    // RR prepare only: distinct render-size RGBA16_FLOAT UAVs, owned by the caller.
+    // RR prepare only: distinct render-size UAVs, owned by the caller.
+    // Albedos/normal+roughness are RGBA16F; depth is R32F and motion is RG16F.
     ITextureView* pRRDiffuseAlbedoUAV       = nullptr;
     ITextureView* pRRSpecAlbedoUAV          = nullptr;
     ITextureView* pRRNormalsAndRoughnessUAV = nullptr;
+    ITextureView* pRRDepthUAV               = nullptr;
+    ITextureView* pRRMotionVectorsUAV       = nullptr;
 };
 
 struct RTXPTPostProcessPassStats
@@ -98,6 +101,7 @@ public:
     bool RunDenoiserFinalMerge(IDeviceContext* pContext, const RTXPTDenoiserPostProcessAttribs& Attribs);
     bool RunNoDenoiserFinalMerge(IDeviceContext* pContext, const RTXPTDenoiserPostProcessAttribs& Attribs);
     bool RunDLSSRRDenoiserPrepareInputs(IDeviceContext* pContext, const RTXPTDenoiserPostProcessAttribs& Attribs);
+    bool RunDLSSRRDenoiserPrepareInputs(IDeviceContext* pContext, const RTXPTRenderTargets& RenderTargets);
 
     bool                             IsReady() const { return m_Stats.Ready; }
     const RTXPTPostProcessPassStats& GetStats() const { return m_Stats; }

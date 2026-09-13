@@ -60,9 +60,12 @@ VK_IMAGE_FORMAT("r8")      RWTexture2D<float>       u_DenoiserDisocclusionThresh
 VK_IMAGE_FORMAT("r8")      RWTexture2D<float>       u_CombinedHistoryClampRelax;
 
 #if RTXPT_POST_PROCESS_MODE == RTXPT_POST_PROCESS_DLSS_RR_PREPARE_INPUTS
+#include "../PathTracer/PathTracerCamera.hlsli"
 VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4> u_RRDiffuseAlbedo;
 VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4> u_RRSpecAlbedo;
 VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4> u_RRNormalsAndRoughness;
+VK_IMAGE_FORMAT("r32f") RWTexture2D<float> u_RRDepth;
+VK_IMAGE_FORMAT("rg16f") RWTexture2D<float2> u_RRMotionVectors;
 
 // Sanitize before arithmetic: fp16 transport may contain overflow or invalid values.
 float RRFiniteNonNegative(float value)
@@ -77,6 +80,17 @@ float3 RRFiniteNonNegative(float3 value)
 
 void DLSSRRDenoiserPrepareInputs(uint2 pixelPos)
 {
+    // BUILD uses mini-constant sample offset zero. Depth is the dominant path's
+    // virtual ray distance, not hardware depth or linear view Z.
+    const CameraRay cameraRay = ComputePathTracerCameraRay(g_Frame.ptConsts, pixelPos, g_Frame.ptConsts.sampleBaseIndex);
+    const float rayDistance = t_Depth[pixelPos];
+    const float3 virtualWorldPos = cameraRay.origin + cameraRay.dir * rayDistance;
+    const float viewZ = mul(float4(virtualWorldPos, 1.0), g_Frame.view.MatWorldToView).z;
+    const float kSkyViewZ = kEnvironmentMapSceneDistance;
+    u_RRDepth[pixelPos] = isfinite(rayDistance) && rayDistance > 0.0 && isfinite(viewZ) && viewZ > 0.0 ? viewZ : kSkyViewZ;
+    const float2 motion = t_MotionVectors[pixelPos].xy;
+    u_RRMotionVectors[pixelPos] = all(isfinite(motion)) ? clamp(motion, -HLF_MAX, HLF_MAX) : 0.0.xx;
+
     StablePlanesContext stablePlanes = StablePlanesContext::make(
         u_StablePlanesHeader, u_StablePlanesBuffer, u_StableRadiance, g_Frame.ptConsts);
     const uint activeCount = min(g_Frame.ptConsts.GetActiveStablePlaneCount(), cStablePlaneCount);

@@ -648,7 +648,7 @@ G6 intentionally does not port `ShaderDebug`, `StablePlanesDebugViz`, NRD prepar
 
 `RTXPTPostProcessPass::RunDLSSRRDenoiserPrepareInputs` dispatches mode 9 of
 `RTXPTPostProcess.csh`. The caller supplies four distinct output UAVs through
-`RTXPTDenoiserPostProcessAttribs`; resource allocation belongs to #19 and frame
+`RTXPTDenoiserPostProcessAttribs`; #19 adds resource ownership plus depth/motion outputs, and frame
 scheduling / `IRayReconstruction` execution belongs to #20. The existing RR UI
 gate remains until that integration is ready. No NRD result is read by this pass.
 
@@ -684,7 +684,7 @@ Explicit robustness differences from the reference:
   clearing color to black. The final max-channel clamp still guarantees fp16
   representability and preserves the color ratio of the finite combined sum.
 
-### Output contract for #19
+### Radiance and material-guide output contract
 
 All four outputs are full 2D, single-mip, single-sample `RGBA16_FLOAT` textures
 at **render/input resolution**, not display resolution. All are written by this
@@ -713,17 +713,99 @@ execute attributes. Existing `SpecularHitT` is the NRD dominant-plane heuristic;
 it is not exported here as a validated RR guide. No zero-filled placeholder
 texture or NRD-packed guide should be passed as a substitute.
 
-The caller must preserve BUILD/FILL UAV ordering before prepare, transition
-the four outputs from UAV to SRV before RR, and use a separate display-size RR
-output. Depth, motion, matrices, query-selected sizes and resize lifetimes are
-#19 contracts. This stage does not change NRD/SR frame scheduling or their
-resource encodings.
+The #19 wrapper preserves BUILD/FILL UAV ordering before prepare and transitions
+all six outputs to SRV. RR uses a separate display-size output. This stage does
+not change NRD/SR frame scheduling or their resource encodings.
 
 Validation: Debug RTXPT build; DXC DXIL and SPIR-V compilation of mode 9;
 byte-identical DXIL for existing modes 3–8 (without NRD headers); ten production
 shader GPU readback cases on D3D12 / RTX 5060 (see `tests/README.md`). Full scene
 and camera-motion validation, Vulkan runtime validation and C++ wrapper dispatch
 integration remain outstanding until #19/#20 supply resources and scheduling.
+
+## DLSS-RR Stage 2: Resources and Frame Contract (#19)
+
+`RTXPTRayReconstructionInputs` adapts successful native factory source queries
+to `RayReconstructionDesc`, `RTXPTRenderTargetCreateInfo`, and fresh
+`ExecuteRayReconstructionAttribs`. It does not own a factory or execute RR;
+the #20 scheduler must supply each frame's query result, jitter and reset signal.
+Never substitute a hardcoded Quality scale: a 640x360 query on the tested device
+returned **427x240**, not a truncated 426x240.
+
+`CreateRayReconstructionResources` requires realtime resources and excludes
+reference accumulation and NRD validation. It allocates the RR guides below and
+the shared stable-plane resources, without allocating NRD-only textures. Changing
+the flag or dimensions rebuilds the requested resource set; unchanged requests
+reuse it. `Reset()` and mode changes release the owner's references. The prepare
+SRB clears dynamic bindings after dispatch so it does not retain obsolete guides.
+GPU command ownership still governs destruction of in-flight allocations.
+
+| RR binding | Owned/reused texture | Format and extent | Contract |
+|---|---|---|---|
+| `pColorSRV` | Reuse `OutputColor` | RGBA16F, input | Noisy scene-linear radiance from prepare, not NRD output or accumulated color |
+| `pDepthSRV` | `RRDepth` | R32F, input | Positive linear view-space Z; sky/invalid depth = 5,000,000 world units |
+| `pMotionVectorsSRV` | `RRMotionVectors` | RG16F, input | Previous minus current in render pixels, X right/Y down, includes camera motion; scale (1,1) |
+| `pDiffuseAlbedoSRV` | `RRDiffuseAlbedo` | RGBA16F, input | Linear RGB material/stable-radiance guide from #18 |
+| `pSpecularAlbedoSRV` | `RRSpecAlbedo` | RGBA16F, input | Linear RGB material guide from #18 |
+| `pNormalsSRV` | `RRNormalsAndRoughness` | RGBA16F, input | Unit virtual-world normal in RGB, linear roughness in W |
+| `pOutputUAV` | Reuse `ProcessedOutputColor` | RGBA16F, display | Distinct from every input, including at native resolution |
+
+Every texture and default view covers a full 2D, single-mip, single-sample image.
+`SuperResolutionActive` in the target dimensions records differing input/display
+extents; it does not authorize running conventional SR after RR.
+
+### Depth, motion and camera correspondence
+
+The port's `Bridge::ExportSurface` writes **ray distance** to the existing
+`Depth`; it is neither hardware depth nor linear view Z. RR prepare reconstructs
+the virtual world point with `ComputePathTracerCameraRay`, then transforms it by
+`view.MatWorldToView`. BUILD uses `sampleBaseIndex` with mini-constant offset zero.
+The shared camera helper retains BUILD's temporal jitter, micro-jitter, aperture
+sample and near-plane origin offset. No perspective-depth approximation or NRD
+view-Z buffer is reused. Nonpositive/nonfinite depth falls back to finite sky Z.
+Set `LinearDepth=True`, `DepthInverted=False`; reverse hardware Z is inapplicable.
+
+`ComputePathTracerMotionVector` is the existing BUILD projection calculation
+extracted unchanged from `Bridge::computeMotionVector`: unjittered current and
+previous world-to-clip transforms, perspective divide, previous minus current,
+then `(width/2,-height/2)`. Virtual object motion and previous camera transforms
+both contribute. RR copies XY to RG16F without normalization or sign reversal;
+nonfinite vectors become zero. `MotionVectorsJittered=False`.
+
+`Frame.view.PixelOffset` is RR's pixel-space jitter, with the same values returned
+by `IRayReconstruction::GetJitterOffset`. Camera storage is that value times
+`(1,-1)`, following `MakePathTracerCameraData`; the adapter rejects mismatches.
+`MakePathTracerViewData` supplies unjittered CPU `MatWorldToView`/`MatViewToClip`.
+They are copied directly as row-major Diligent row-vector transforms; only the
+native provider converts them to NGX's matrix convention.
+
+The descriptor fixes HDR, automatic exposure and packed roughness. Each execute
+starts from zero/default attributes, explicitly sets `PreExposure=ExposureScale=1`,
+and sets separate roughness, exposure, diffuse/specular hit distance and specular
+motion SRVs to null. Size/camera mismatch rejects the frame and clears bindings.
+
+### Synchronization and validation boundary
+
+`RunDLSSRRDenoiserPrepareInputs(Context, Targets)` selects the owned outputs,
+unbinds render targets, orders stable-plane UAV writes, and transitions raw depth
+and motion through the regular compute commit. It transitions all six prepared
+outputs to SRV after dispatch. The execute adapter requests automatic Core
+transitions; Core transitions the separate output to UAV and emits an NGX-write
+UAV barrier. The #20 consumer must commit its output SRV with transitions and
+rebind state after RR execution; failed RR output must never be consumed.
+
+Validation is documented in `tests/README.md`: native NGX size queries, resource
+rebuild/reuse/reset, production C++ prepare dispatch and rebind, alias rejection,
+14 shader readback cases including planar scene/camera motion and lens jitter.
+Tests run on D3D12 and Vulkan with validation enabled. The existing NRD
+`RGB10A2_UNORM` UAV is unsupported on the tested Vulkan device; RR no longer
+depends on it. NRD resource-mode regression runs on D3D12; Vulkan tests switch
+RR/reference instead and report the NRD limitation. Existing DXC warnings for
+the NRD `rgb10_a2` annotation remain outside this stage's changes.
+
+No #20 UI/frame scheduling, native RR evaluation or real path-traced scene image
+quality is claimed by these tests. Interactive window resize, history behavior,
+and producer→NGX→post-processing validation require that next stage.
 
 ## Skinned glTF Current Geometry
 

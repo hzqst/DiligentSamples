@@ -132,10 +132,11 @@ struct RTXPTRenderTargetCreateInfo
 {
     RTXPTRenderTargetDimensions Dimensions;
     RTXPTRenderTargetFormats    Formats;
-    bool                        CreateComputeOutput       = false;
-    bool                        CreateAccumulatedRadiance = false;
-    bool                        CreateRealtimeResources   = false;
-    bool                        CreateDenoiserValidation  = false;
+    bool                        CreateComputeOutput              = false;
+    bool                        CreateAccumulatedRadiance        = false;
+    bool                        CreateRealtimeResources          = false;
+    bool                        CreateDenoiserValidation         = false;
+    bool                        CreateRayReconstructionResources = false;
 };
 
 class RTXPTRenderTargets
@@ -191,6 +192,18 @@ public:
     bool          AreRealtimeRenderTargetsRequested() const { return m_RealtimeResourcesRequested; }
     const char*   GetLastFailureReason() const { return m_LastFailureReason.c_str(); }
     Uint64        GetStablePlanesElementCount() const { return m_StablePlanesElementCount; }
+
+    bool          HasRayReconstructionRenderTargets() const;
+    ITextureView* GetRRDiffuseAlbedoUAV() const;
+    ITextureView* GetRRDiffuseAlbedoSRV() const;
+    ITextureView* GetRRSpecAlbedoUAV() const;
+    ITextureView* GetRRSpecAlbedoSRV() const;
+    ITextureView* GetRRNormalsAndRoughnessUAV() const;
+    ITextureView* GetRRNormalsAndRoughnessSRV() const;
+    ITextureView* GetRRDepthUAV() const;
+    ITextureView* GetRRDepthSRV() const;
+    ITextureView* GetRRMotionVectorsUAV() const;
+    ITextureView* GetRRMotionVectorsSRV() const;
 
     ITextureView* GetStableRadianceUAV() const;
     ITextureView* GetStableRadianceSRV() const;
@@ -291,17 +304,24 @@ private:
     std::array<RefCntAutoPtr<ITexture>, kRTXPTStablePlaneCount> m_DenoiserOutSpecRadianceHitDist;
     RefCntAutoPtr<ITexture>                                     m_DenoiserOutValidation;
     RefCntAutoPtr<ITexture>                                     m_DenoiserAvgLayerRadianceHalfRes;
-    bool                                                        m_AccumulatedRadianceUnavailable = false;
-    bool                                                        m_AccumulatedRadianceRequested   = false;
-    bool                                                        m_RealtimeResourcesRequested     = false;
-    bool                                                        m_DenoiserValidationRequested    = false;
-    bool                                                        m_PendingResizeRequestValid      = false;
-    bool                                                        m_PendingRealtimeResources       = false;
-    bool                                                        m_PendingDenoiserValidation      = false;
-    Uint64                                                      m_StablePlanesElementCount       = 0;
-    std::string                                                 m_LastFailureReason;
-    RTXPTRenderTargetDimensions                                 m_Dimensions = {0, 0, 0, 0, false};
-    RTXPTRenderTargetFormats                                    m_Formats    = {};
+    // Fixed RR formats match the prepare shader, independently of NRD encoding.
+    RefCntAutoPtr<ITexture>     m_RRDiffuseAlbedo;
+    RefCntAutoPtr<ITexture>     m_RRSpecAlbedo;
+    RefCntAutoPtr<ITexture>     m_RRNormalsAndRoughness;
+    RefCntAutoPtr<ITexture>     m_RRDepth;
+    RefCntAutoPtr<ITexture>     m_RRMotionVectors;
+    bool                        m_RayReconstructionResourcesRequested = false;
+    bool                        m_AccumulatedRadianceUnavailable      = false;
+    bool                        m_AccumulatedRadianceRequested        = false;
+    bool                        m_RealtimeResourcesRequested          = false;
+    bool                        m_DenoiserValidationRequested         = false;
+    bool                        m_PendingResizeRequestValid           = false;
+    bool                        m_PendingRealtimeResources            = false;
+    bool                        m_PendingDenoiserValidation           = false;
+    Uint64                      m_StablePlanesElementCount            = 0;
+    std::string                 m_LastFailureReason;
+    RTXPTRenderTargetDimensions m_Dimensions = {0, 0, 0, 0, false};
+    RTXPTRenderTargetFormats    m_Formats    = {};
 };
 
 } // namespace Diligent
