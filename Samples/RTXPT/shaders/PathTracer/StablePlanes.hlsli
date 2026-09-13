@@ -228,6 +228,8 @@ struct StablePlanesContext
         const float3 fullDiffBSDFEstimate = clamp(diffBSDFEstimate, kNRDMinReflectance.xxx, kNRDMaxReflectance.xxx);
         const float3 fullSpecBSDFEstimate = clamp(specBSDFEstimate, kNRDMinReflectance.xxx, kNRDMaxReflectance.xxx);
 
+        // Shared NRD/RR material guides: directional BSDF estimates, without path
+        // throughput or exposure. RR mixes planes later in DLSSRRDenoiserPrepareInputs.
         sp.DenoiserPackedBSDFEstimate    = PackTwoFp32ToFp16(fullDiffBSDFEstimate, fullSpecBSDFEstimate);
         sp.PackedNormal                  = NDirToOctUnorm32(worldNormal);
         sp.PackedNoisyRadianceAndSpecAvg = Fp32ToFp16(float4(0, 0, 0, 0));

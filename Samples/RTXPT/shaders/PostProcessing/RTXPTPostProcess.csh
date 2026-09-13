@@ -11,7 +11,7 @@
 #define RTXPT_POST_PROCESS_REBLUR_FINAL_MERGE       7
 #define RTXPT_POST_PROCESS_NO_DENOISER_FINAL_MERGE  8
 
-// DLSSRRDenoiserPrepareInputs remains deferred to the DLSS-RR phase.
+#define RTXPT_POST_PROCESS_DLSS_RR_PREPARE_INPUTS   9
 
 #define NUM_COMPUTE_THREADS_PER_DIM 8
 
@@ -58,6 +58,112 @@ VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4>      u_DenoiserDiffRadianceHitDis
 VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4>      u_DenoiserSpecRadianceHitDist;
 VK_IMAGE_FORMAT("r8")      RWTexture2D<float>       u_DenoiserDisocclusionThresholdMix;
 VK_IMAGE_FORMAT("r8")      RWTexture2D<float>       u_CombinedHistoryClampRelax;
+
+#if RTXPT_POST_PROCESS_MODE == RTXPT_POST_PROCESS_DLSS_RR_PREPARE_INPUTS
+VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4> u_RRDiffuseAlbedo;
+VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4> u_RRSpecAlbedo;
+VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4> u_RRNormalsAndRoughness;
+
+// Sanitize before arithmetic: fp16 transport may contain overflow or invalid values.
+float RRFiniteNonNegative(float value)
+{
+    return isnan(value) ? 0.0 : clamp(value, 0.0, HLF_MAX);
+}
+
+float3 RRFiniteNonNegative(float3 value)
+{
+    return float3(RRFiniteNonNegative(value.x), RRFiniteNonNegative(value.y), RRFiniteNonNegative(value.z));
+}
+
+void DLSSRRDenoiserPrepareInputs(uint2 pixelPos)
+{
+    StablePlanesContext stablePlanes = StablePlanesContext::make(
+        u_StablePlanesHeader, u_StablePlanesBuffer, u_StableRadiance, g_Frame.ptConsts);
+    const uint activeCount = min(g_Frame.ptConsts.GetActiveStablePlaneCount(), cStablePlaneCount);
+    const uint dominantIndex = stablePlanes.LoadDominantIndex(pixelPos);
+
+    float3 combinedRadiance = RRFiniteNonNegative(stablePlanes.LoadStableRadiance(pixelPos));
+    const float stableMax = max(combinedRadiance.x, max(combinedRadiance.y, combinedRadiance.z));
+    const float3 stableAlbedo = sqrt(combinedRadiance / (1.0 + stableMax)); // ReinhardMax
+    const float stableAlbedoAvg = Average(stableAlbedo);
+
+    // RTXPT-fork's active default: throughput + equalization + dominant-plane bias.
+    const float kThroughputWeight = 0.2;
+    const float kEqualizationWeight = 0.01;
+    const float kDominantWeight = 0.05;
+    float3 available = 0.0.xxx;
+    float3 throughputWeights = float3(1, 0, 0);
+    for (uint planeIndex = 0; planeIndex < activeCount; ++planeIndex)
+    {
+        if (stablePlanes.GetBranchID(pixelPos, planeIndex) == cStablePlaneInvalidBranchID)
+            continue;
+        available[planeIndex] = 1.0;
+        if (planeIndex != 0)
+        {
+            StablePlane sp = stablePlanes.LoadStablePlane(pixelPos, planeIndex);
+            float3 throughput, motionVectors;
+            UnpackTwoFp32ToFp16(sp.PackedThpAndMVs, throughput, motionVectors);
+            const float weight = saturate(Average(RRFiniteNonNegative(throughput)));
+            throughputWeights[planeIndex] = weight;
+            throughputWeights[0] = saturate(throughputWeights[0] - weight);
+        }
+    }
+    float3 spWeights = throughputWeights * kThroughputWeight + kEqualizationWeight;
+    if (dominantIndex < activeCount)
+        spWeights[dominantIndex] += kDominantWeight;
+    spWeights *= available;
+    const float weightSum = spWeights.x + spWeights.y + spWeights.z;
+    spWeights /= max(weightSum, 1e-7);
+
+    float3 guideNormals = float3(0, 0, 1e-6);
+    float3 diffAlbedo = 0.0.xxx;
+    float3 specAlbedo = 0.0.xxx;
+    float roughness = 0.0;
+    for (uint planeIndex = 0; planeIndex < activeCount; ++planeIndex)
+    {
+        if (available[planeIndex] == 0.0)
+            continue;
+        StablePlane sp = stablePlanes.LoadStablePlane(pixelPos, planeIndex);
+        if (!isfinite(sp.SceneLength))
+            continue; // Sky/emission already belongs to StableRadiance.
+        combinedRadiance += RRFiniteNonNegative(sp.GetNoisyRadiance());
+        const float weight = spWeights[planeIndex];
+        if (weight > 1e-6)
+        {
+            float3 diffBSDFEstimate, specBSDFEstimate;
+            UnpackTwoFp32ToFp16(sp.DenoiserPackedBSDFEstimate, diffBSDFEstimate, specBSDFEstimate);
+            guideNormals += weight * sp.GetNormal();
+            roughness += weight * saturate(RRFiniteNonNegative(sp.GetRoughness()));
+            diffAlbedo += weight * saturate(RRFiniteNonNegative(diffBSDFEstimate));
+            specAlbedo += weight * saturate(RRFiniteNonNegative(specBSDFEstimate));
+        }
+    }
+
+    const float3 stableAlbedoGreyMix = lerp(stableAlbedo, 0.5.xxx, 0.2);
+    diffAlbedo = lerp(diffAlbedo, stableAlbedoGreyMix,
+        stableAlbedoAvg / (Average(diffAlbedo) + sqrt(stableAlbedoAvg) + 1e-7));
+    const float normalLength = length(guideNormals);
+    guideNormals = isfinite(normalLength) && normalLength >= 1e-5 ?
+        guideNormals / normalLength : float3(0, 0, 1);
+    const float kMinAlbedo = 0.05;
+    if (Average(diffAlbedo + specAlbedo) < kMinAlbedo)
+        diffAlbedo += kMinAlbedo;
+
+    // Color is scene-linear, not pre-exposed. CPU supplies the clamp threshold;
+    // PreExposure and ExposureScale at the RR consumer must both be 1.
+    const float maxRadiance = max(combinedRadiance.x, max(combinedRadiance.y, combinedRadiance.z));
+    const float brightnessClamp = g_Frame.ptConsts.DLSSRRBrightnessClampK;
+    const float clampMax = isfinite(brightnessClamp) && brightnessClamp > 0.0 ?
+        min(brightnessClamp, HLF_MAX) : HLF_MAX;
+    if (maxRadiance > clampMax)
+        combinedRadiance *= clampMax / maxRadiance;
+
+    u_OutputColor[pixelPos] = float4(combinedRadiance, 1);
+    u_RRDiffuseAlbedo[pixelPos] = float4(saturate(diffAlbedo), 1);
+    u_RRSpecAlbedo[pixelPos] = float4(saturate(specAlbedo), 1);
+    u_RRNormalsAndRoughness[pixelPos] = float4(guideNormals, saturate(roughness));
+}
+#endif
 
 float RTXPTLuminance(float3 Color)
 {
@@ -113,6 +219,10 @@ void main(uint3 DispatchThreadID : SV_DispatchThreadID)
     const uint2 PixelPos = DispatchThreadID.xy;
     if (PixelPos.x >= g_Frame.ptConsts.imageWidth || PixelPos.y >= g_Frame.ptConsts.imageHeight)
         return;
+
+#if RTXPT_POST_PROCESS_MODE == RTXPT_POST_PROCESS_DLSS_RR_PREPARE_INPUTS
+    DLSSRRDenoiserPrepareInputs(PixelPos);
+#endif
 
 #if RTXPT_POST_PROCESS_MODE == RTXPT_POST_PROCESS_RELAX_PREPARE_INPUTS || RTXPT_POST_PROCESS_MODE == RTXPT_POST_PROCESS_REBLUR_PREPARE_INPUTS
     const uint StablePlaneIndex       = g_Mini.params.x;

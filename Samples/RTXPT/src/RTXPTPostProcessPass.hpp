@@ -56,6 +56,7 @@ enum class RTXPTPostProcessPassId : Uint32
     RelaxDenoiserFinalMerge,
     ReblurDenoiserFinalMerge,
     NoDenoiserFinalMerge,
+    DLSSRRDenoiserPrepareInputs,
     Count
 };
 
@@ -68,6 +69,10 @@ struct RTXPTDenoiserPostProcessAttribs
     Uint32                    PlaneIndex      = 0;
     bool                      InitOutput      = false;
     bool                      HasValidation   = false;
+    // RR prepare only: distinct render-size RGBA16_FLOAT UAVs, owned by the caller.
+    ITextureView* pRRDiffuseAlbedoUAV       = nullptr;
+    ITextureView* pRRSpecAlbedoUAV          = nullptr;
+    ITextureView* pRRNormalsAndRoughnessUAV = nullptr;
 };
 
 struct RTXPTPostProcessPassStats
@@ -92,6 +97,7 @@ public:
     bool RunDenoiserPrepare(IDeviceContext* pContext, const RTXPTDenoiserPostProcessAttribs& Attribs);
     bool RunDenoiserFinalMerge(IDeviceContext* pContext, const RTXPTDenoiserPostProcessAttribs& Attribs);
     bool RunNoDenoiserFinalMerge(IDeviceContext* pContext, const RTXPTDenoiserPostProcessAttribs& Attribs);
+    bool RunDLSSRRDenoiserPrepareInputs(IDeviceContext* pContext, const RTXPTDenoiserPostProcessAttribs& Attribs);
 
     bool                             IsReady() const { return m_Stats.Ready; }
     const RTXPTPostProcessPassStats& GetStats() const { return m_Stats; }

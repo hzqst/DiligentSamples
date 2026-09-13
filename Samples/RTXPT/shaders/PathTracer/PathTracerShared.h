@@ -73,7 +73,7 @@ struct PathTracerConstants
     float stablePlanesSuppressPrimaryIndirectSpecularK;
 
     float denoiserRadianceClampK;
-    float DLSSRRBrightnessClampK; // TODO(RTXPT-Realtime-DLSS-RR): reserved constant only.
+    float DLSSRRBrightnessClampK; // RR input max-channel clamp; zero disables the user clamp.
     float stablePlanesAntiAliasingFallthrough;
     uint  _activeStablePlaneCount;
 

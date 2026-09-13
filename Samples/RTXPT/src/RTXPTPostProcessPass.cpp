@@ -52,6 +52,7 @@ const char* GetPassName(RTXPTPostProcessPassId Pass)
         case RTXPTPostProcessPassId::RelaxDenoiserFinalMerge: return "RelaxDenoiserFinalMerge";
         case RTXPTPostProcessPassId::ReblurDenoiserFinalMerge: return "ReblurDenoiserFinalMerge";
         case RTXPTPostProcessPassId::NoDenoiserFinalMerge: return "NoDenoiserFinalMerge";
+        case RTXPTPostProcessPassId::DLSSRRDenoiserPrepareInputs: return "DLSSRRDenoiserPrepareInputs";
         case RTXPTPostProcessPassId::Count: break;
     }
     return "Unknown";
@@ -67,6 +68,7 @@ const char* GetModeMacro(RTXPTPostProcessPassId Pass)
         case RTXPTPostProcessPassId::RelaxDenoiserFinalMerge: return "RTXPT_POST_PROCESS_RELAX_FINAL_MERGE";
         case RTXPTPostProcessPassId::ReblurDenoiserFinalMerge: return "RTXPT_POST_PROCESS_REBLUR_FINAL_MERGE";
         case RTXPTPostProcessPassId::NoDenoiserFinalMerge: return "RTXPT_POST_PROCESS_NO_DENOISER_FINAL_MERGE";
+        case RTXPTPostProcessPassId::DLSSRRDenoiserPrepareInputs: return "RTXPT_POST_PROCESS_DLSS_RR_PREPARE_INPUTS";
         case RTXPTPostProcessPassId::Count: break;
     }
     return "0";
@@ -166,8 +168,9 @@ bool BindDispatchResources(IShaderResourceBinding*                pSRB,
     const RTXPTRenderTargets& RenderTargets  = *Attribs.pRenderTargets;
     const bool                PreparePass    = IsDenoiserPreparePass(Pass);
     const bool                FinalMergePass = IsDenoiserFinalMergePass(Pass);
+    const bool                RRPreparePass  = Pass == RTXPTPostProcessPassId::DLSSRRDenoiserPrepareInputs;
     const bool                StablePlanesRequired =
-        PreparePass ||
+        PreparePass || RRPreparePass ||
         Pass == RTXPTPostProcessPassId::StablePlanesDebugViz ||
         Pass == RTXPTPostProcessPassId::NoDenoiserFinalMerge;
     const bool StableBufferRequired = StablePlanesRequired || FinalMergePass;
@@ -180,7 +183,10 @@ bool BindDispatchResources(IShaderResourceBinding*                pSRB,
         pDenoiserOutValidationSRV = pDenoiserOutDiffRadianceHitDistSRV;
     }
 
-    return SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "t_Depth", RenderTargets.GetDepthSRV(), false, Pass, "depth SRV") &&
+    return SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_RRDiffuseAlbedo", Attribs.pRRDiffuseAlbedoUAV, RRPreparePass, Pass, "RR diffuse albedo UAV") &&
+        SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_RRSpecAlbedo", Attribs.pRRSpecAlbedoUAV, RRPreparePass, Pass, "RR specular albedo UAV") &&
+        SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_RRNormalsAndRoughness", Attribs.pRRNormalsAndRoughnessUAV, RRPreparePass, Pass, "RR normals and roughness UAV") &&
+        SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "t_Depth", RenderTargets.GetDepthSRV(), false, Pass, "depth SRV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "t_MotionVectors", RenderTargets.GetScreenMotionVectorsSRV(), false, Pass, "motion vectors SRV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "t_SpecularHitT", RenderTargets.GetSpecularHitTSRV(), PreparePass, Pass, "specular hit T SRV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "t_DenoiserOutDiffRadianceHitDist", pDenoiserOutDiffRadianceHitDistSRV, FinalMergePass, Pass, "denoiser output diffuse radiance hit distance SRV") &&
@@ -354,6 +360,9 @@ bool RTXPTPostProcessPass::CreatePostProcessPSO(IRenderDevice*          pDevice,
         .AddVariable(SHADER_TYPE_COMPUTE, "t_DenoiserViewspaceZ", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "t_DenoiserDisocclusionThresholdMix", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_OutputColor", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
+        .AddVariable(SHADER_TYPE_COMPUTE, "u_RRDiffuseAlbedo", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
+        .AddVariable(SHADER_TYPE_COMPUTE, "u_RRSpecAlbedo", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
+        .AddVariable(SHADER_TYPE_COMPUTE, "u_RRNormalsAndRoughness", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_StableRadiance", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_StablePlanesHeader", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_StablePlanesBuffer", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
@@ -411,6 +420,7 @@ bool RTXPTPostProcessPass::DispatchPass(IDeviceContext*                        p
     if (!IsDenoiserPreparePass(Pass) &&
         !IsDenoiserFinalMergePass(Pass) &&
         Pass != RTXPTPostProcessPassId::StablePlanesDebugViz &&
+        Pass != RTXPTPostProcessPassId::DLSSRRDenoiserPrepareInputs &&
         Pass != RTXPTPostProcessPassId::NoDenoiserFinalMerge)
         return false;
 
@@ -491,6 +501,38 @@ bool RTXPTPostProcessPass::RunNoDenoiserFinalMerge(IDeviceContext* pContext, con
         ++m_Stats.NoDenoiserMergeDispatchCount;
     }
     return Executed;
+}
+
+bool RTXPTPostProcessPass::RunDLSSRRDenoiserPrepareInputs(IDeviceContext* pContext, const RTXPTDenoiserPostProcessAttribs& Attribs)
+{
+    if (Attribs.pRenderTargets == nullptr ||
+        Attribs.pRenderTargets->GetStableRadianceUAV() == nullptr ||
+        Attribs.pRenderTargets->GetStablePlanesHeaderUAV() == nullptr ||
+        Attribs.pRenderTargets->GetStablePlanesBufferUAV() == nullptr)
+        return false;
+
+    // Reject missing/stale/aliased outputs before touching the SRB. Resource
+    // allocation and the subsequent IRayReconstruction dispatch belong to #19/#20.
+    const std::array<ITextureView*, 4> Outputs = {{Attribs.pMergeOutputUAV, Attribs.pRRDiffuseAlbedoUAV,
+                                                   Attribs.pRRSpecAlbedoUAV, Attribs.pRRNormalsAndRoughnessUAV}};
+    for (size_t Index = 0; Index < Outputs.size(); ++Index)
+    {
+        ITextureView* pView = Outputs[Index];
+        if (pView == nullptr || pView->GetDesc().ViewType != TEXTURE_VIEW_UNORDERED_ACCESS)
+            return false;
+        const TextureDesc& Desc = pView->GetTexture()->GetDesc();
+        if (Desc.Type != RESOURCE_DIM_TEX_2D || Desc.Format != TEX_FORMAT_RGBA16_FLOAT ||
+            pView->GetDesc().Format != TEX_FORMAT_RGBA16_FLOAT ||
+            Desc.Width != Attribs.pRenderTargets->GetRenderWidth() ||
+            Desc.Height != Attribs.pRenderTargets->GetRenderHeight() ||
+            Desc.MipLevels != 1 || Desc.SampleCount != 1 ||
+            pView->GetTexture() == Attribs.pRenderTargets->GetStableRadianceUAV()->GetTexture())
+            return false;
+        for (size_t Previous = 0; Previous < Index; ++Previous)
+            if (pView->GetTexture() == Outputs[Previous]->GetTexture())
+                return false;
+    }
+    return DispatchPass(pContext, RTXPTPostProcessPassId::DLSSRRDenoiserPrepareInputs, Attribs);
 }
 
 } // namespace Diligent

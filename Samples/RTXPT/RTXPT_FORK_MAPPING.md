@@ -494,7 +494,7 @@ Phase 6 ports the RTXPT-fork post-processing display contract. This section is t
 | `Sample.cpp::PostProcessAA` `RealtimeAA == 0` | `src/RTXPTSample.cpp::PresentRealtimeFinalOutput` + `src/RTXPTPostProcessPipeline.cpp::CopyRealtimeOutputToProcessed` | Realtime G10 | Copies/passes merged realtime `OutputColor` into HDR `ProcessedOutputColor` before bloom/tone mapping. |
 | `Sample.cpp::PostProcessAA` `RealtimeAA == 1` | `src/RTXPTTemporalAAPass.{hpp,cpp}` + `src/RTXPTPostProcessPipeline.cpp::RunTemporalAA` | Realtime G10 | Uses DiligentFX `TemporalAntiAliasing` with RTXPT depth, previous depth, motion vectors, current/previous camera state, and reset-history flags. |
 | `Sample.cpp::PostProcessAA` `RealtimeAA == 2` | `src/RTXPTSuperResolutionPass.{hpp,cpp}` + `src/RTXPTPostProcessPipeline.cpp::RunRealtimeSuperResolution` | Realtime G10 | Uses Diligent `ISuperResolution` from merged realtime `OutputColor` to display-size `ProcessedOutputColor`. |
-| `Sample.cpp::PostProcessAA` `RealtimeAA == 3` / `EvaluateDLSSRR` | Disabled UI/status guards with `TODO(RTXPT-Realtime-DLSS-RR)` | Deferred | DLSS-RR input preparation, Streamline resource tagging, and evaluation remain non-executing in this phase. |
+| `Sample.cpp::PostProcessAA` `RealtimeAA == 3` / `EvaluateDLSSRR` | `RTXPTPostProcessPass::RunDLSSRRDenoiserPrepareInputs`, then future `IRayReconstruction` integration | RR stage 1 | Input preparation is implemented below; resource ownership and frame scheduling remain #19/#20. The port uses native NGX through Diligent, without Streamline. |
 | RTXPT-fork DLSS/TAA scheduling hooks | `src/RTXPTSuperResolutionPass.{hpp,cpp}`, `src/RTXPTPostProcessPipeline.{hpp,cpp}` | P6 | Reserves Diligent `ISuperResolution` for future non-reference temporal upscaling; Reference PathTracer does not schedule SR/TAA/DLSS/AA. |
 | `ProcessingPasses/AccumulationPass.h` | `src/RTXPTAccumulationPass.hpp` | P2 | Public Diligent accumulation pass interface, status, and resource binding contract. |
 | `ProcessingPasses/AccumulationPass.cpp` | `src/RTXPTAccumulationPass.cpp` | P2 | Diligent compute PSO/SRB creation and dispatch. No Donut/NVRHI API copy. |
@@ -643,6 +643,87 @@ G6 intentionally does not port `ShaderDebug`, `StablePlanesDebugViz`, NRD prepar
 | `ProcessingPasses/PostProcess.hlsl::NO_DENOISER_FINAL_MERGE` | `shaders/PostProcessing/RTXPTPostProcess.csh` no-denoiser mode | Combines stable radiance plus noisy stable-plane radiance into the same downstream `pMergeOutputUAV` target selected by `GetAccumulationOutputUAV()`. |
 | `ProcessingPasses/PostProcess.hlsl::STABLE_PLANES_DEBUG_VIZ` | `shaders/PostProcessing/RTXPTPostProcess.csh` stable-plane debug mode | Provides lightweight stable-plane debug output without porting RTXPT-fork `ShaderDebug`. |
 | `NRD/DenoiserNRD.hlsli` | `shaders/PostProcessing/RTXPTDenoiserNRD.hlsli` | Wrapper compiles before G8 and can forward to NRD headers after the NRD dependency gate exists. |
+
+## DLSS-RR Stage 1: Input Preparation (#18)
+
+`RTXPTPostProcessPass::RunDLSSRRDenoiserPrepareInputs` dispatches mode 9 of
+`RTXPTPostProcess.csh`. The caller supplies four distinct output UAVs through
+`RTXPTDenoiserPostProcessAttribs`; resource allocation belongs to #19 and frame
+scheduling / `IRayReconstruction` execution belongs to #20. The existing RR UI
+gate remains until that integration is ready. No NRD result is read by this pass.
+
+### Reference correspondence
+
+| RTXPT-fork source | Diligent producer / implementation | Meaning |
+|---|---|---|
+| `PathTracerStablePlanes.hlsli` stable-plane surface export | `PathTracerStablePlanes.hlsli::StablePlanesHandleHit` surface export, `PathTracerTypes.hlsli::ActiveBSDF::estimateSpecDiffBSDF` | Diffuse reflection plus diffuse transmission; specular GGX directional integral plus specular transmission. These are material BSDF estimates, not base-color texture values alone. |
+| `StablePlanes.hlsli::StoreStablePlane` | Same local symbol | BSDF estimates retain the reference 0.04 reflectance floor and fp16 packing, without multiplying throughput or exposure. Normal is oct-encoded after the path image transform, in virtual world space for replaced/reflected surfaces. Roughness is the linear material roughness, with the existing blocked-motion-surface heuristic. |
+| `StablePlanes.hlsli::CommitDenoiserRadiance` | Same local symbol | FILL noisy radiance already includes path throughput and the `invSubSampleCount` sample average from `Bridge::getNoisyRadianceAttenuation`. Do not multiply either again. BUILD supplies stable sky/emissive radiance. |
+| `ProcessingPasses/PostProcess.hlsl` `DENOISER_DLSS_RR`, lines 205–370 | `RTXPTPostProcess.csh::DLSSRRDenoiserPrepareInputs` | Port of the enabled defaults: `MIX_BY_THROUGHPUT`, `MIX_STABLE_RADIANCE`, `ALLOW_MIX_NORMALS`. No experimental layer-radiance weighting or specular-MV synthesis is enabled. |
+| `Sample.cpp::UpdatePathTracerConstants` | `RTXPTSample.cpp::UpdateFrameConstants`, `Bridge::computeCameraRay` | RR micro-jitter already drives `perPixelJitterAAScale`; the random offset is added to the temporal camera jitter in ray generation. No extra jitter is applied by prepare. |
+
+Guide weights use 0.2 throughput weight, 0.01 equalization per available plane,
+and a 0.05 dominant-plane bias, then normalize. Secondary throughput subtracts
+from the primary residual. Sky branches participate in availability/weights,
+as upstream does, but contribute no surface guides or noisy radiance. Color sums
+stable radiance and every valid surface plane's noisy radiance without guide
+weights. Diffuse guidance additionally mixes `sqrt(ReinhardMax(stableRadiance))`
+toward 0.5 gray by 20%, using the reference stable-albedo blending factor.
+
+Explicit robustness differences from the reference:
+
+- Primary availability is checked, active count is capped at three, and an
+  out-of-range dominant index is ignored. An empty weight sum is safe.
+- Negative/NaN transport values become zero; positive infinity becomes 65504
+  before arithmetic. Guide albedos are limited to [0,1] and roughness is linear
+  [0,1]. This intentionally clips extreme BSDF estimates exceeding one.
+- Mixed normals are renormalized; tiny or invalid vectors use world +Z. When
+  diffuse plus specular guidance is nearly black, diffuse receives the upstream
+  0.05 floor. All pixels, including the background, write every output.
+- A nonpositive/nonfinite brightness clamp disables the user clamp instead of
+  clearing color to black. The final max-channel clamp still guarantees fp16
+  representability and preserves the color ratio of the finite combined sum.
+
+### Output contract for #19
+
+All four outputs are full 2D, single-mip, single-sample `RGBA16_FLOAT` textures
+at **render/input resolution**, not display resolution. All are written by this
+compute pass after BUILD/FILL. The dispatch wrapper rejects missing outputs,
+wrong dimensions/formats, output aliasing, and aliasing with StableRadiance.
+
+| UAV | Space / unit / encoding | RR consumer |
+|---|---|---|
+| `u_OutputColor` (`pMergeOutputUAV`) | Scene-linear HDR RGB radiance, sample averaged, not pre-exposed or demodulated; alpha 1 | `pColorSRV` |
+| `u_RRDiffuseAlbedo` | Linear dimensionless RGB [0,1], including stable sky/emission guidance; alpha 1 | `pDiffuseAlbedoSRV` |
+| `u_RRSpecAlbedo` | Linear dimensionless RGB [0,1]; alpha 1 | `pSpecularAlbedoSRV` |
+| `u_RRNormalsAndRoughness` | RGB unit world-space normal [-1,1], including stable-plane virtual image transform; W linear roughness [0,1], not GGX alpha | `pNormalsSRV`; set `RoughnessPacked = True`, `pRoughnessSRV = nullptr` |
+
+Radiance is **not pre-exposed** in this port. `preExposedGrayLuminance` affects
+firefly/clamp thresholds, not the units of stored radiance. The CPU supplies
+`DLSSRRBrightnessClampK = UIClamp * preExposedGrayLuminance` when positive; the
+prepare shader treats that as a threshold in the stored radiance domain. Set
+`PreExposure = 1`, `ExposureScale = 1` at execution. Do not apply tone-map
+exposure or its inverse during preparation. `pExposureSRV = nullptr` until an
+explicit exposure-texture producer is integrated; NGX AutoExposure selection
+remains the consumer's responsibility.
+
+Optional `pDiffuseHitDistanceSRV`, `pSpecularHitDistanceSRV` and
+`pSpecularMotionVectorsSRV` must explicitly be `nullptr` in fresh per-frame
+execute attributes. Existing `SpecularHitT` is the NRD dominant-plane heuristic;
+it is not exported here as a validated RR guide. No zero-filled placeholder
+texture or NRD-packed guide should be passed as a substitute.
+
+The caller must preserve BUILD/FILL UAV ordering before prepare, transition
+the four outputs from UAV to SRV before RR, and use a separate display-size RR
+output. Depth, motion, matrices, query-selected sizes and resize lifetimes are
+#19 contracts. This stage does not change NRD/SR frame scheduling or their
+resource encodings.
+
+Validation: Debug RTXPT build; DXC DXIL and SPIR-V compilation of mode 9;
+byte-identical DXIL for existing modes 3–8 (without NRD headers); ten production
+shader GPU readback cases on D3D12 / RTX 5060 (see `tests/README.md`). Full scene
+and camera-motion validation, Vulkan runtime validation and C++ wrapper dispatch
+integration remain outstanding until #19/#20 supply resources and scheduling.
 
 ## Skinned glTF Current Geometry
 
