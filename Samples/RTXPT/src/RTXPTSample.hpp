@@ -107,6 +107,18 @@ public:
     virtual void        WindowResize(Uint32 Width, Uint32 Height) override final;
     virtual const Char* GetSampleName() const override final { return "RTXPT"; }
     virtual void        ModifyEngineInitInfo(const ModifyEngineInitInfoAttribs& Attribs) override final;
+
+    // Initial window size (client area = swap chain resolution); the -w/-h command line overrides it.
+    virtual DesiredApplicationSettings GetDesiredApplicationSettings(bool IsInitialization) override final
+    {
+        DesiredApplicationSettings Settings;
+        if (IsInitialization)
+        {
+            Settings.SetWindowWidth(1920);
+            Settings.SetWindowHeight(1080);
+        }
+        return Settings;
+    }
     CommandLineStatus   ProcessCommandLine(int argc, const char* const* argv) override;
 
 protected:
