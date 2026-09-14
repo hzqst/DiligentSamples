@@ -362,6 +362,12 @@ if(PLATFORM_WIN32)
     set_target_properties(RTXPT PROPERTIES
         VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     )
+    if(MSVC)
+        # Embed the DPI-awareness manifest so that the window size is not
+        # stretched by the desktop scaling factor (PerMonitorV2, matching the
+        # original RTXPT which runs with per-monitor DPI awareness enabled).
+        target_sources(RTXPT PRIVATE RTXPT.manifest)
+    endif()
 endif()
 
 if(PLATFORM_WIN32 OR PLATFORM_LINUX)
