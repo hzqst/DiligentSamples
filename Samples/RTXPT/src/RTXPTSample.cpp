@@ -2353,11 +2353,12 @@ void RTXPTSample::UpdateUI()
                 }
                 const auto& RRStats = m_PostProcessPipeline.GetRayReconstructionPass().GetStats();
                 ImGui::TextWrapped("%s", RRStats.Message.c_str());
-                if (ImGui::Button("Retry DLSS-RR detection"))
-                {
-                    m_PostProcessPipeline.GetRayReconstructionPass().Initialize(m_pDevice);
-                    ResetTaaSrOnChange(true, "RR retry");
-                }
+                // Only for debugging: manual DLSS-RR re-detection.
+                // if (ImGui::Button("Retry DLSS-RR detection"))
+                // {
+                //     m_PostProcessPipeline.GetRayReconstructionPass().Initialize(m_pDevice);
+                //     ResetTaaSrOnChange(true, "RR retry");
+                // }
 
                 if (m_RealtimeUI.RealtimeAA == RTXPTRealtimeAAMode::SuperResolution &&
                     m_PostProcessPipeline.GetSuperResolutionPass().HasTemporalVariant())
