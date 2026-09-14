@@ -184,3 +184,104 @@ The initial resize test changed only the swap chain and triggered an ImGui/windo
 size assertion. The harness now resizes the actual Win32 window; reruns above use
 that corrected path. Final sequences also use the reduced 0.0025-unit camera step
 to keep the camera inside the room rather than crossing a wall.
+
+## Local light sampling regression and GPU profiling
+
+`LocalLightSamplingTest.cpp` dispatches the production `FillLocalSamplingCS`,
+then the production `SampleLocalLightIndex`, `SampleLocalPDF`, and
+`GetLightSelectionPdf`. An independent CPU histogram verifies the 128-entry
+multiset, sorted order, packed multiplicity, selected entries and PDFs. Cases
+include one light repeated 128 times, 128 unique lights, duplicates, absent
+lights, global-only/local-only/mixed PDFs, partial edge tiles, equal-weight
+feedback, invalid feedback and zero proxies.
+
+Build from an x64 VS 2022 Developer Command Prompt at the superproject root:
+
+```bat
+cl /nologo /std:c++17 /EHsc /MD /O2 /DPLATFORM_WIN32=1 /DNOMINMAX ^
+ /IDiligentCore\Platforms\Basic\interface /IDiligentCore\Primitives\interface /IDiligentCore\Common\interface ^
+ /IDiligentCore\Graphics\GraphicsEngine\interface /IDiligentCore\Graphics\GraphicsTools\interface /IDiligentCore\Graphics\GraphicsAccessories\interface ^
+ DiligentSamples\Samples\RTXPT\tests\LocalLightSamplingTest.cpp ^
+ /Fo"%TEMP%\LocalLightSamplingTest.obj" /Fe"%TEMP%\LocalLightSamplingTest.exe" /link user32.lib ^
+ build\x64\Release\DiligentCore\Common\Release\Diligent-Common.lib ^
+ build\x64\Release\DiligentCore\Platforms\Basic\Release\Diligent-BasicPlatform.lib ^
+ build\x64\Release\DiligentCore\Platforms\Win32\Release\Diligent-Win32Platform.lib
+set RTXPT_TEST_ROOT=%CD%
+pushd build\x64\Release\DiligentSamples\Samples\RTXPT\Release
+"%TEMP%\LocalLightSamplingTest.exe" "%CD%\GraphicsEngineD3D12_64r.dll" "%RTXPT_TEST_ROOT%\DiligentSamples\Samples\RTXPT\shaders"
+"%TEMP%\LocalLightSamplingTest.exe" "%CD%\GraphicsEngineVk_64r.dll" "%RTXPT_TEST_ROOT%\DiligentSamples\Samples\RTXPT\shaders"
+popd
+```
+
+Opt-in GPU timing (use an absolute CSV path; omit it for console output only):
+
+```bat
+RTXPT.exe --mode d3d12 --realtime true --aa rr --rr_quality balanced --rr_preset F --width 1920 --height 1080 --vsync false --validation 0 --gpu_profile true --gpu_profile_csv "%TEMP%\rtxpt-gpu.csv"
+```
+
+Separate timestamp pairs measure total sample rendering, BUILD, LightsBaker,
+FILL (all sub-samples), shared guides, RR preparation, native RR and
+bloom/tone mapping/blit. Total excludes SampleBase ImGui, Present and work
+scheduled by Update. Native RR includes its transitions and command submission.
+No duration query is held open across NGX. An eight-frame ring reads completed
+queries without GPU waits; if full, it drops a profiling sample instead of
+stalling rendering. Console means are reported every 120 collected frames; the
+CSV contains every collected frame (`-1` means absent/unavailable). Exclude
+startup and scene/config changes when measuring steady state.
+
+Shader edits require a fresh cache because the sample hashes file names rather
+than contents. The local-table change advances the runtime cache to
+`RTXPTCache_002.bin`, preventing reuse of the incompatible old producer/consumer.
+
+Validation on 2026-09-14: the test first failed on the old producer's incorrect
+multiplicity. All five producer/consumer cases passed on D3D12 and Vulkan after
+the fix, with graphics validation enabled.
+
+### Performance investigation record (RTX 5060, 2026-09-14)
+
+Release/D3D12, convergence-test, 1920x1080 output, RR Balanced/F (1114x626
+render), validation and VSync disabled: the original whole-frame measurement was
+about 71 ms. After the local-table fix, 612 GPU samples after frame 240 averaged:
+
+| Stage | GPU ms |
+|---|---:|
+| Total sample rendering | 28.212 |
+| BUILD | 0.317 |
+| LightsBaker | 0.498 |
+| FILL | 23.969 |
+| Guides | 0.28 |
+| RR preparation | 0.21 |
+| RR evaluation | 2.807 |
+| Post-process / blit | 0.10 |
+
+Independent temporary shader ablations localized the remaining FILL cost:
+
+| Diagnostic variant | Total GPU ms | FILL GPU ms |
+|---|---:|---:|
+| All NEE disabled | 5.942 | 1.699 |
+| Environment NEE disabled | 17.347 | 12.957 |
+| One direct-light candidate instead of five | 21.451 | 16.990 |
+| Inline RayQuery shadows with translated alpha handling | 18.145 | 13.768 |
+| Early rejection of delta-only NEE | 29.152 | 24.819 |
+
+These ablations are not production changes or additive pass costs: they also
+change shader register allocation/scheduling, and disabling NEE changes the
+estimator. Inline visibility is a promising next optimization, but its temporary
+prototype has not passed general alpha/transmission/scene regression. SER and
+material-specialized shading differences are not yet quantitatively attributed.
+The user-provided upstream frame time (~7.8 ms) was not remeasured in this run.
+
+Final validation-enabled runs also exercised timestamp collection across native
+RR on D3D12/F at 1080p and Vulkan/E at 640x360, with no reported graphics errors
+or dropped profiling samples. The existing Vulkan NRD `rgb10_a2` shader warnings
+and D3D12 missing-PIX-runtime warning remain. D3D12 PNG capture was inspected for
+the expected scene and RR output; this is not a full temporal image-quality test.
+Validation-enabled D3D12 measured about 31 ms, so compare performance with the
+same validation setting. No extra GPU flush/wait is introduced by the profiler.
+
+A subsequent run of the final executable with validation disabled collected 676
+steady frames: Total 30.08 ms, BUILD 0.32, LightsBaker 0.50, FILL 25.67,
+Guides 0.29, RR preparation 0.22, RR 2.95 and post-process 0.10. With profiling
+also disabled, window-title samples were 30.3–31.1 ms. Report the observed
+28–31 ms range (~32–35 FPS), rather than attributing the entire between-run
+variation to validation or profiling. The remaining dominant cost is still FILL.

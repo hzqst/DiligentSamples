@@ -152,7 +152,6 @@ private:
     RefCntAutoPtr<ITextureView> m_FeedbackCandidatesSRV;
     RefCntAutoPtr<ITextureView> m_FeedbackCandidatesUAV;
 
-    RTXPTLightsBakerPass m_ClearLocalSamplingPass;
     RTXPTLightsBakerPass m_FillLocalSamplingPass;
     RTXPTLightsBakerPass m_ClearFeedbackPass;
 

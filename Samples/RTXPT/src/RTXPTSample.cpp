@@ -79,7 +79,7 @@ constexpr Uint32 kRTXPTRealtimeNoisePeriod = 8192u;
 
 // Disk file used to persist the render state cache (compiled shaders + pipeline states)
 // across runs. Resolved relative to the working directory set in Initialize().
-constexpr char kStateCachePath[] = "RTXPTCache_001.bin";
+constexpr char kStateCachePath[] = "RTXPTCache_002.bin";
 
 bool IsStandaloneNrdAvailable()
 {
@@ -642,6 +642,8 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
 {
     CommandLineParser Args{argc, argv};
     Args.Parse("realtime", m_RealtimeUI.RealtimeMode);
+    Args.Parse("gpu_profile", m_EnableGpuProfiling);
+    Args.Parse("gpu_profile_csv", m_GpuProfileCSV);
     Args.Parse("scene", m_InitialSceneName);
     Args.Parse("nrd", m_RealtimeUI.StandaloneDenoiser);
     Args.Parse("rr_validation", m_ValidateRayReconstruction);
@@ -1434,6 +1436,7 @@ void RTXPTSample::RecordRealtimePathTraceStatus(const char* Status)
 
 bool RTXPTSample::DispatchPathTracePrePass(const RTXPTRayTracingDispatch& BaseDispatch)
 {
+    RTXPTGpuProfiler::Scope Timing{&m_GpuProfiler, m_pImmediateContext, RTXPTGpuProfiler::Stage::Build};
     if (!m_RenderTargets.HasRealtimeRenderTargets())
     {
         RecordRealtimePathTraceStatus("Realtime render targets are not allocated");
@@ -1474,9 +1477,12 @@ bool RTXPTSample::PathTrace()
     if (UseStablePlanes && !DispatchPathTracePrePass(BaseDispatch))
         return false;
 
-    if (!m_LightsBaker.UpdateEnd(m_pImmediateContext,
-                                 m_RenderTargets.GetDepthSRV(),
-                                 m_RenderTargets.GetScreenMotionVectorsSRV()))
+    m_GpuProfiler.Begin(m_pImmediateContext, RTXPTGpuProfiler::Stage::LightsBaker);
+    const bool LightsOk = m_LightsBaker.UpdateEnd(m_pImmediateContext,
+                                                  m_RenderTargets.GetDepthSRV(),
+                                                  m_RenderTargets.GetScreenMotionVectorsSRV());
+    m_GpuProfiler.End(m_pImmediateContext, RTXPTGpuProfiler::Stage::LightsBaker);
+    if (!LightsOk)
     {
         RecordRealtimePathTraceStatus("LightsBaker UpdateEnd failed");
         return false;
@@ -1501,6 +1507,7 @@ bool RTXPTSample::PathTrace()
 
 bool RTXPTSample::DispatchPathTraceLoop(bool UseStablePlanes, const RTXPTRayTracingDispatch& BaseDispatch)
 {
+    RTXPTGpuProfiler::Scope     Timing{&m_GpuProfiler, m_pImmediateContext, RTXPTGpuProfiler::Stage::Fill};
     const Uint32                SPP = std::max(m_RealtimeUI.ActualSamplesPerPixel(), 1u);
     const RTXPTPathTraceVariant Variant =
         UseStablePlanes ? RTXPTPathTraceVariant::FillStablePlanes : RTXPTPathTraceVariant::Reference;
@@ -1539,6 +1546,7 @@ bool RTXPTSample::DispatchPathTraceLoop(bool UseStablePlanes, const RTXPTRayTrac
 
 bool RTXPTSample::BakeDenoisingGuides()
 {
+    RTXPTGpuProfiler::Scope Timing{&m_GpuProfiler, m_pImmediateContext, RTXPTGpuProfiler::Stage::Guides};
     if (!m_RenderTargets.HasRealtimeRenderTargets())
     {
         RecordRealtimePathTraceStatus("Realtime render targets are not allocated for denoising guides");
@@ -1741,7 +1749,7 @@ bool RTXPTSample::PresentRealtimeFinalOutput()
                 HasRealtimeResetFlag(m_CurrentFrameRealtimeReset, RTXPT_REALTIME_RESET_REALTIME_CACHES) ||
                 HasRealtimeResetFlag(m_RealtimeResetPending, RTXPT_REALTIME_RESET_TAA_SR_HISTORY);
             if (!m_RayReconstructionFrameReady ||
-                !m_PostProcessPipeline.RunRayReconstruction(m_pImmediateContext, m_RenderTargets, m_LastFrameConstants, ResetHistory))
+                !m_PostProcessPipeline.RunRayReconstruction(m_pImmediateContext, m_RenderTargets, m_LastFrameConstants, ResetHistory, &m_GpuProfiler))
             {
                 RecordRealtimePathTraceStatus(RR.GetStats().Message.c_str());
                 RR.InvalidateHistory();
@@ -1762,6 +1770,7 @@ bool RTXPTSample::PresentRealtimeFinalOutput()
     BloomParams.Radius    = std::clamp(m_ReferenceUI.BloomRadius, 0.0f, 64.0f);
     BloomParams.Intensity = std::clamp(m_ReferenceUI.BloomIntensity, 0.0f, 0.1f);
 
+    RTXPTGpuProfiler::Scope Timing{&m_GpuProfiler, m_pImmediateContext, RTXPTGpuProfiler::Stage::PostProcess};
     if (!m_PostProcessPipeline.RunPreToneMapping(m_pImmediateContext, m_RenderTargets, BloomParams))
     {
         RecordRealtimePathTraceStatus("Realtime pre-tone post-process failed");
@@ -1954,6 +1963,7 @@ bool RTXPTSample::RunRealtimePathTraceOnly()
 
 void RTXPTSample::Render()
 {
+    auto Timing          = m_GpuProfiler.BeginFrame(m_pDevice, m_pImmediateContext, m_EnableGpuProfiling, m_GpuProfileCSV);
     m_LastFrameSucceeded = false;
     if (m_RealtimeUI.RealtimeMode)
     {

@@ -39,6 +39,7 @@
 #include "RTXPTEmissiveTrianglePass.hpp"
 #include "RTXPTEnvMapBaker.hpp"
 #include "RTXPTFrameConstants.hpp"
+#include "RTXPTGpuProfiler.hpp"
 #include "RTXPTRealtimeSettings.hpp"
 #include "RTXPTLights.hpp"
 #include "RTXPTLightsBaker.hpp"
@@ -167,6 +168,9 @@ private:
 
     RefCntAutoPtr<IRenderStateCache>                        m_pStateCache;
     RTXPTFeatureCaps                                        m_FeatureCaps;
+    RTXPTGpuProfiler                                        m_GpuProfiler;
+    bool                                                    m_EnableGpuProfiling = false;
+    std::string                                             m_GpuProfileCSV;
     std::string                                             m_AssetsRoot;
     std::vector<std::string>                                m_AvailableScenes;
     std::string                                             m_CurrentSceneName;

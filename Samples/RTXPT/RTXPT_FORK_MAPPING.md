@@ -439,6 +439,29 @@ Raygen locals become camelCase:
 - `RTXPTCommon.fxh`, `RTXPTDebugCompute.csh`, and `RTXPTBlit.vsh` / `psh` keep
   their `RTXPT`-prefixed names because they sit outside the algorithm layer.
 
+## NEE-AT local table performance contract (2026-09-14)
+
+`Lighting/LightsBaker.hlsl::FillLocalSamplingCS` now dispatches one 128-thread
+workgroup per tile. It preserves the port's proxy multiset and first-maximum
+feedback selection, sorts light indices with a groupshared bitonic network, and
+packs each light's full occurrence count into every corresponding entry. The
+pass writes every tile entry, including the zero-proxy case, so no separate
+local-table clear is dispatched. Invalid/out-of-range feedback is rejected.
+
+`LightSampler.hlsli::SampleLocalLightIndex` reads the packed count directly;
+`SampleLocalPDF` uses `LightingTypes.hlsli::LocalLightBinarySearch`, matching the
+upstream stored-count/sorted-search contract. Local candidates reuse their known
+local PDF when forming the mixture. This replaces repeated 128-entry scans in
+the path-tracing loop. Sorting changes the random-number-to-light mapping, but
+not the local distribution or its mixed global/local PDF. The port's existing
+feedback collection and global proxy budget deviations remain as documented
+above; this is not a full upstream NEE-AT baker port.
+
+`RTXPTGpuProfiler.hpp` provides opt-in asynchronous timestamp pairs, including
+separate RR preparation/evaluation measurements without an active query across
+NGX. See `tests/README.md` for GPU regression coverage, timing commands and cache
+invalidation requirements.
+
 ## Phase R4 EnvMapBaker Mapping
 
 | RTXPT-fork | Diligent RTXPT | Notes |

@@ -165,6 +165,30 @@ uint UnpackMiniListCount(uint value)
     return (value & 0x1FFu) + 1u;
 }
 
+// Local tables are sorted by light index, with the full multiplicity packed in
+// every occurrence. Return an entry, not a position, as in RTXPT-fork.
+uint LocalLightBinarySearch(StructuredBuffer<uint> buffer, uint base, uint lightIndex)
+{
+    uint first = 0u, last = RTXPT_LIGHTING_LOCAL_PROXY_COUNT;
+    [unroll]
+    for (uint step = 0u; step < RTXPT_LIGHTING_LOCAL_PROXY_BINARY_SEARCH_STEPS; ++step)
+    {
+        if (first < last)
+        {
+            const uint middle = (first + last) / 2u;
+            const uint packed = buffer[base + middle];
+            const uint candidate = UnpackMiniListLight(packed);
+            if (candidate == lightIndex)
+                return packed;
+            if (candidate < lightIndex)
+                first = middle + 1u;
+            else
+                last = middle;
+        }
+    }
+    return RTXPT_INVALID_LIGHT_INDEX;
+}
+
 uint LLSB_ComputeBaseAddress(uint2 tilePos, uint2 localSamplingResolution)
 {
     return (tilePos.x + tilePos.y * localSamplingResolution.x) * RTXPT_LIGHTING_LOCAL_PROXY_COUNT;

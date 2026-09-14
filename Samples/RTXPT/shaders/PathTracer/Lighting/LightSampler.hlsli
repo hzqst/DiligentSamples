@@ -124,15 +124,6 @@ bool HasLocalLightSampling(LightingControlData ctrl)
         ctrl.LocalSamplingResolution.y > 0u;
 }
 
-uint CountLocalLightOccurrences(uint base, uint lightIndex)
-{
-    uint count = 0u;
-    [loop]
-    for (uint localIndex = 0u; localIndex < RTXPT_LIGHTING_LOCAL_PROXY_COUNT; ++localIndex)
-        count += UnpackMiniListLight(t_LocalSamplingBuffer[base + localIndex]) == lightIndex ? 1u : 0u;
-    return count;
-}
-
 uint SampleLocalLightIndex(uint2 pixelPos, float randomValue, out float pdf)
 {
     const LightingControlData ctrl = Bridge::getLightingControl();
@@ -145,8 +136,9 @@ uint SampleLocalLightIndex(uint2 pixelPos, float randomValue, out float pdf)
     const uint2 tilePos = min(GetLocalTilePos(pixelPos), ctrl.LocalSamplingResolution - 1u);
     const uint   base   = LLSB_ComputeBaseAddress(tilePos, ctrl.LocalSamplingResolution);
     const uint   localIndex = min(uint(randomValue * float(RTXPT_LIGHTING_LOCAL_PROXY_COUNT)), RTXPT_LIGHTING_LOCAL_PROXY_COUNT - 1u);
-    const uint   lightIndex = UnpackMiniListLight(t_LocalSamplingBuffer[base + localIndex]);
-    const uint   occurrenceCount = CountLocalLightOccurrences(base, lightIndex);
+    const uint   packed = t_LocalSamplingBuffer[base + localIndex];
+    const uint   lightIndex = UnpackMiniListLight(packed);
+    const uint   occurrenceCount = UnpackMiniListCount(packed);
     pdf = float(occurrenceCount) / float(RTXPT_LIGHTING_LOCAL_PROXY_COUNT);
     return lightIndex;
 }
@@ -177,7 +169,8 @@ float SampleLocalPDF(uint2 pixelPos, uint lightIndex)
 
     const uint2 tilePos = min(GetLocalTilePos(pixelPos), ctrl.LocalSamplingResolution - 1u);
     const uint   base   = LLSB_ComputeBaseAddress(tilePos, ctrl.LocalSamplingResolution);
-    return float(CountLocalLightOccurrences(base, lightIndex)) / float(RTXPT_LIGHTING_LOCAL_PROXY_COUNT);
+    const uint packed = LocalLightBinarySearch(t_LocalSamplingBuffer, base, lightIndex);
+    return packed == RTXPT_INVALID_LIGHT_INDEX ? 0.0 : float(UnpackMiniListCount(packed)) / float(RTXPT_LIGHTING_LOCAL_PROXY_COUNT);
 }
 
 float GetLightSelectionPdf(uint2 pixelPos, uint lightIndex)
@@ -211,16 +204,16 @@ DirectLightSample GenerateDirectLightCandidate(StandardBSDFData bsdfData, float3
     if (hasLocal && sampleNext1D(sg) < localRatio)
     {
         lightIndex = SampleLocalLightIndex(pixelPos, sampleNext1D(sg), selectionPdf);
+        selectionPdf = localRatio * selectionPdf + (1.0 - localRatio) * SampleGlobalPDF(lightIndex);
     }
     else
     {
         lightIndex = SampleGlobalLightIndex(sampleNext1D(sg), selectionPdf);
+        if (hasLocal)
+            selectionPdf = localRatio * SampleLocalPDF(pixelPos, lightIndex) + (1.0 - localRatio) * selectionPdf;
     }
 
     if (lightIndex == RTXPT_INVALID_LIGHT_INDEX || selectionPdf <= 0.0)
-        return sample;
-    selectionPdf = GetLightSelectionPdf(pixelPos, lightIndex);
-    if (selectionPdf <= 0.0)
         return sample;
 
     if (lightIndex < ctrl.AnalyticLightCount)

@@ -47,6 +47,7 @@ namespace Diligent
 {
 
 struct IRenderStateCache;
+class RTXPTGpuProfiler;
 
 struct RTXPTPostProcessPipelineStats
 {
@@ -116,7 +117,7 @@ public:
 
     float2 GetRealtimeTAAPixelJitter(Uint32 FrameIndex) const;
 
-    bool                        RunRayReconstruction(IDeviceContext* pContext, const RTXPTRenderTargets& RenderTargets, const SampleConstants& FrameConstants, bool ResetHistory);
+    bool                        RunRayReconstruction(IDeviceContext* pContext, const RTXPTRenderTargets& RenderTargets, const SampleConstants& FrameConstants, bool ResetHistory, RTXPTGpuProfiler* Profiler = nullptr);
     RTXPTRayReconstructionPass& GetRayReconstructionPass() { return m_RayReconstructionPass; }
 
     bool CopyRealtimeOutputToProcessed(IDeviceContext*           pContext,

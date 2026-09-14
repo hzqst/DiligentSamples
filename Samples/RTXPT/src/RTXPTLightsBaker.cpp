@@ -127,7 +127,6 @@ Uint32 FloatAsUint(float Value)
 
 void RTXPTLightsBaker::Reset()
 {
-    m_ClearLocalSamplingPass.Reset();
     m_FillLocalSamplingPass.Reset();
     m_ClearFeedbackPass.Reset();
     m_ProxyBuildPass.Reset();
@@ -196,12 +195,10 @@ bool RTXPTLightsBaker::CreateResources(IRenderDevice* pDevice, IEngineFactory* p
     const bool LocalOk             = CreateLocalSamplingBuffer(pDevice, Width, Height);
     const bool ClearFeedbackPassOk = FeedbackOk &&
         m_ClearFeedbackPass.Initialize(pDevice, pEngineFactory, pStateCache, "RTXPT LightsBaker clear feedback", "ClearFeedbackCS");
-    const bool ClearPassOk = FeedbackOk && LocalOk && ClearFeedbackPassOk &&
-        m_ClearLocalSamplingPass.Initialize(pDevice, pEngineFactory, pStateCache, "RTXPT LightsBaker clear local sampling", "ClearLocalSamplingCS");
-    const bool FillPassOk = ClearPassOk &&
+    const bool FillPassOk = FeedbackOk && LocalOk && ClearFeedbackPassOk &&
         m_FillLocalSamplingPass.Initialize(pDevice, pEngineFactory, pStateCache, "RTXPT LightsBaker fill local sampling", "FillLocalSamplingCS");
     const bool ProxyBuildOk = FillPassOk && m_ProxyBuildPass.Initialize(pDevice, pEngineFactory, pStateCache);
-    m_Stats.Ready           = FeedbackOk && LocalOk && ClearFeedbackPassOk && ClearPassOk && FillPassOk && ProxyBuildOk;
+    m_Stats.Ready           = FeedbackOk && LocalOk && ClearFeedbackPassOk && FillPassOk && ProxyBuildOk;
     return m_Stats.Ready;
 }
 
@@ -278,23 +275,15 @@ bool RTXPTLightsBaker::UpdateEnd(IDeviceContext* pContext,
         return true;
     }
 
-    const Uint32 GroupsX = (m_Stats.LocalSamplingTileCountX + 7u) / 8u;
-    const Uint32 GroupsY = (m_Stats.LocalSamplingTileCountY + 7u) / 8u;
+    const Uint32 GroupsX = m_Stats.LocalSamplingTileCountX;
+    const Uint32 GroupsY = m_Stats.LocalSamplingTileCountY;
     if (GroupsX == 0u || GroupsY == 0u)
     {
         m_Stats.LastError = "RTXPT LightsBaker local sampling has no dispatchable tile groups";
         return false;
     }
 
-    const bool ClearOk = m_ClearLocalSamplingPass.Bind(m_ControlBuffer, m_LightProxyCounters, m_LightSamplingProxies, m_LocalSamplingBuffer,
-                                                       nullptr, nullptr, m_FeedbackTotalWeightUAV, m_FeedbackCandidatesUAV) &&
-        m_ClearLocalSamplingPass.Dispatch(pContext, GroupsX, GroupsY);
-    if (!ClearOk)
-    {
-        m_Stats.LastError = "RTXPT LightsBaker local sampling clear failed";
-        return false;
-    }
-
+    // Fill owns every entry of each tile, including the empty-proxy case.
     const bool FillOk = m_FillLocalSamplingPass.Bind(m_ControlBuffer, m_LightProxyCounters, m_LightSamplingProxies, m_LocalSamplingBuffer,
                                                      m_FeedbackTotalWeightSRV, m_FeedbackCandidatesSRV, nullptr, nullptr) &&
         m_FillLocalSamplingPass.Dispatch(pContext, GroupsX, GroupsY);
