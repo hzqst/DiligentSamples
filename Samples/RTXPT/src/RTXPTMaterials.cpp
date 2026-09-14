@@ -154,9 +154,6 @@ void FillMaterialPTDataFromGLTF(const GLTF::Material& Material, MaterialPTData& 
     if ((Data.flags & kMaterialFlag_HasTransmission) != 0u && Material.Volume == nullptr)
         Data.flags |= kMaterialFlag_ThinSurface;
 
-    if (RTXPTMaterialIsAlphaBlended(Material, nullptr))
-        Data.flags |= kMaterialFlag_AlphaBlend;
-
     if (RTXPTMaterialIsAlphaTested(Material) && (Data.flags & kMaterialFlag_HasBaseColorTexture) != 0u)
         Data.flags |= kMaterialFlag_AlphaTested;
 
@@ -333,15 +330,14 @@ bool RTXPTMaterialIsAlphaTested(const GLTF::Material&         Material,
     if (!HasBaseColorTexture)
         return false;
 
-    const bool ExtensionAlphaTested = pExtension != nullptr && pExtension->Loaded && pExtension->EnableAlphaTesting;
-    return Material.Attribs.AlphaMode == GLTF::Material::ALPHA_MODE_MASK || ExtensionAlphaTested;
+    return pExtension != nullptr && pExtension->Loaded ?
+        pExtension->EnableAlphaTesting :
+        Material.Attribs.AlphaMode == GLTF::Material::ALPHA_MODE_MASK;
 }
 
-bool RTXPTMaterialIsAlphaBlended(const GLTF::Material&         Material,
-                                 const RTXPTMaterialExtension* pExtension)
+bool RTXPTMaterialIsExcludedFromNEE(const RTXPTMaterialExtension* pExtension)
 {
-    return Material.Attribs.AlphaMode == GLTF::Material::ALPHA_MODE_BLEND &&
-        !RTXPTMaterialHasTransmission(Material, pExtension);
+    return pExtension != nullptr && pExtension->Loaded && pExtension->ExcludeFromNEE;
 }
 
 bool RTXPTMaterialNeedsAnyHit(const GLTF::Material&         Material,
@@ -349,7 +345,7 @@ bool RTXPTMaterialNeedsAnyHit(const GLTF::Material&         Material,
                               bool                          HasBaseColorTexture)
 {
     return RTXPTMaterialIsAlphaTested(Material, pExtension, HasBaseColorTexture) ||
-        RTXPTMaterialIsAlphaBlended(Material, pExtension);
+        RTXPTMaterialIsExcludedFromNEE(pExtension);
 }
 
 bool RTXPTMaterialIsEmissiveAreaLight(const GLTF::Material&         Material,
@@ -547,9 +543,8 @@ bool RTXPTMaterials::Upload(IRenderDevice* pDevice, const RTXPTSceneGraphData& S
                     Data.normalScale = Ext.NormalTextureScale;
             }
 
-            Data.flags &= ~kMaterialFlag_AlphaBlend;
-            if (RTXPTMaterialIsAlphaBlended(Material, pExtension))
-                Data.flags |= kMaterialFlag_AlphaBlend;
+            if (RTXPTMaterialIsExcludedFromNEE(pExtension))
+                Data.flags |= kMaterialFlag_ExcludeFromNEE;
 
             Data.flags &= ~kMaterialFlag_AlphaTested;
             if (RTXPTMaterialIsAlphaTested(Material, pExtension, (Data.flags & kMaterialFlag_HasBaseColorTexture) != 0u))
@@ -559,6 +554,8 @@ bool RTXPTMaterials::Upload(IRenderDevice* pDevice, const RTXPTSceneGraphData& S
             if (RTXPTMaterialIsEmissiveAreaLight(Material, pExtension))
                 Data.flags |= kMaterialFlag_EmissiveAreaLight;
 
+            // Match MaterialsBaker::UpdateSubInstanceData's packed UNORM8 cutoff.
+            Data.alphaCutoff = RTXPTQuantizeAlphaCutoff(Data.alphaCutoff);
             MaterialData.emplace_back(Data);
         }
     }

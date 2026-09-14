@@ -103,6 +103,7 @@ RTXPTMaterialExtension ParseRTXPTMaterialExtension(const std::string&    FilePat
         Ext.VolumeAttenuationColor = float3{VolumeColor[0], VolumeColor[1], VolumeColor[2]};
 
     Ext.EnableAlphaTesting                      = Json.value("EnableAlphaTesting", Ext.EnableAlphaTesting);
+    Ext.ExcludeFromNEE                          = Json.value("ExcludeFromNEE", Ext.ExcludeFromNEE);
     Ext.EnableBaseTexture                       = Json.value("EnableBaseTexture", Ext.EnableBaseTexture);
     Ext.EnableEmissiveTexture                   = Json.value("EnableEmissiveTexture", Ext.EnableEmissiveTexture);
     Ext.EnableNormalTexture                     = Json.value("EnableNormalTexture", Ext.EnableNormalTexture);

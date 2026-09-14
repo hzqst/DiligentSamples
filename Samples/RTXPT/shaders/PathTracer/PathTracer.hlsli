@@ -3,6 +3,7 @@
 
 #include "Config.h"
 #include "PathTracerBridge.hlsli"
+#include "PathTracerVisibility.hlsli"
 #include "PathTracerHelpers.hlsli"
 #include "Lighting/EnvMap.hlsli"
 #include "Lighting/LightSampler.hlsli"
@@ -27,6 +28,7 @@ namespace PathTracer
 
     inline PathState EmptyPathInitialize(uint2 pixelPos, float pixelConeSpreadAngle);
 
+#if !RTXPT_USE_INLINE_VISIBILITY
     inline PathPayload MakeVisibilityPayload(uint2 pixelPos)
     {
         PathState visibilityPath = EmptyPathInitialize(pixelPos, 0.0);
@@ -38,6 +40,7 @@ namespace PathTracer
         visibilityPath.SetThp(float3(0.0, 0.0, 0.0));
         return PathPayload::pack(visibilityPath);
     }
+#endif
 
     bool TraceVisibilityRay(float3 origin, float3 dir, float tMax)
     {
@@ -50,6 +53,9 @@ namespace PathTracer
         ray.TMin      = kVisibilityRayTMin;
         ray.TMax      = tMax;
 
+#if RTXPT_USE_INLINE_VISIBILITY
+        return Bridge::traceVisibilityRay(ray);
+#else
         PathPayload payload = MakeVisibilityPayload(Bridge::getPixelPosition());
         TraceRay(t_SceneBVH,
                  RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER,
@@ -60,6 +66,7 @@ namespace PathTracer
                  ray,
                  payload);
         return !PathPayload::unpack(payload).isActive();
+#endif
     }
 
     float3 MakeVisibilityOrigin(float3 hitPos, float3 faceNormal, float3 shadingNormal, float3 dir)

@@ -71,7 +71,7 @@ struct RTXPTAccelerationStructureStats
     Uint32 BLASCount                 = 0;
     Uint32 SubInstanceCount          = 0;
     Uint32 AlphaTestedGeometryCount  = 0;
-    Uint32 AlphaBlendedGeometryCount = 0;
+    Uint32 ExcludedFromNEEGeometryCount = 0;
     Uint64 BLASScratchSize           = 0;
     Uint64 TLASScratchSize           = 0;
 };

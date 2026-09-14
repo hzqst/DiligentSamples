@@ -282,7 +282,7 @@ static const uint kMaterialFlagHasTransmissionTexture      = 0x80u;
 static const uint kMaterialFlagHasVolume                   = 0x100u;
 static const uint kMaterialFlagHasThicknessTexture         = 0x200u;
 static const uint kMaterialFlagThinSurface                 = 0x400u;
-static const uint kMaterialFlagAlphaBlend                  = 0x800u;
+static const uint kMaterialFlagExcludeFromNEE              = 0x1000u;
 
 static const uint kMaterialPathDecompositionFlagPSDExclude                          = 0x1u;
 static const uint kMaterialPathDecompositionFlagPSDBlockMotionVectorsAtSurfaceMask  = 0x6u;

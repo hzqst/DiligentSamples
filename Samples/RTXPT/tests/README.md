@@ -232,6 +232,7 @@ startup and scene/config changes when measuring steady state.
 Shader edits require a fresh cache because the sample hashes file names rather
 than contents. The local-table change advances the runtime cache to
 `RTXPTCache_002.bin`, preventing reuse of the incompatible old producer/consumer.
+The subsequent inline/upstream-alpha change advances it to `RTXPTCache_005.bin`.
 
 Validation on 2026-09-14: the test first failed on the old producer's incorrect
 multiplicity. All five producer/consumer cases passed on D3D12 and Vulkan after
@@ -266,8 +267,8 @@ Independent temporary shader ablations localized the remaining FILL cost:
 
 These ablations are not production changes or additive pass costs: they also
 change shader register allocation/scheduling, and disabling NEE changes the
-estimator. Inline visibility is a promising next optimization, but its temporary
-prototype has not passed general alpha/transmission/scene regression. SER and
+estimator. This temporary inline prototype retained the port's old alpha filter;
+the production implementation and its regression coverage are described below. SER and
 material-specialized shading differences are not yet quantitatively attributed.
 The user-provided upstream frame time (~7.8 ms) was not remeasured in this run.
 
@@ -285,3 +286,72 @@ Guides 0.29, RR preparation 0.22, RR 2.95 and post-process 0.10. With profiling
 also disabled, window-title samples were 30.3–31.1 ms. Report the observed
 28–31 ms range (~32–35 FPS), rather than attributing the entire between-run
 variation to validation or profiling. The remaining dominant cost is still FILL.
+
+### Inline visibility / upstream alpha regression
+
+`VisibilityRayTest.cpp` links production CPU material classification and executes
+production `PathTracerVisibility.hlsli` plus both `PathTracerAnyHit.rahit` entry
+points against a real BLAS/TLAS. It compares 48 rays against explicit expected
+visibility, not just against the other rendering path. Coverage includes:
+
+- Opaque hits/misses, TMin/TMax clipping, and continued traversal after alpha rejection.
+- Texture alpha versus material opacity, the UNORM8 cutoff midpoint, glTF MASK,
+  loaded material overrides, missing textures, and BLEND without stochastic filtering.
+- `ExcludeFromNEE` ignores shadow hits while retaining primary hits, including
+  CPU non-opaque classification when no texture exists.
+- Custom instance IDs distinct from instance indices, nonzero geometry/primitive
+  indices and buffer offsets, indexed/non-indexed geometry, and skinned UVs.
+- Both 16- and 32-bit index views. Vulkan's texel-buffer format must match the
+  view; undefined-value validation diagnostics fail the test.
+
+Build RTXPT Release first with the normal Windows D3D12/Vulkan/OpenGL backends.
+Then, from a VS 2022 x64 Native Tools prompt at the repository root:
+
+```bat
+call DiligentSamples\Samples\RTXPT\tests\build_visibility_test.bat
+set RTXPT_TEST_ROOT=%CD%
+pushd build\x64\Release\DiligentSamples\Samples\RTXPT\Release
+"%TEMP%\RTXPTVisibilityTest\VisibilityRayTest.exe" "%CD%\GraphicsEngineD3D12_64r.dll" "%RTXPT_TEST_ROOT%\DiligentSamples\Samples\RTXPT\shaders"
+"%TEMP%\RTXPTVisibilityTest\VisibilityRayTest.exe" "%CD%\GraphicsEngineD3D12_64r.dll" "%RTXPT_TEST_ROOT%\DiligentSamples\Samples\RTXPT\shaders" uint16
+"%TEMP%\RTXPTVisibilityTest\VisibilityRayTest.exe" "%CD%\GraphicsEngineVk_64r.dll" "%RTXPT_TEST_ROOT%\DiligentSamples\Samples\RTXPT\shaders"
+"%TEMP%\RTXPTVisibilityTest\VisibilityRayTest.exe" "%CD%\GraphicsEngineVk_64r.dll" "%RTXPT_TEST_ROOT%\DiligentSamples\Samples\RTXPT\shaders" uint16
+popd
+```
+
+On 2026-09-14 all four configurations passed with validation enabled. Replacing
+only MaterialBridge with the pre-change version in a temporary shader copy made
+ray 2 fail (`expected 0, got 1`): multiplying opacity incorrectly rejected a
+texture-alpha hit. This is a defect-reproduction check, not a claim that the full
+GPU test preceded implementation. The sample also retains an explicit fallback:
+append `--inline_shadows false` to the GPU timing command above. Without that
+switch, adapters supporting inline ray tracing use RayQuery by default.
+
+RTX 5060, D3D12 Release, convergence-test, 1920x1080, RR Balanced/F, 1114x626
+render, default 1 spp and 5 light candidates, validation/VSync disabled:
+after excluding frames 1–240, the first comparison measured:
+
+| Stage | TraceRay fallback (634 frames), ms | Inline (1256 frames), ms |
+|---|---:|---:|
+| Total sample rendering | 30.784 | 18.272 |
+| BUILD | 0.317 | 0.326 |
+| LightsBaker | 0.501 | 0.506 |
+| FILL | 26.403 | 13.918 |
+| Guides | 0.289 | 0.282 |
+| RR preparation | 0.221 | 0.212 |
+| RR | 2.917 | 2.894 |
+| Post-process | 0.097 | 0.097 |
+
+Both paths use the same upstream alpha semantics. Window-title frame time was
+approximately 31 ms versus 18–19 ms (about 32 versus 53 FPS). This confirms a
+large FILL saving, but does not yet match the user-provided upstream ~7.8 ms.
+SER and material specialization remain unmeasured hypotheses for the remaining
+gap. The test covers ray filtering; it is not a full temporal RR or transmission
+image-quality regression.
+
+The final Release executable was rebuilt after the index-format correction and
+all four GPU test configurations passed again using the checked-in build script.
+A validation-enabled D3D12/F 1080p run collected 1267 steady frames: Total
+18.111 ms, BUILD 0.318, LightsBaker 0.503, FILL 13.764, RR 2.889. The final
+Vulkan/E TraceRay fallback also ran with validation at 640x360; its PNG capture
+was inspected for scene/RR output. No new graphics errors were reported; the
+pre-existing `rgb10_a2` shader and missing-PIX warnings remain.

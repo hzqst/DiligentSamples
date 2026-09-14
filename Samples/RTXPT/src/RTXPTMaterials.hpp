@@ -26,6 +26,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <string>
 #include <vector>
@@ -149,7 +150,7 @@ constexpr Uint32 kMaterialFlag_HasTransmissionTexture      = 0x80u;
 constexpr Uint32 kMaterialFlag_HasVolume                   = 0x100u;
 constexpr Uint32 kMaterialFlag_HasThicknessTexture         = 0x200u;
 constexpr Uint32 kMaterialFlag_ThinSurface                 = 0x400u;
-constexpr Uint32 kMaterialFlag_AlphaBlend                  = 0x800u;
+constexpr Uint32 kMaterialFlag_ExcludeFromNEE              = 0x1000u;
 
 // Flag bits for MaterialPTData::pathDecompositionFlags. Keep in sync with PathTracer/PathTracerShared.h.
 constexpr Uint32 kMaterialPathDecompositionFlag_PSDExclude                          = 0x1u;
@@ -177,10 +178,11 @@ bool                          RTXPTMaterialIsAlphaTested(const GLTF::Material&  
                                                          bool                          HasBaseColorTexture);
 bool                          RTXPTMaterialIsEmissiveAreaLight(const GLTF::Material&         Material,
                                                                const RTXPTMaterialExtension* pExtension);
-// Transmission is resolved by the closest-hit BSDF. Only non-transmissive BLEND materials use
-// stochastic alpha blending in any-hit.
-bool RTXPTMaterialIsAlphaBlended(const GLTF::Material&         Material,
-                                 const RTXPTMaterialExtension* pExtension);
+bool                          RTXPTMaterialIsExcludedFromNEE(const RTXPTMaterialExtension* pExtension);
+inline float                  RTXPTQuantizeAlphaCutoff(float AlphaCutoff)
+{
+    return static_cast<float>(static_cast<Uint32>(std::clamp(AlphaCutoff, 0.0f, 1.0f) * 255.0f + 0.5f)) / 255.0f;
+}
 bool RTXPTMaterialNeedsAnyHit(const GLTF::Material&         Material,
                               const RTXPTMaterialExtension* pExtension,
                               bool                          HasBaseColorTexture);

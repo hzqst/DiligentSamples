@@ -92,6 +92,7 @@ struct RTXPTRayTracingPassStats
     bool   IndexBufferBound         = false;
     bool   MaterialTexturesBound    = false;
     bool   AnyHitEnabled            = false;
+    bool   InlineVisibilityEnabled  = false;
     Uint32 MaterialTextureCount     = 0;
     Uint32 TraceCount               = 0;
 };
@@ -132,7 +133,8 @@ public:
                     bool                  EnableAnyHit,
                     bool                  EnableLDSamplerForBSDF,
                     bool                  RayTracingSupported,
-                    bool                  StandaloneRTShadersSupported);
+                    bool                  StandaloneRTShadersSupported,
+                    bool                  EnableInlineVisibility);
 
     bool Dispatch(IDeviceContext*                pContext,
                   RTXPTPathTraceVariant          Variant,

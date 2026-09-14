@@ -484,7 +484,37 @@ invalidation requirements.
 | `MaterialPTData` R6 fields | `Materials/MaterialPT.h::PTMaterialData` | Diligent layout differs but carries transmission, IoR, nested priority, and attenuation data |
 | `PathTracerClosestHit.rchit` two-sided payload | `PathTracerBridgeDonut.hlsli::loadSurface` | Diligent keeps closest-hit payload return style instead of RTXPT-fork `SurfaceData` |
 | `PathTracerSample.rgen` interior-list loop | `PathTracer.hlsli::HandleHit` | Diligent raygen loop owns path state; rejected hits do not consume bounce count |
-| `PathTracerAnyHit.rahit` stochastic alpha blend | `PathTracerMaterialSpecializations.hlsl::ANYHIT_ENTRY` | Diligent extends the alpha-test any-hit path with material-flagged stochastic alpha blend; any-hit also stays texture-optional |
+| `PathTracerAnyHit.rahit` primary / visibility entries | `PathTracerBridgeDonut.hlsli::AlphaTestImpl / AlphaTestVisibilityRay` | Upstream texture-alpha filtering; the former port-only stochastic BLEND filter has been removed (see inline visibility below) |
+
+### Inline visibility and upstream alpha semantics (2026-09-14)
+
+`PathTracerVisibility.hlsli::Bridge::traceVisibilityRay` translates upstream
+`PathTracerBridgeDonut.hlsli::traceVisibilityRay`: accept-first-hit inline
+RayQuery, mask 0xFF, and explicit non-opaque triangle candidate filtering.
+Sub-instances use `CandidateInstanceID() + CandidateGeometryIndex()`; triangle
+UV fetches retain the port's indexed/non-indexed and static/skinned layouts.
+Vulkan texel-buffer format annotations match the actual 16/32-bit index view.
+Opacity micromaps and SER are not introduced by this change.
+
+`AlphaTestImpl` samples base texture alpha at mip 0 without multiplying material
+opacity; CPU upload quantizes cutoff to UNORM8, matching upstream
+`MaterialsBaker::UpdateSubInstanceData` / `SubInstanceData::AlphaCutoff`.
+Loaded material extensions override glTF MASK classification. No enabled/loaded
+base texture means no alpha test. BLEND alone does not request non-opaque BLAS
+geometry or stochastic acceptance; glass still uses the existing transmission BSDF.
+`ExcludeFromNEE` is loaded from `.material.json`, stored in MaterialPTData flags
+(the port keeps its own buffer layout), and makes geometry non-opaque so shadow
+candidates can be rejected. Primary rays still accept these surfaces subject to
+their alpha test. It does not remove emitters from light sampling.
+
+The default RT pipeline uses inline visibility when the adapter advertises
+`RAY_TRACING_CAP_FLAG_INLINE_RAY_TRACING`; unsupported adapters and
+`--inline_shadows false` use TraceRay. The fallback has a separate visibility
+any-hit entry sharing the exact inline predicate. Primary and visibility entry
+points are compiled separately for Diligent's single-entry shader reflection.
+Inline pipelines have recursion depth 1 and omit visibility SBT records/miss;
+the existing primary-ray/TLAS hit-group stride of 2 remains intact. Fallback
+Reference/FILL pipelines retain recursion depth 2. Cache version is now 005.
 
 ## Phase R7 - Shadow/AA Polish
 

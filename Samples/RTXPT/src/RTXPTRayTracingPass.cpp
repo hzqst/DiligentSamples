@@ -117,7 +117,8 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
                                      bool                  EnableAnyHit,
                                      bool                  EnableLDSamplerForBSDF,
                                      bool                  RayTracingSupported,
-                                     bool                  StandaloneRTShadersSupported)
+                                     bool                  StandaloneRTShadersSupported,
+                                     bool                  EnableInlineVisibility)
 {
     Reset();
 
@@ -153,6 +154,8 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
 
     const bool UseTextures = EnableMaterialTextures && pMaterialTextures != nullptr && MaterialTextureCount > 0;
     const bool UseAnyHit   = EnableAnyHit;
+    const bool UseInlineVisibility = EnableInlineVisibility &&
+        (pDevice->GetAdapterInfo().RayTracing.CapFlags & RAY_TRACING_CAP_FLAG_INLINE_RAY_TRACING) != 0;
 
     m_TLAS = pTLAS;
 
@@ -257,6 +260,8 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
 
         ShaderMacroHelper Macros;
         Macros.Add("PATH_TRACER_MODE", GetVariantModeMacro(Variant));
+        Macros.Add("RTXPT_USE_INLINE_VISIBILITY", UseInlineVisibility ? 1 : 0);
+        Macros.Add("RTXPT_INDEX_BUFFER_UINT16", IndexValueType == VT_UINT16 ? 1 : 0);
         if (UseTextures)
         {
             Macros.Add("ENABLE_MATERIAL_TEXTURES", 1);
@@ -280,11 +285,14 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
         pStateCache->CreateShader(ShaderCI, &pMiss);
 
         RefCntAutoPtr<IShader> pVisibilityMiss;
-        ShaderCI.Desc.ShaderType = SHADER_TYPE_RAY_MISS;
-        ShaderCI.Desc.Name       = "RTXPT path trace visibility miss";
-        ShaderCI.FilePath        = "PathTracer/PathTracerVisibilityMiss.rmiss";
-        ShaderCI.EntryPoint      = "main";
-        pStateCache->CreateShader(ShaderCI, &pVisibilityMiss);
+        if (!UseInlineVisibility)
+        {
+            ShaderCI.Desc.ShaderType = SHADER_TYPE_RAY_MISS;
+            ShaderCI.Desc.Name       = "RTXPT path trace visibility miss";
+            ShaderCI.FilePath        = "PathTracer/PathTracerVisibilityMiss.rmiss";
+            ShaderCI.EntryPoint      = "main";
+            pStateCache->CreateShader(ShaderCI, &pVisibilityMiss);
+        }
 
         RefCntAutoPtr<IShader> pClosestHit;
         ShaderCI.Desc.ShaderType = SHADER_TYPE_RAY_CLOSEST_HIT;
@@ -294,6 +302,7 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
         pStateCache->CreateShader(ShaderCI, &pClosestHit);
 
         RefCntAutoPtr<IShader> pAnyHit;
+        RefCntAutoPtr<IShader> pVisibilityAnyHit;
         if (UseAnyHit)
         {
             ShaderCI.Desc.ShaderType = SHADER_TYPE_RAY_ANY_HIT;
@@ -301,11 +310,20 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
             ShaderCI.FilePath        = "PathTracer/PathTracerAnyHit.rahit";
             ShaderCI.EntryPoint      = "main";
             pStateCache->CreateShader(ShaderCI, &pAnyHit);
+            if (!UseInlineVisibility)
+            {
+                ShaderCI.Desc.Name  = "RTXPT visibility any hit";
+                ShaderCI.EntryPoint = "VisibilityMain";
+                Macros.Add("RTXPT_VISIBILITY_ANY_HIT", 1);
+                ShaderCI.Macros = Macros;
+                pStateCache->CreateShader(ShaderCI, &pVisibilityAnyHit);
+            }
         }
 
-        VERIFY(pRayGen && pMiss && pVisibilityMiss && pClosestHit && (!UseAnyHit || pAnyHit),
+        const bool VisibilityShadersReady = UseInlineVisibility || (pVisibilityMiss && (!UseAnyHit || pVisibilityAnyHit));
+        VERIFY(pRayGen && pMiss && VisibilityShadersReady && pClosestHit && (!UseAnyHit || pAnyHit),
                "Failed to create RTXPT path tracing shaders");
-        if (!pRayGen || !pMiss || !pVisibilityMiss || !pClosestHit || (UseAnyHit && !pAnyHit))
+        if (!pRayGen || !pMiss || !VisibilityShadersReady || !pClosestHit || (UseAnyHit && !pAnyHit))
         {
             DEV_ERROR("Failed to create RTXPT path tracing shaders for variant: ", GetVariantName(Variant));
             return false;
@@ -316,7 +334,11 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
         PSOCreateInfo.PSODesc.PipelineType = PIPELINE_TYPE_RAY_TRACING;
         PSOCreateInfo.AddGeneralShader("Main", pRayGen);
         PSOCreateInfo.AddGeneralShader("PrimaryMiss", pMiss);
-        PSOCreateInfo.AddGeneralShader("VisibilityMiss", pVisibilityMiss);
+        if (!UseInlineVisibility)
+        {
+            PSOCreateInfo.AddGeneralShader("VisibilityMiss", pVisibilityMiss);
+            PSOCreateInfo.AddTriangleHitShader("VisibilityHit", pClosestHit, pVisibilityAnyHit);
+        }
         if (UseAnyHit)
             PSOCreateInfo.AddTriangleHitShader("PrimaryHit", pClosestHit, pAnyHit);
         else
@@ -325,7 +347,7 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
             Variant == RTXPTPathTraceVariant::Reference ||
             Variant == RTXPTPathTraceVariant::FillStablePlanes;
         PSOCreateInfo.RayTracingPipeline.MaxRecursionDepth =
-            TracesVisibilityFromHit ? 2 : 1;
+            TracesVisibilityFromHit && !UseInlineVisibility ? 2 : 1;
         PSOCreateInfo.RayTracingPipeline.ShaderRecordSize = 0;
         PSOCreateInfo.MaxAttributeSize                    = static_cast<Uint32>(sizeof(float) * 2);
         PSOCreateInfo.MaxPayloadSize                      = static_cast<Uint32>(sizeof(float) * 20);
@@ -533,9 +555,12 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
 
         State.SBT->BindRayGenShader("Main");
         State.SBT->BindMissShader("PrimaryMiss", kRTXPTPrimaryRayIndex);
-        State.SBT->BindMissShader("VisibilityMiss", kRTXPTVisibilityRayIndex);
         State.SBT->BindHitGroupForTLAS(m_TLAS, kRTXPTPrimaryRayIndex, "PrimaryHit");
-        State.SBT->BindHitGroupForTLAS(m_TLAS, kRTXPTVisibilityRayIndex, "PrimaryHit");
+        if (!UseInlineVisibility)
+        {
+            State.SBT->BindMissShader("VisibilityMiss", kRTXPTVisibilityRayIndex);
+            State.SBT->BindHitGroupForTLAS(m_TLAS, kRTXPTVisibilityRayIndex, "VisibilityHit");
+        }
         pContext->UpdateSBT(State.SBT);
 
         State.Stats.Ready = true;
@@ -561,6 +586,8 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
     if (!UseTextures)
         m_Stats.MaterialTexturesBound = false;
     m_Stats.AnyHitEnabled = UseAnyHit;
+    m_Stats.InlineVisibilityEnabled = UseInlineVisibility;
+    LOG_INFO_MESSAGE("RTXPT visibility rays: ", UseInlineVisibility ? "inline RayQuery" : "TraceRay");
     m_Stats.Ready         = true;
     return true;
 }

@@ -110,6 +110,7 @@ set(SHADERS
     shaders/PathTracer/PathTracerClosestHit.rchit
     shaders/PathTracer/EmissiveTriangleBuild.hlsl
     shaders/PathTracer/PathTracerAnyHit.rahit
+    shaders/PathTracer/PathTracerVisibility.hlsli
     shaders/PathTracer/SkinnedVertexBuild.csh
     shaders/PostProcessing/RTXPTFullscreen.vsh
     shaders/PostProcessing/RTXPTAccumulation.csh

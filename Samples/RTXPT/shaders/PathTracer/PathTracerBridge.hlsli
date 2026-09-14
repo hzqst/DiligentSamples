@@ -28,7 +28,11 @@ SamplerState                           s_EnvironmentImportanceSampler;
 StructuredBuffer<EmissiveTriangle>     t_EmissiveTriangles;
 StructuredBuffer<PackedGeometryVertexData> t_VertexBuffer;
 StructuredBuffer<PackedGeometryVertexData> t_SkinnedVertexBuffer;
-Buffer<uint>                           t_IndexBuffer;
+#if RTXPT_INDEX_BUFFER_UINT16
+VK_IMAGE_FORMAT("r16ui") Buffer<uint> t_IndexBuffer;
+#else
+VK_IMAGE_FORMAT("r32ui") Buffer<uint> t_IndexBuffer;
+#endif
 
 VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4>       u_OutputColor;
 VK_IMAGE_FORMAT("r32f")    RWTexture2D<float>        u_Depth;
@@ -73,10 +77,10 @@ namespace Bridge
     {
         return t_SubInstanceData[getSubInstanceIndex()];
     }
+#endif
 
     // Fetch the 3 vertex indices for triangle `localPrimitiveIndex` within the geometry
-    // described by `subInstance`. Falls back to a fan (i,i,i+1,i+2 sequence) for non-indexed
-    // primitives so the math stays valid; non-indexed geometries are flagged via Flags.
+    // described by `subInstance`. Non-indexed primitives use consecutive vertex triples.
     uint3 getTriangleIndices(SubInstanceData subInstance, uint localPrimitiveIndex)
     {
         const uint baseIndex = localPrimitiveIndex * 3u;
@@ -98,7 +102,7 @@ namespace Bridge
         return UnpackGeometryVertex(t_VertexBuffer[subInstance.VertexOffset + vertexIndex]);
     }
 
-    // Fetch the 3 vertex records for the current closest-hit triangle.
+    // Fetch triangle vertices for closest-hit, any-hit, or inline RayQuery candidates.
     void getTriangleVertices(SubInstanceData subInstance,
                              uint            localPrimitiveIndex,
                              out GeometryVertexData v0,
@@ -111,6 +115,14 @@ namespace Bridge
         v2                  = getGeometryVertex(subInstance, indices.z);
     }
 
+    // Shared by any-hit and inline RayQuery candidate filtering.
+    float2 interpolateTexCoord(GeometryVertexData v0, GeometryVertexData v1, GeometryVertexData v2, float2 barycentrics)
+    {
+        const float3 bary = float3(1.0 - barycentrics.x - barycentrics.y, barycentrics.x, barycentrics.y);
+        return v0.texCoord0 * bary.x + v1.texCoord0 * bary.y + v2.texCoord0 * bary.z;
+    }
+
+#ifdef ENABLE_HIT_BRIDGE
     // Barycentric-interpolated object-space normal -> world-space, renormalized.
     float3 interpolateNormal(GeometryVertexData v0, GeometryVertexData v1, GeometryVertexData v2, float2 barycentrics)
     {
@@ -137,13 +149,6 @@ namespace Bridge
         const float3 bary   = float3(1.0 - barycentrics.x - barycentrics.y, barycentrics.x, barycentrics.y);
         const float3 objPos = v0.position * bary.x + v1.position * bary.y + v2.position * bary.z;
         return mul(ObjectToWorld3x4(), float4(objPos, 1.0));
-    }
-
-    // Barycentric-interpolated TEXCOORD_0 for the current closest-hit / any-hit triangle.
-    float2 interpolateTexCoord(GeometryVertexData v0, GeometryVertexData v1, GeometryVertexData v2, float2 barycentrics)
-    {
-        const float3 bary = float3(1.0 - barycentrics.x - barycentrics.y, barycentrics.x, barycentrics.y);
-        return v0.texCoord0 * bary.x + v1.texCoord0 * bary.y + v2.texCoord0 * bary.z;
     }
 
     // World-space tangent derived from triangle edges + UV deltas (vertex buffer 0 carries no tangent attribute).

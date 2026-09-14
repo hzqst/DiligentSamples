@@ -193,7 +193,7 @@ bool RTXPTAccelerationStructures::BuildScene(IRenderDevice*                   pD
 
         std::vector<Uint8> MaterialNeedsAnyHit(Model.Materials.size(), Uint8{0});
         std::vector<Uint8> MaterialAlphaTested(Model.Materials.size(), Uint8{0});
-        std::vector<Uint8> MaterialAlphaBlended(Model.Materials.size(), Uint8{0});
+        std::vector<Uint8> MaterialExcludedFromNEE(Model.Materials.size(), Uint8{0});
         std::vector<Uint8> MaterialEmissiveAreaLight(Model.Materials.size(), Uint8{0});
         for (Uint32 MatIdx = 0; MatIdx < Model.Materials.size(); ++MatIdx)
         {
@@ -201,10 +201,10 @@ bool RTXPTAccelerationStructures::BuildScene(IRenderDevice*                   pD
             const RTXPTMaterialExtension* pExtension          = RTXPTGetMaterialExtension(SceneData, Asset, MatIdx);
             const bool                    HasBaseColorTexture = RTXPTMaterialHasBaseColorTexture(Model, Material, pExtension);
             const bool                    IsAlphaTested       = RTXPTMaterialIsAlphaTested(Material, pExtension, HasBaseColorTexture);
-            const bool                    IsAlphaBlended      = RTXPTMaterialIsAlphaBlended(Material, pExtension);
+            const bool                    IsExcludedFromNEE   = RTXPTMaterialIsExcludedFromNEE(pExtension);
             const bool                    NeedsAnyHit         = RTXPTMaterialNeedsAnyHit(Material, pExtension, HasBaseColorTexture);
             MaterialAlphaTested[MatIdx]                       = IsAlphaTested ? Uint8{1} : Uint8{0};
-            MaterialAlphaBlended[MatIdx]                      = IsAlphaBlended ? Uint8{1} : Uint8{0};
+            MaterialExcludedFromNEE[MatIdx]                   = IsExcludedFromNEE ? Uint8{1} : Uint8{0};
             MaterialNeedsAnyHit[MatIdx]                       = NeedsAnyHit ? Uint8{1} : Uint8{0};
             MaterialEmissiveAreaLight[MatIdx]                 = RTXPTMaterialIsEmissiveAreaLight(Material, pExtension) ? Uint8{1} : Uint8{0};
         }
@@ -374,7 +374,7 @@ bool RTXPTAccelerationStructures::BuildScene(IRenderDevice*                   pD
                 BuildData.VertexValueType      = Position.ValueType;
                 BuildData.VertexComponentCount = Position.ComponentCount;
                 BuildData.PrimitiveCount       = TriangleDesc.MaxPrimitiveCount;
-                // Alpha-masked and alpha-blended geometry must be non-opaque so the runtime invokes any-hit.
+                // Alpha-tested and ExcludeFromNEE geometry require programmable candidate filtering.
                 // Everything else stays opaque to skip any-hit entirely.
                 const bool GeometryNeedsAnyHit = Primitive.MaterialId < MaterialNeedsAnyHit.size() &&
                     MaterialNeedsAnyHit[Primitive.MaterialId] != 0;
@@ -383,10 +383,10 @@ bool RTXPTAccelerationStructures::BuildScene(IRenderDevice*                   pD
                     MaterialAlphaTested[Primitive.MaterialId] != 0;
                 if (GeometryAlphaTested)
                     ++m_Stats.AlphaTestedGeometryCount;
-                const bool GeometryAlphaBlended = Primitive.MaterialId < MaterialAlphaBlended.size() &&
-                    MaterialAlphaBlended[Primitive.MaterialId] != 0;
-                if (GeometryAlphaBlended)
-                    ++m_Stats.AlphaBlendedGeometryCount;
+                const bool GeometryExcludedFromNEE = Primitive.MaterialId < MaterialExcludedFromNEE.size() &&
+                    MaterialExcludedFromNEE[Primitive.MaterialId] != 0;
+                if (GeometryExcludedFromNEE)
+                    ++m_Stats.ExcludedFromNEEGeometryCount;
 
                 if (IsIndexed)
                 {

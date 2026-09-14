@@ -1,48 +1,25 @@
 #include "Config.h"
 
 #define ENABLE_HIT_BRIDGE 1
-#include "PathTracerBridge.hlsli"
-#include "Rendering/Materials/MaterialBridge.hlsli"
-#include "Utils/SampleGenerators.hlsli"
+#include "PathTracerVisibility.hlsli"
 #include "PathPayload.hlsli"
 
 using ActiveRayPayload = PathPayload;
 
-// Alpha-test / alpha-blend any-hit. Only invoked for geometry whose BLAS geometry flag is RAYTRACING_GEOMETRY_FLAG_NONE.
+// Primary rays use the upstream alpha test; ExcludeFromNEE only affects visibility rays.
 // Opaque geometry never reaches this shader.
+#ifndef RTXPT_VISIBILITY_ANY_HIT
 [shader("anyhit")] void main(inout ActiveRayPayload                  Payload,
                              in BuiltInTriangleIntersectionAttributes Attributes) {
-    const SubInstanceData subInstance = Bridge::getSubInstanceData();
-    const MaterialPTData  material    = Bridge::getMaterial(subInstance.MaterialID);
-
-    const bool alphaTested  = (material.flags & kMaterialFlagAlphaTested) != 0u;
-    const bool alphaBlended = (material.flags & kMaterialFlagAlphaBlend) != 0u;
-    if (!alphaTested && !alphaBlended)
-        return;
-
-    GeometryVertexData V0;
-    GeometryVertexData V1;
-    GeometryVertexData V2;
-    Bridge::getTriangleVertices(subInstance, PrimitiveIndex(), V0, V1, V2);
-    const float2 texCoord = Bridge::interpolateTexCoord(V0, V1, V2, Attributes.barycentrics);
-
-    if (alphaTested && !Bridge::alphaTestPasses(material, texCoord))
-    {
+    if (!Bridge::AlphaTestImpl(Bridge::getSubInstanceData(), PrimitiveIndex(), Attributes.barycentrics))
         IgnoreHit();
-        return;
-    }
-
-    if (alphaBlended)
-    {
-        const float alpha            = Bridge::getBaseColor(material, texCoord).a;
-        const uint  subInstanceIndex = Bridge::getSubInstanceIndex();
-        const uint  seed             = Hash32Combine(Hash32Combine(Hash32Combine(Hash32(PrimitiveIndex() + 0x2c9277b5u), subInstanceIndex),
-                                                      DispatchRaysIndex().x),
-                                        Hash32Combine(DispatchRaysIndex().y, g_Const.ptConsts.sampleBaseIndex));
-        if (Hash32ToFloat(seed) > saturate(alpha))
-        {
-            IgnoreHit();
-            return;
-        }
-    }
 }
+#else
+// TraceRay fallback shares the inline RayQuery candidate filter.
+[shader("anyhit")] void VisibilityMain(inout ActiveRayPayload Payload,
+                                      in BuiltInTriangleIntersectionAttributes Attributes)
+{
+    if (!Bridge::AlphaTestVisibilityRay(InstanceID(), GeometryIndex(), PrimitiveIndex(), Attributes.barycentrics))
+        IgnoreHit();
+}
+#endif

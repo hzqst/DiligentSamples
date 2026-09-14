@@ -54,7 +54,9 @@ namespace Bridge
     {
         if ((material.flags & kMaterialFlagAlphaTested) == 0u)
             return true;
-        return getBaseColor(material, uv).a >= material.alphaCutoff;
+        // RTXPT-fork tests texture alpha at mip 0, without multiplying material opacity.
+        // The CPU uploads the same UNORM8-quantized cutoff as SubInstanceData::AlphaCutoff().
+        return sampleMaterialTexture(material.baseColorTextureIndex, material.baseColorTextureSlice, uv).a >= material.alphaCutoff;
     }
 
     // glTF metallic-roughness packing: roughness in .g, metallic in .b, each scaled by the material factor.

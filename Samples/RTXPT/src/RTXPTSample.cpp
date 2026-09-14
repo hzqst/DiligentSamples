@@ -79,7 +79,7 @@ constexpr Uint32 kRTXPTRealtimeNoisePeriod = 8192u;
 
 // Disk file used to persist the render state cache (compiled shaders + pipeline states)
 // across runs. Resolved relative to the working directory set in Initialize().
-constexpr char kStateCachePath[] = "RTXPTCache_002.bin";
+constexpr char kStateCachePath[] = "RTXPTCache_005.bin";
 
 bool IsStandaloneNrdAvailable()
 {
@@ -643,6 +643,7 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
     CommandLineParser Args{argc, argv};
     Args.Parse("realtime", m_RealtimeUI.RealtimeMode);
     Args.Parse("gpu_profile", m_EnableGpuProfiling);
+    Args.Parse("inline_shadows", m_EnableInlineVisibility);
     Args.Parse("gpu_profile_csv", m_GpuProfileCSV);
     Args.Parse("scene", m_InitialSceneName);
     Args.Parse("nrd", m_RealtimeUI.StandaloneDenoiser);
@@ -1299,7 +1300,7 @@ void RTXPTSample::CreateSceneDependentPasses()
     // mandatory (required in ModifyEngineInitInfo), so descriptor indexing is always available; the only
     // factor-only path left is the legitimate texture-less scene (MaterialTextureCount == 0).
     const bool EnableMaterialTextures = m_Materials.GetTextureCount() > 0;
-    const bool EnableAnyHit           = EnableMaterialTextures || m_AccelerationStructures.GetStats().AlphaBlendedGeometryCount > 0;
+    const bool EnableAnyHit           = EnableMaterialTextures || m_AccelerationStructures.GetStats().ExcludedFromNEEGeometryCount > 0;
 
     m_EmissiveTrianglePass.Initialize(m_pDevice,
                                       m_pEngineFactory,
@@ -1349,7 +1350,8 @@ void RTXPTSample::CreateSceneDependentPasses()
                                     EnableAnyHit,
                                     m_ReferenceUI.EnableLDSamplerForBSDF,
                                     m_FeatureCaps.RayTracing,
-                                    m_FeatureCaps.StandaloneRayTracingShaders);
+                                    m_FeatureCaps.StandaloneRayTracingShaders,
+                                    m_EnableInlineVisibility);
 
     if (!RTReady)
     {
@@ -2970,7 +2972,7 @@ void RTXPTSample::UpdateUI()
         ImGui::Text("RT geometries: %u", ASStats.GeometryCount);
         ImGui::Text("Sub-instances: %u", ASStats.SubInstanceCount);
         ImGui::Text("Alpha-tested geometries: %u", ASStats.AlphaTestedGeometryCount);
-        ImGui::Text("Alpha-blended geometries: %u", ASStats.AlphaBlendedGeometryCount);
+        ImGui::Text("Excluded from NEE geometries: %u", ASStats.ExcludedFromNEEGeometryCount);
         ImGui::Separator();
         ImGui::Text("Frame constants: %s", m_FrameConstantsCB ? "created" : "missing");
         ImGui::Text("Frame index: %u", m_FrameIndex);
@@ -3041,7 +3043,8 @@ void RTXPTSample::UpdateUI()
         ImGui::Text("Index buffer: %s", RTPassStats.IndexBufferBound ? "bound" : "fallback");
         ImGui::Text("Material textures loaded: %u", m_Materials.GetStats().TextureCount);
         ImGui::Text("Material textures bound: %s (%u)", RTPassStats.MaterialTexturesBound ? "yes" : "no", RTPassStats.MaterialTextureCount);
-        ImGui::Text("Alpha-test/blend any-hit: %s", RTPassStats.AnyHitEnabled ? "enabled" : "disabled");
+        ImGui::Text("Alpha-test / NEE any-hit: %s", RTPassStats.AnyHitEnabled ? "enabled" : "disabled");
+        ImGui::Text("Visibility rays: %s", RTPassStats.InlineVisibilityEnabled ? "inline RayQuery" : "TraceRay");
         ImGui::Text("AccumulatedRadiance: %s", m_AccumulationActive ? "active (RGBA32F)" : "inactive (RGBA32F unavailable)");
         ImGui::Text("Post-process targets: %s", m_RenderTargets.HasPostProcessTargets() ? "allocated" : "missing");
         ImGui::Text("Realtime render targets: %s",

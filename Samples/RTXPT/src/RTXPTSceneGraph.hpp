@@ -100,6 +100,7 @@ struct RTXPTMaterialExtension
     float  RoughnessFactor                         = 1.0f;
     float  AlphaCutoff                             = 0.5f;
     bool   EnableAlphaTesting                      = false;
+    bool   ExcludeFromNEE                          = false;
     bool   EnableBaseTexture                       = true;
     bool   EnableEmissiveTexture                   = true;
     bool   EnableNormalTexture                     = true;

@@ -170,6 +170,7 @@ private:
     RTXPTFeatureCaps                                        m_FeatureCaps;
     RTXPTGpuProfiler                                        m_GpuProfiler;
     bool                                                    m_EnableGpuProfiling = false;
+    bool                                                    m_EnableInlineVisibility = true;
     std::string                                             m_GpuProfileCSV;
     std::string                                             m_AssetsRoot;
     std::vector<std::string>                                m_AvailableScenes;
