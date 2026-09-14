@@ -43,6 +43,8 @@ set(INCLUDE
     src/RTXPTMaterials.hpp
     src/RTXPTLights.hpp
     src/RTXPTLightsBaker.hpp
+    src/RTXPTEnvironmentLights.hpp
+    src/RTXPTLightFeedback.hpp
     src/RTXPTLightsBakerPass.hpp
     src/RTXPTLightProxyBuildPass.hpp
     src/RTXPTFrameConstants.hpp
@@ -111,6 +113,11 @@ set(SHADERS
     shaders/PathTracer/EmissiveTriangleBuild.hlsl
     shaders/PathTracer/PathTracerAnyHit.rahit
     shaders/PathTracer/PathTracerVisibility.hlsli
+    shaders/PathTracer/Lighting/LightSamplingMIS.hlsli
+    shaders/PathTracer/Lighting/EnvironmentLightConfig.h
+    shaders/PathTracer/Lighting/EnvironmentLight.hlsli
+    shaders/PathTracer/Lighting/EnvironmentLightsBaker.hlsl
+    shaders/PathTracer/Lighting/LightFeedback.hlsl
     shaders/PathTracer/SkinnedVertexBuild.csh
     shaders/PostProcessing/RTXPTFullscreen.vsh
     shaders/PostProcessing/RTXPTAccumulation.csh

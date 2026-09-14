@@ -42,7 +42,7 @@ struct IRenderStateCache;
 // Drives the GPU per-triangle, power-proportional light sampling proxy build (shaders/PathTracer/Lighting/
 // LightProxyBuild.hlsl). Replaces the CPU "emissive bucket" proxy build with RTXPT-fork's per-light model:
 // every analytic light and every emissive triangle is weighted by its power and gets sampling proxies in
-// proportion. Owns the four compute PSOs/SRBs and a small constants buffer; the per-light/proxy storage and
+// proportion. Owns the compute PSOs/SRBs, constants and indirect jobs; the per-light/proxy storage and
 // the control buffer are owned by RTXPTLightsBaker and passed into Build().
 class RTXPTLightProxyBuildPass
 {
@@ -59,6 +59,8 @@ public:
                IBuffer*        pControl,
                IBuffer*        pAnalyticLights,
                IBuffer*        pEmissiveTriangles,
+               IBuffer*        pEnvironmentLights,
+               IBuffer*        pFeedbackCounts,
                IBuffer*        pLightWeights,
                IBuffer*        pLightProxyCounters,
                IBuffer*        pLightSamplingProxies,
@@ -73,6 +75,8 @@ private:
                        IBuffer*                pControl,
                        IBuffer*                pAnalyticLights,
                        IBuffer*                pEmissiveTriangles,
+                       IBuffer*                pEnvironmentLights,
+                       IBuffer*                pFeedbackCounts,
                        IBuffer*                pLightWeights,
                        IBuffer*                pLightProxyCounters,
                        IBuffer*                pLightSamplingProxies);
@@ -81,11 +85,16 @@ private:
     RefCntAutoPtr<IPipelineState>         m_WeightsPSO;
     RefCntAutoPtr<IPipelineState>         m_CountsPSO;
     RefCntAutoPtr<IPipelineState>         m_ScatterPSO;
+    RefCntAutoPtr<IPipelineState>         m_FinalizePSO;
     RefCntAutoPtr<IShaderResourceBinding> m_ResetSRB;
     RefCntAutoPtr<IShaderResourceBinding> m_WeightsSRB;
     RefCntAutoPtr<IShaderResourceBinding> m_CountsSRB;
     RefCntAutoPtr<IShaderResourceBinding> m_ScatterSRB;
+    RefCntAutoPtr<IShaderResourceBinding> m_FinalizeSRB;
     RefCntAutoPtr<IBuffer>                m_Constants;
+    RefCntAutoPtr<IBuffer>                m_ProxyJobs;
+    RefCntAutoPtr<IBuffer>                m_ProxyDispatchArgs;
+    RefCntAutoPtr<IRenderDevice>          m_Device;
     bool                                  m_Ready = false;
 };
 

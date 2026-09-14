@@ -455,3 +455,99 @@ the gap to them. These experiments establish FILL costs; they do not establish
 full image-quality equivalence or promise upstream frame rates after combining
 all changes. Raw CSVs/logs and experimental shader copies remain in the temporary
 diagnostic directory; aggregate evidence and source entry points are retained here.
+
+### Production sampler / MIS / environment alignment (2026-09-14)
+
+The preceding audit's first two optimizations are now implemented with explicit
+PDF-only and value-only BSDF evaluation. Global/local candidates are stratified;
+cross-proposal PDF queries and late balance MIS run only for a visible selected
+sample. Full and approximate MIS are shader specializations. Reverse emissive and
+environment MIS now applies to FILL as well as Reference. The previous FILL route
+omitted reverse emission MIS, so image brightness is not expected to be identical
+to that incorrect baseline.
+
+Environment quads now share the same candidate reservoir, replacing the independent
+environment NEE ray. The production baker also processes temporal/global feedback,
+coherence, reprojection, blended reservoirs, local windows/top-up, R2 jitter and
+history decay. Proxy jobs scatter in parallel through an indirect dispatch.
+See `RTXPT_FORK_MAPPING.md` for the explicit remaining broader baker differences.
+
+Build all lighting regressions from an x64 VS 2022 Native Tools prompt after the
+RTXPT Release build:
+
+```bat
+DiligentSamples\Samples\RTXPT\tests\build_lighting_tests.bat
+set RTXPT_TEST_ROOT=%CD%
+set RTXPT_ENGINE_DIR=%CD%\build\x64\Release\DiligentSamples\Samples\RTXPT\Release
+cd DiligentSamples\Samples\RTXPT
+"%TEMP%\RTXPTLightingTests\LocalLightSamplingTest.exe" "%RTXPT_ENGINE_DIR%\GraphicsEngineD3D12_64r.dll" "%CD%\shaders"
+"%TEMP%\RTXPTLightingTests\EnvironmentLightSamplingTest.exe" "%RTXPT_ENGINE_DIR%\GraphicsEngineD3D12_64r.dll"
+"%TEMP%\RTXPTLightingTests\LightFeedbackTest.exe" "%RTXPT_ENGINE_DIR%\GraphicsEngineD3D12_64r.dll"
+rem Repeat the three commands with GraphicsEngineVk_64r.dll.
+```
+
+All three executables passed on both D3D12 and Vulkan with graphics validation:
+
+- `LocalLightSamplingTest`: deterministic sorted-table fixtures validate conditional
+  local/global PDFs; 128 BSDF cases compare PDF-only/value-only evaluation to the
+  combined evaluator. Candidate counts cover 0–63. Exhaustive enumeration of all
+  32 candidate tuples and reservoir outcomes checks a known two-light integral,
+  including zero local support and complementary forward/reverse Full MIS.
+  Approximate MIS complement, zero-density boundaries and spotlight smoothstep
+  are checked separately. The legacy maximum-feedback shader is a table fixture,
+  not the production temporal producer.
+- `EnvironmentLightSamplingTest`: production base/boost/lookup passes compared with
+  an independent CPU subdivision oracle for uniform, concentrated-HDR and black
+  maps. Checks all 5368 leaves, radiance/importance, exact coverage, area/PDF
+  normalization and disabled-environment resource behavior.
+- `LightFeedbackTest`: production preprocessing/reprojection/table/history passes
+  cover SSC, WSC, depth disocclusion, offscreen motion and zero proxies on partial
+  tiles. Global counts include WSC; local samples reject it. Production proxy jobs
+  cover black maps, uniform/skewed power, feedback mixing, sphere/point/spot power,
+  capacity limits and 70,000 jobs exercising the second indirect-dispatch dimension.
+  The proxy histogram must exactly match the counters used by the shader PDFs.
+
+Cache version **007** is required. New reproducibility options are `--nee_mis 0|1|2`
+(Full / ApproxInRealtime / Approximate), `--nee_type 0|1|2`, `--nee true|false`,
+`--nee_env true|false` and `--nee_emissive true|false`. Keep all other defaults for
+the comparison. Full MIS can also be selected through the now-enabled UI control.
+
+During validation, explicit null binding of the unused visibility SBT slot fixed
+the inline-RayQuery path's validation error with the shared two-ray TLAS stride.
+The feedback wrapper explicitly barriers retained reservoirs before FILL and
+scratch reads before the next frame overwrites them.
+
+Final cache-007 Release validation also completed:
+
+- D3D12 Full MIS scene validation: zero failures, 224 RR executions, six feature
+  creates and six history resets.
+- Vulkan ApproxInRealtime scene validation: zero failures, 224 RR executions,
+  five feature creates and six history resets. NRD/TAA/SR mode checks were skipped
+  because of the existing RGB10A2 UAV support limitation; these modes are not
+  covered by this Vulkan result.
+- D3D12 Reference / Full MIS / AA disabled rendered successfully without logged
+  errors. This is a functional smoke test, not a converged image-quality comparison.
+
+Final performance used the RTX 5060, D3D12 Release, convergence-test, 1920x1080
+output / 1114x626 input, RR Balanced/F, default realtime settings, VSync and
+graphics validation disabled. The mean below covers 1832 GPU timestamp records
+after frame 240 (`verified-1080.csv` in the temporary diagnostic directory).
+
+| GPU stage | Final mean (ms) |
+| --- | ---: |
+| Total | 12.439642 |
+| BUILD | 0.320709 |
+| LightsBaker | 0.424334 |
+| FILL | 8.198489 |
+| Guides | 0.283214 |
+| RRPrepare | 0.215677 |
+| RR | 2.866800 |
+| PostProcess | 0.096876 |
+
+Against the preceding audit baseline (Total 18.236 ms, FILL 13.876 ms), GPU total
+time fell about 32% and FILL about 41%. Observed window frame rate was roughly
+76-80 FPS. RR remains close to its previous 2.902 ms, so the measured improvement
+comes primarily from path tracing. The upstream 7.910-7.971 ms result remains
+faster. General scatter tracing/material dispatch and the documented broader
+LightsBaker differences remain candidates for investigation; the existing SER-off
+experiment does not isolate HitObject/SER and cannot establish its contribution.

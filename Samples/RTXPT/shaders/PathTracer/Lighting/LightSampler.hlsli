@@ -5,6 +5,8 @@
 #include "../Rendering/Materials/BxDF.hlsli"
 #include "../Utils/SampleGenerators.hlsli"
 #include "PolymorphicLight.hlsli"
+#include "LightSamplingMIS.hlsli"
+#include "EnvMap.hlsli"
 
 struct DirectLightSample
 {
@@ -12,12 +14,14 @@ struct DirectLightSample
     float  distance;
     float3 radianceOverPdf;
     float  proposalPdf;
-    float3 bsdfF;
+    float  selectionPdf;
+    float  solidAnglePdf;
     float  bsdfPdf;
     uint   kind;
     uint   index;
     bool   valid;
     bool   sampleableByBSDF;
+    bool   fromLocalDistribution;
 };
 
 DirectLightSample DirectLightSample_make_empty()
@@ -27,12 +31,14 @@ DirectLightSample DirectLightSample_make_empty()
     sample.distance         = 0.0;
     sample.radianceOverPdf  = float3(0.0, 0.0, 0.0);
     sample.proposalPdf      = 0.0;
-    sample.bsdfF            = float3(0.0, 0.0, 0.0);
+    sample.selectionPdf    = 0.0;
+    sample.solidAnglePdf   = 0.0;
     sample.bsdfPdf          = 0.0;
     sample.kind            = kLightProxyKindAnalytic;
     sample.index           = 0u;
     sample.valid           = false;
     sample.sampleableByBSDF = false;
+    sample.fromLocalDistribution = false;
     return sample;
 }
 
@@ -173,23 +179,49 @@ float SampleLocalPDF(uint2 pixelPos, uint lightIndex)
     return packed == RTXPT_INVALID_LIGHT_INDEX ? 0.0 : float(UnpackMiniListCount(packed)) / float(RTXPT_LIGHTING_LOCAL_PROXY_COUNT);
 }
 
-float GetLightSelectionPdf(uint2 pixelPos, uint lightIndex)
+bool UseApproximateLightMIS()
 {
-    const LightingControlData ctrl = Bridge::getLightingControl();
-    if (lightIndex == RTXPT_INVALID_LIGHT_INDEX || lightIndex >= ctrl.TotalLightCount)
-        return 0.0;
+#ifdef RTXPT_USE_APPROXIMATE_MIS
+    return RTXPT_USE_APPROXIMATE_MIS != 0;
+#else
+    return g_Const.ptConsts.NEEMISType == 2u ||
+        (g_Const.ptConsts.NEEMISType == 1u && PATH_TRACER_MODE != PATH_TRACER_MODE_REFERENCE);
+#endif
+}
 
-    const float globalPdf = SampleGlobalPDF(lightIndex);
-    if (!HasLocalLightSampling(ctrl))
-        return globalPdf;
+void ComputeLightSelectionPdfs(DirectLightSample sample, uint localCount, uint globalCount,
+                               uint2 pixelPos, out float thisPdf, out float otherPdf, out float thisCount)
+{
+    thisPdf = sample.selectionPdf;
+    if (sample.fromLocalDistribution)
+    {
+        otherPdf = SampleGlobalPDF(sample.index);
+        thisCount = float(localCount);
+    }
+    else
+    {
+        otherPdf = localCount > 0u ? SampleLocalPDF(pixelPos, sample.index) : 0.0;
+        thisCount = float(globalCount);
+    }
+}
 
-    const float localRatio = saturate(ctrl.LocalToGlobalSampleRatio);
-    const float localPdf   = SampleLocalPDF(pixelPos, lightIndex);
-    return localRatio * localPdf + (1.0 - localRatio) * globalPdf;
+float ComputeLightVsBSDFMISForBSDF(uint2 pixelPos, uint lightIndex, float bsdfPdf, float solidAnglePdf,
+                                  uint candidates, uint fullSamples, bool coherent)
+{
+    if (bsdfPdf <= 0.0 || fullSamples == 0u)
+        return 1.0;
+    if (UseApproximateLightMIS())
+        return LightVsBSDFMISApprox(bsdfPdf, candidates, fullSamples, false);
+    if (lightIndex == RTXPT_INVALID_LIGHT_INDEX)
+        return 1.0;
+    uint localCount, globalCount;
+    GetCandidateSampleCounts(Bridge::getLightingControl(), coherent, candidates, localCount, globalCount);
+    const float lightPdf = (SampleGlobalPDF(lightIndex) + (localCount > 0u ? SampleLocalPDF(pixelPos, lightIndex) : 0.0)) * float(fullSamples) * solidAnglePdf;
+    return EvalLightSamplingMIS(1.0, bsdfPdf, 1.0, lightPdf);
 }
 
 DirectLightSample GenerateDirectLightCandidate(StandardBSDFData bsdfData, float3 hitPos, float3 wo,
-                                               uint2 pixelPos, inout SampleGenerator sg)
+                                               uint2 pixelPos, bool fromLocalDistribution, inout SampleGenerator sg)
 {
     DirectLightSample sample = DirectLightSample_make_empty();
     const LightingControlData ctrl = Bridge::getLightingControl();
@@ -199,26 +231,42 @@ DirectLightSample GenerateDirectLightCandidate(StandardBSDFData bsdfData, float3
     float selectionPdf = 0.0;
     uint  lightIndex   = RTXPT_INVALID_LIGHT_INDEX;
 
-    const float localRatio = saturate(ctrl.LocalToGlobalSampleRatio);
-    const bool  hasLocal   = HasLocalLightSampling(ctrl);
-    if (hasLocal && sampleNext1D(sg) < localRatio)
+    if (fromLocalDistribution)
     {
         lightIndex = SampleLocalLightIndex(pixelPos, sampleNext1D(sg), selectionPdf);
-        selectionPdf = localRatio * selectionPdf + (1.0 - localRatio) * SampleGlobalPDF(lightIndex);
     }
     else
     {
         lightIndex = SampleGlobalLightIndex(sampleNext1D(sg), selectionPdf);
-        if (hasLocal)
-            selectionPdf = localRatio * SampleLocalPDF(pixelPos, lightIndex) + (1.0 - localRatio) * selectionPdf;
     }
 
     if (lightIndex == RTXPT_INVALID_LIGHT_INDEX || selectionPdf <= 0.0)
         return sample;
+    sample.selectionPdf = selectionPdf;
+    sample.fromLocalDistribution = fromLocalDistribution;
 
-    if (lightIndex < ctrl.AnalyticLightCount)
+    const uint analyticEnd = ctrl.EnvmapQuadNodeCount + ctrl.AnalyticLightCount;
+    if (lightIndex < ctrl.EnvmapQuadNodeCount)
     {
-        const LightSample light = SampleAnalyticLight(Bridge::getLight(lightIndex), sampleNext2D(sg), hitPos);
+        if ((g_Const.ptConsts.environmentNEEEnabled & 1u) == 0u)
+            return DirectLightSample_make_empty();
+        const EnvironmentQuadLight light = t_EnvironmentLights[lightIndex];
+        const float2 uv = (float2(light.NodeX, light.NodeY) + sampleNext2D(sg)) / float(light.NodeDim);
+        EnvMapSampler env = RTXPTCreateEnvMapSampler(Bridge::getEnvMapConstants());
+        sample.dir = env.ToWorld(RTXPTEnvOctToDirEqualArea(uv));
+        sample.distance = 100000.0; // RTXPT-fork DISTANT_LIGHT_DISTANCE.
+        sample.solidAnglePdf = EnvironmentQuadSolidAnglePdf(light);
+        sample.proposalPdf = selectionPdf * sample.solidAnglePdf;
+        sample.radianceOverPdf = light.Radiance / sample.proposalPdf;
+        sample.bsdfPdf = EvalBSDFPdf(bsdfData, wo, sample.dir);
+        sample.kind = kLightProxyKindEnvironmentQuad;
+        sample.index = lightIndex;
+        sample.valid = true;
+        sample.sampleableByBSDF = true;
+    }
+    else if (lightIndex < analyticEnd)
+    {
+        const LightSample light = SampleAnalyticLight(Bridge::getLight(lightIndex - ctrl.EnvmapQuadNodeCount), sampleNext2D(sg), hitPos);
         if (!light.valid || light.solidAnglePdf <= 0.0)
             return sample;
 
@@ -226,30 +274,27 @@ DirectLightSample GenerateDirectLightCandidate(StandardBSDFData bsdfData, float3
         if (lightPdf <= 0.0)
             return sample;
 
-        const float  bsdfProb = getSpecularProbability(bsdfData, wo);
-        float3       f;
-        float        bsdfPdf;
-        EvalBSDF(bsdfData, wo, light.dir, bsdfProb, f, bsdfPdf);
+        const float bsdfPdf = EvalBSDFPdf(bsdfData, wo, light.dir);
 
         sample.dir              = light.dir;
         sample.distance         = light.distance;
         sample.radianceOverPdf  = light.radiance * max(g_Const.ptConsts.lightIntensityScale, 0.0) / lightPdf;
         sample.proposalPdf      = lightPdf;
-        sample.bsdfF            = f;
+        sample.solidAnglePdf    = light.solidAnglePdf;
         sample.bsdfPdf          = bsdfPdf;
         sample.kind             = kLightProxyKindAnalytic;
         sample.index            = lightIndex;
         sample.valid            = true;
         sample.sampleableByBSDF = false;
     }
-    else if (lightIndex >= ctrl.AnalyticLightCount && Bridge::getEmissiveTriangleCount() > 0u)
+    else if (Bridge::getEmissiveTriangleCount() > 0u)
     {
         // Per-triangle selection (RTXPT-fork model): the global proxy table already chose this specific
         // emissive triangle with probability proportional to its power, so the unified light index maps
         // directly to a triangle and selectionPdf is already the per-triangle selection probability
         // (no extra uniform 1/triCount factor).
         const uint triCount = Bridge::getEmissiveTriangleCount();
-        const uint triIndex = lightIndex - ctrl.AnalyticLightCount;
+        const uint triIndex = lightIndex - analyticEnd;
         if (triIndex >= triCount)
             return sample;
         const EmissiveTriangle tri = Bridge::getEmissiveTriangle(triIndex);
@@ -279,16 +324,13 @@ DirectLightSample GenerateDirectLightCandidate(StandardBSDFData bsdfData, float3
         if (trianglePdf <= 0.0)
             return sample;
 
-        const float bsdfProb = getSpecularProbability(bsdfData, wo);
-        float3      f;
-        float       bsdfPdf;
-        EvalBSDF(bsdfData, wo, wi, bsdfProb, f, bsdfPdf);
+        const float bsdfPdf = EvalBSDFPdf(bsdfData, wo, wi);
 
         sample.dir              = wi;
         sample.distance         = dist;
         sample.radianceOverPdf  = tri.radiance.rgb / trianglePdf;
         sample.proposalPdf      = trianglePdf;
-        sample.bsdfF            = f;
+        sample.solidAnglePdf    = solidAnglePdf;
         sample.bsdfPdf          = bsdfPdf;
         sample.kind             = kLightProxyKindEmissiveTriangle;
         sample.index            = lightIndex; // unified light index (used for temporal feedback)
@@ -302,22 +344,22 @@ DirectLightSample GenerateDirectLightCandidate(StandardBSDFData bsdfData, float3
     return sample;
 }
 
-void InsertFeedbackFromNEE(uint2 pixelPos, uint lightIndex, float3 contribution, float randomValue)
+void InsertFeedbackFromNEE(uint2 pixelPos, uint lightIndex, float3 contribution, float randomValue, bool coherent)
 {
     const LightingControlData ctrl = Bridge::getLightingControl();
     if (ctrl.TemporalFeedbackRequired == 0u || lightIndex == RTXPT_INVALID_LIGHT_INDEX)
         return;
 
-    const float avgContribution = max(0.0, dot(contribution, float3(0.2126, 0.7152, 0.0722)));
+    const float avgContribution = max(0.0, Average(contribution));
     if (avgContribution <= 0.0)
         return;
 
     float feedbackWeight = avgContribution;
-    const float globalPdf = max(SampleGlobalPDF(lightIndex), 1e-6);
-    feedbackWeight /= pow(globalPdf, max(ctrl.GlobalFeedbackUseWeight, 0.0));
+    const float globalPdf = SampleGlobalPDF(lightIndex);
+    feedbackWeight = globalPdf > 0.0 ? feedbackWeight / pow(globalPdf, 0.65) : LFR_MAX_WEIGHT;
 
     LightFeedbackReservoir reservoir = LightFeedbackReservoir::make(pixelPos, u_FeedbackTotalWeight, u_FeedbackCandidates);
-    reservoir.Add(randomValue, lightIndex, feedbackWeight, true);
+    reservoir.Add(randomValue, lightIndex, feedbackWeight, coherent);
 }
 
 float EvalDirectLightCandidateWeight(DirectLightSample sample)

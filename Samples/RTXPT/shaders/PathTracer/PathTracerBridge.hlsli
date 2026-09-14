@@ -4,6 +4,7 @@
 #include "Config.h"
 #include "PathTracerShared.h"
 #include "Lighting/LightingTypes.hlsli"
+#include "Lighting/EnvironmentLight.hlsli"
 
 #include "PathTracerTypes.hlsli"
 #include "PathTracerCamera.hlsli"
@@ -18,6 +19,8 @@ StructuredBuffer<LightingControlData>  t_LightingControl;
 StructuredBuffer<uint>                 t_LightProxyCounters;
 StructuredBuffer<uint>                 t_LightSamplingProxies;
 StructuredBuffer<uint>                 t_LocalSamplingBuffer;
+StructuredBuffer<EnvironmentQuadLight> t_EnvironmentLights;
+Texture2D<uint>                        t_EnvironmentLightLookup;
 RWTexture2D<float>                     u_FeedbackTotalWeight;
 RWTexture2D<uint>                      u_FeedbackCandidates;
 TextureCube<float4>                    t_EnvironmentMap;

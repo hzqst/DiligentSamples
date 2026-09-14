@@ -79,7 +79,7 @@ constexpr Uint32 kRTXPTRealtimeNoisePeriod = 8192u;
 
 // Disk file used to persist the render state cache (compiled shaders + pipeline states)
 // across runs. Resolved relative to the working directory set in Initialize().
-constexpr char kStateCachePath[] = "RTXPTCache_005.bin";
+constexpr char kStateCachePath[] = "RTXPTCache_007.bin";
 
 bool IsStandaloneNrdAvailable()
 {
@@ -236,6 +236,8 @@ void InsertDenoiserFinalMergeOutputBarrier(IDeviceContext* pContext, const RTXPT
 {
     RTXPTRayTracingPass::InsertUAVBarrier(pContext, RenderTargets.GetOutputColorUAV());
 }
+
+constexpr int kNEEMaxSampleCount = 63; // NEEBSDFMISInfo packs each sample count into six bits.
 
 Uint32 PackEnvironmentNEEAndEmissiveTriangleCount(bool EnableEnvNEE, Uint32 EmissiveTriangleCount)
 {
@@ -644,6 +646,13 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
     Args.Parse("realtime", m_RealtimeUI.RealtimeMode);
     Args.Parse("gpu_profile", m_EnableGpuProfiling);
     Args.Parse("inline_shadows", m_EnableInlineVisibility);
+    Args.Parse("nee", m_EnableNEE);
+    Args.Parse("nee_env", m_EnableEnvNEE);
+    Args.Parse("nee_emissive", m_EnableEmissiveNEE);
+    Args.Parse("nee_mis", m_ReferenceUI.NEEMISType);
+    Args.Parse("nee_type", m_ReferenceUI.NEEType);
+    m_ReferenceUI.NEEMISType = std::clamp(m_ReferenceUI.NEEMISType, 0, 2);
+    m_ReferenceUI.NEEType    = std::clamp(m_ReferenceUI.NEEType, 0, 2);
     Args.Parse("gpu_profile_csv", m_GpuProfileCSV);
     Args.Parse("scene", m_InitialSceneName);
     Args.Parse("nrd", m_RealtimeUI.StandaloneDenoiser);
@@ -1206,8 +1215,8 @@ void RTXPTSample::UpdateFrameConstants(double CurrTime)
 
     PtConsts.NEEEnabled          = m_EnableNEE ? 1u : 0u;
     PtConsts.NEEType             = static_cast<Uint32>(std::clamp(m_ReferenceUI.NEEType, 0, 2));
-    PtConsts.NEECandidateSamples = static_cast<Uint32>(std::clamp(m_ReferenceUI.NEECandidateSamples, 1, 32));
-    PtConsts.NEEFullSamples      = static_cast<Uint32>(std::clamp(m_ReferenceUI.NEEFullSamples, 0, 32));
+    PtConsts.NEECandidateSamples = static_cast<Uint32>(std::clamp(m_ReferenceUI.NEECandidateSamples, 1, kNEEMaxSampleCount));
+    PtConsts.NEEFullSamples      = static_cast<Uint32>(std::clamp(m_ReferenceUI.NEEFullSamples, 0, kNEEMaxSampleCount));
 
     PtConsts.sampleIndex    = PathTraceSampleIndex;
     PtConsts.minBounceCount = m_MinBounces;
@@ -1266,6 +1275,7 @@ bool RTXPTSample::UpdateLightsBaker(bool ResetFeedback)
     BakerSettings.ViewportSize                  = float2{static_cast<float>(SCDesc.Width), static_cast<float>(SCDesc.Height)};
     BakerSettings.PrevViewportSize              = BakerSettings.ViewportSize;
     BakerSettings.EnvMapParams                  = m_EnvMapBaker.GetLightsBakerParams();
+    BakerSettings.pEnvironmentRadianceMap       = m_EnvMapBaker.GetRadianceMapSRV();
     BakerSettings.EnvMapImportanceMapResolution = m_EnvMapBaker.GetStats().ImportanceResolution;
     BakerSettings.EnvMapImportanceMapMipCount   = m_EnvMapBaker.GetStats().ImportanceMipLevels;
     BakerSettings.FrameIndex                    = static_cast<Int64>(m_FrameIndex);
@@ -1331,6 +1341,8 @@ void RTXPTSample::CreateSceneDependentPasses()
                                     m_LightsBaker.GetLightProxyCounters(),
                                     m_LightsBaker.GetLightSamplingProxies(),
                                     m_LightsBaker.GetLocalSamplingBuffer(),
+                                    m_LightsBaker.GetEnvironmentLights(),
+                                    m_LightsBaker.GetEnvironmentLightLookup(),
                                     m_LightsBaker.GetFeedbackTotalWeightUAV(),
                                     m_LightsBaker.GetFeedbackCandidatesUAV(),
                                     m_EnvMapBaker.GetEnvironmentMapSRV(),
@@ -1351,7 +1363,8 @@ void RTXPTSample::CreateSceneDependentPasses()
                                     m_ReferenceUI.EnableLDSamplerForBSDF,
                                     m_FeatureCaps.RayTracing,
                                     m_FeatureCaps.StandaloneRayTracingShaders,
-                                    m_EnableInlineVisibility);
+                                    m_EnableInlineVisibility,
+                                    static_cast<Uint32>(m_ReferenceUI.NEEMISType));
 
     if (!RTReady)
     {
@@ -2548,16 +2561,15 @@ void RTXPTSample::UpdateUI()
 
                     if (ResetOnChange(ImGui::InputInt("Candidate samples", &m_ReferenceUI.NEECandidateSamples, 1),
                                       "NEE candidate count changed"))
-                        m_ReferenceUI.NEECandidateSamples = std::clamp(m_ReferenceUI.NEECandidateSamples, 1, 32);
+                        m_ReferenceUI.NEECandidateSamples = std::clamp(m_ReferenceUI.NEECandidateSamples, 1, kNEEMaxSampleCount);
 
                     if (ResetOnChange(ImGui::InputInt("Full samples", &m_ReferenceUI.NEEFullSamples, 1),
                                       "NEE full sample count changed"))
-                        m_ReferenceUI.NEEFullSamples = std::clamp(m_ReferenceUI.NEEFullSamples, 0, 32);
+                        m_ReferenceUI.NEEFullSamples = std::clamp(m_ReferenceUI.NEEFullSamples, 0, kNEEMaxSampleCount);
 
-                    ImGui::BeginDisabled(true);
-                    ImGui::Combo("MIS Type", &m_ReferenceUI.NEEMISType, "Full\0ApproxInRealtime\0Approximate\0\0");
-                    ImGui::EndDisabled();
-                    PlaceholderTooltip("G5 uses the full light-vs-BSDF MIS path; approximate MIS modes remain deferred.");
+                    if (ResetOnChange(ImGui::Combo("MIS Type", &m_ReferenceUI.NEEMISType, "Full\0ApproxInRealtime\0Approximate\0\0"),
+                                      "NEE MIS mode changed"))
+                        m_RayTracingPassSettingsDirty = true;
 
                     ImGui::TextColored(CategoryColor, "NEE-AT settings:");
                     if (m_ReferenceUI.NEEType != 2)

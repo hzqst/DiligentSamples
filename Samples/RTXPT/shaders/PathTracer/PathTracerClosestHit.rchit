@@ -101,12 +101,10 @@ namespace PathTracer
         surfaceEmission                 = frontFacing ? Bridge::getEmission(material, texCoord) : float3(0.0, 0.0, 0.0);
         // One-sided area-light pdf: only the front face can be sampled by NEE, so back-face hits carry no
         // emissive light pdf (and emit nothing via the gate above), keeping BSDF/NEE MIS consistent.
-        if (frontFacing && (material.flags & kMaterialFlagEmissiveAreaLight) != 0u)
+        if (!UseApproximateLightMIS() && frontFacing && (material.flags & kMaterialFlagEmissiveAreaLight) != 0u)
         {
-            // Unified global light index of this emissive triangle, matching the per-triangle proxy table
-            // and the NEE selection path: [AnalyticLightCount + global emissive-triangle index]. Used by
-            // ComputeBSDFMISForEmissiveTriangle to look up this triangle's per-triangle selection pdf.
-            neeTriangleLightIndex = Bridge::getAnalyticLightCount() + subInstance.emissiveTriangleOffset + PrimitiveIndex();
+            // Full MIS looks up the same environment / analytic / triangle table as NEE.
+            neeTriangleLightIndex = Bridge::getLightingControl().EnvmapQuadNodeCount + Bridge::getAnalyticLightCount() + subInstance.emissiveTriangleOffset + PrimitiveIndex();
 
             const float3 wp0   = mul(ObjectToWorld3x4(), float4(V0.position, 1.0));
             const float3 wp1   = mul(ObjectToWorld3x4(), float4(V1.position, 1.0));
@@ -222,15 +220,17 @@ namespace PathTracer
             prevMISInfo.LightSamplingEnabled &&
             prevMISInfo.FullSamples > 0u &&
             Bridge::getEmissiveTriangleCount() > 0u;
-        if (didEmissiveNEE && path.GetBsdfScatterPdf() > 0.0 && surfaceData.emissiveLightPdf > 0.0)
+        if (didEmissiveNEE && path.GetBsdfScatterPdf() > 0.0)
         {
-            referenceSurfaceEmission *= ComputeBSDFMISForEmissiveTriangle(path.GetPixelPos(),
+            referenceSurfaceEmission *= ComputeLightVsBSDFMISForBSDF(path.GetPixelPos(),
                                                                           surfaceData.neeTriangleLightIndex,
                                                                           path.GetBsdfScatterPdf(),
                                                                           surfaceData.emissiveLightPdf,
-                                                                          prevMISInfo.FullSamples);
+                                                                          prevMISInfo.CandidateSamples,
+                                                                          prevMISInfo.FullSamples,
+                                                                          prevMISInfo.LightSamplingIsSSC);
         }
-        referenceSurfaceEmission = ApplyReferenceFireflyFilter(referenceSurfaceEmission, path, workingContext);
+        referenceSurfaceEmission = ApplyEmissionFireflyFilter(referenceSurfaceEmission, path, workingContext);
 
         if (any(referenceSurfaceEmission > 0.0))
         {
@@ -264,11 +264,7 @@ namespace PathTracer
                                                                  preScatterPath.getVertexIndex(),
                                                                  Bridge::getSampleIndex(),
                                                                  kSampleEffect_NEELightSampler);
-        SampleGenerator sgEnv = SampleGenerator_makeStateless(preScatterPath.GetPixelPos(),
-                                                              preScatterPath.getVertexIndex(),
-                                                              Bridge::getSampleIndex(),
-                                                              kSampleEffect_NextEventEstimation);
-        NEEResult neeResult = HandleNEE(preScatterPath, surfaceData, sgDirect, sgEnv, workingContext);
+        NEEResult neeResult = HandleNEE(preScatterPath, surfaceData, sgDirect, workingContext);
         path.SetPackedMISInfo_ThpRuRuCorrection(neeResult.BSDFMISInfo.Pack16bit(), path.GetThpRuRuCorrection());
         AccumulateNEERadiance(workingContext, path, preScatterPath, neeResult);
 

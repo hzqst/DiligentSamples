@@ -30,6 +30,7 @@
 #include "GraphicsTypesX.hpp"
 #include "MapHelper.hpp"
 #include "RenderStateCache.h"
+#include <algorithm>
 
 namespace Diligent
 {
@@ -68,11 +69,16 @@ void RTXPTLightProxyBuildPass::Reset()
     m_WeightsPSO.Release();
     m_CountsPSO.Release();
     m_ScatterPSO.Release();
+    m_FinalizePSO.Release();
     m_ResetSRB.Release();
     m_WeightsSRB.Release();
     m_CountsSRB.Release();
     m_ScatterSRB.Release();
+    m_FinalizeSRB.Release();
     m_Constants.Release();
+    m_ProxyJobs.Release();
+    m_ProxyDispatchArgs.Release();
+    m_Device.Release();
     m_Ready = false;
 }
 
@@ -99,7 +105,9 @@ bool RTXPTLightProxyBuildPass::CreatePSO(IRenderStateCache*                     
         .AddVariable(SHADER_TYPE_COMPUTE, "u_LightSamplingProxies", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC);
     PSOCreateInfo.PSODesc.ResourceLayout = ResourceLayout;
 
-    pStateCache->CreateComputePipelineState(PSOCreateInfo, &PSO);
+    if (pStateCache) pStateCache->CreateComputePipelineState(PSOCreateInfo, &PSO);
+    else
+        m_Device->CreateComputePipelineState(PSOCreateInfo, &PSO);
     if (!PSO)
     {
         UNEXPECTED("Failed to create RTXPT light proxy build PSO: ", Name);
@@ -120,6 +128,7 @@ bool RTXPTLightProxyBuildPass::Initialize(IRenderDevice* pDevice, IEngineFactory
     Reset();
     if (pDevice == nullptr || pEngineFactory == nullptr)
         return false;
+    m_Device = pDevice;
 
     RefCntAutoPtr<IShaderSourceInputStreamFactory> pShaderSourceFactory;
     pEngineFactory->CreateDefaultShaderSourceStreamFactory("shaders;shaders\\PathTracer", &pShaderSourceFactory);
@@ -137,7 +146,9 @@ bool RTXPTLightProxyBuildPass::Initialize(IRenderDevice* pDevice, IEngineFactory
         ShaderCI.pShaderSourceStreamFactory = pShaderSourceFactory;
 
         RefCntAutoPtr<IShader> pCS;
-        pStateCache->CreateShader(ShaderCI, &pCS);
+        if (pStateCache) pStateCache->CreateShader(ShaderCI, &pCS);
+        else
+            pDevice->CreateShader(ShaderCI, &pCS);
         return pCS;
     };
 
@@ -145,7 +156,8 @@ bool RTXPTLightProxyBuildPass::Initialize(IRenderDevice* pDevice, IEngineFactory
     RefCntAutoPtr<IShader> pWeightsCS = CreateCS("ComputeWeightsCS", "RTXPT light proxy weights");
     RefCntAutoPtr<IShader> pCountsCS  = CreateCS("ComputeProxyCountsCS", "RTXPT light proxy counts");
     RefCntAutoPtr<IShader> pScatterCS = CreateCS("ScatterProxiesCS", "RTXPT light proxy scatter");
-    if (!pResetCS || !pWeightsCS || !pCountsCS || !pScatterCS)
+    RefCntAutoPtr<IShader> pFinalizeCS = CreateCS("FinalizeProxyJobsCS", "RTXPT light proxy jobs");
+    if (!pResetCS || !pWeightsCS || !pCountsCS || !pScatterCS || !pFinalizeCS)
     {
         UNEXPECTED("Failed to create RTXPT light proxy build shaders");
         return false;
@@ -168,6 +180,7 @@ bool RTXPTLightProxyBuildPass::Initialize(IRenderDevice* pDevice, IEngineFactory
         CreatePSO(pStateCache, pResetCS, "RTXPT light proxy reset PSO", m_ResetPSO, m_ResetSRB) &&
         CreatePSO(pStateCache, pWeightsCS, "RTXPT light proxy weights PSO", m_WeightsPSO, m_WeightsSRB) &&
         CreatePSO(pStateCache, pCountsCS, "RTXPT light proxy counts PSO", m_CountsPSO, m_CountsSRB) &&
+        CreatePSO(pStateCache, pFinalizeCS, "RTXPT light proxy jobs PSO", m_FinalizePSO, m_FinalizeSRB) &&
         CreatePSO(pStateCache, pScatterCS, "RTXPT light proxy scatter PSO", m_ScatterPSO, m_ScatterSRB);
 
     m_Ready = Ok;
@@ -178,6 +191,8 @@ bool RTXPTLightProxyBuildPass::BindResources(IShaderResourceBinding* pSRB,
                                              IBuffer*                pControl,
                                              IBuffer*                pAnalyticLights,
                                              IBuffer*                pEmissiveTriangles,
+                                             IBuffer*                pEnvironmentLights,
+                                             IBuffer*                pFeedbackCounts,
                                              IBuffer*                pLightWeights,
                                              IBuffer*                pLightProxyCounters,
                                              IBuffer*                pLightSamplingProxies)
@@ -200,6 +215,10 @@ bool RTXPTLightProxyBuildPass::BindResources(IShaderResourceBinding* pSRB,
         SetVar("u_LightingControl", pControl->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS)) &&
         SetVar("t_Lights", pAnalyticLights->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE)) &&
         SetVar("t_EmissiveTriangles", pEmissiveTriangles->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE)) &&
+        SetVar("t_EnvironmentLights", pEnvironmentLights->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE)) &&
+        SetVar("u_ProxyJobs", m_ProxyJobs->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS)) &&
+        SetVar("u_ProxyDispatchArgs", m_ProxyDispatchArgs->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS)) &&
+        SetVar("t_FeedbackCounts", pFeedbackCounts->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE)) &&
         SetVar("u_LightWeights", pLightWeights->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS)) &&
         SetVar("u_LightProxyCounters", pLightProxyCounters->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS)) &&
         SetVar("u_LightSamplingProxies", pLightSamplingProxies->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS));
@@ -209,6 +228,8 @@ bool RTXPTLightProxyBuildPass::Build(IDeviceContext* pContext,
                                      IBuffer*        pControl,
                                      IBuffer*        pAnalyticLights,
                                      IBuffer*        pEmissiveTriangles,
+                                     IBuffer*        pEnvironmentLights,
+                                     IBuffer*        pFeedbackCounts,
                                      IBuffer*        pLightWeights,
                                      IBuffer*        pLightProxyCounters,
                                      IBuffer*        pLightSamplingProxies,
@@ -220,7 +241,7 @@ bool RTXPTLightProxyBuildPass::Build(IDeviceContext* pContext,
     if (!m_Ready || pContext == nullptr || TotalLightCount == 0u)
         return false;
     if (pControl == nullptr || pAnalyticLights == nullptr || pEmissiveTriangles == nullptr ||
-        pLightWeights == nullptr || pLightProxyCounters == nullptr || pLightSamplingProxies == nullptr)
+        pEnvironmentLights == nullptr || pLightWeights == nullptr || pLightProxyCounters == nullptr || pLightSamplingProxies == nullptr)
         return false;
 
     {
@@ -233,10 +254,35 @@ bool RTXPTLightProxyBuildPass::Build(IDeviceContext* pContext,
         Mapped->ImportanceSamplingType = ImportanceSamplingType;
     }
 
-    if (!BindResources(m_ResetSRB, pControl, pAnalyticLights, pEmissiveTriangles, pLightWeights, pLightProxyCounters, pLightSamplingProxies) ||
-        !BindResources(m_WeightsSRB, pControl, pAnalyticLights, pEmissiveTriangles, pLightWeights, pLightProxyCounters, pLightSamplingProxies) ||
-        !BindResources(m_CountsSRB, pControl, pAnalyticLights, pEmissiveTriangles, pLightWeights, pLightProxyCounters, pLightSamplingProxies) ||
-        !BindResources(m_ScatterSRB, pControl, pAnalyticLights, pEmissiveTriangles, pLightWeights, pLightProxyCounters, pLightSamplingProxies))
+    const Uint64 JobsSize = (Uint64{TotalLightCount} + (Uint64{ProxyBudget} + 255u) / 256u) * 4u * sizeof(Uint32);
+    if (!m_ProxyJobs || m_ProxyJobs->GetDesc().Size < JobsSize)
+    {
+        m_ProxyJobs.Release();
+        BufferDesc Desc;
+        Desc.Name              = "RTXPT light proxy jobs";
+        Desc.Size              = std::max(JobsSize, Uint64{16});
+        Desc.Mode              = BUFFER_MODE_STRUCTURED;
+        Desc.ElementByteStride = 4 * sizeof(Uint32);
+        Desc.BindFlags         = BIND_UNORDERED_ACCESS;
+        m_Device->CreateBuffer(Desc, nullptr, &m_ProxyJobs);
+    }
+    if (!m_ProxyDispatchArgs)
+    {
+        BufferDesc Desc;
+        Desc.Name              = "RTXPT light proxy indirect dispatch";
+        Desc.Size              = 3 * sizeof(Uint32);
+        Desc.Mode              = BUFFER_MODE_STRUCTURED;
+        Desc.ElementByteStride = sizeof(Uint32);
+        Desc.BindFlags         = BIND_UNORDERED_ACCESS | BIND_INDIRECT_DRAW_ARGS;
+        m_Device->CreateBuffer(Desc, nullptr, &m_ProxyDispatchArgs);
+    }
+    if (!m_ProxyJobs || !m_ProxyDispatchArgs) return false;
+
+    if (!BindResources(m_FinalizeSRB, pControl, pAnalyticLights, pEmissiveTriangles, pEnvironmentLights, pFeedbackCounts, pLightWeights, pLightProxyCounters, pLightSamplingProxies) ||
+        !BindResources(m_ResetSRB, pControl, pAnalyticLights, pEmissiveTriangles, pEnvironmentLights, pFeedbackCounts, pLightWeights, pLightProxyCounters, pLightSamplingProxies) ||
+        !BindResources(m_WeightsSRB, pControl, pAnalyticLights, pEmissiveTriangles, pEnvironmentLights, pFeedbackCounts, pLightWeights, pLightProxyCounters, pLightSamplingProxies) ||
+        !BindResources(m_CountsSRB, pControl, pAnalyticLights, pEmissiveTriangles, pEnvironmentLights, pFeedbackCounts, pLightWeights, pLightProxyCounters, pLightSamplingProxies) ||
+        !BindResources(m_ScatterSRB, pControl, pAnalyticLights, pEmissiveTriangles, pEnvironmentLights, pFeedbackCounts, pLightWeights, pLightProxyCounters, pLightSamplingProxies))
     {
         UNEXPECTED("Failed to bind RTXPT light proxy build resources");
         return false;
@@ -259,6 +305,7 @@ bool RTXPTLightProxyBuildPass::Build(IDeviceContext* pContext,
     pContext->CommitShaderResources(m_ResetSRB, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
     pContext->DispatchCompute(SingleGroup);
     InsertBufferUAVBarrier(pContext, pControl);
+    InsertBufferUAVBarrier(pContext, m_ProxyDispatchArgs);
 
     // Per-light weights + total weight sum (single group: each thread reduces a contiguous block of lights).
     pContext->SetPipelineState(m_WeightsPSO);
@@ -273,11 +320,19 @@ bool RTXPTLightProxyBuildPass::Build(IDeviceContext* pContext,
     pContext->DispatchCompute(LightDispatch);
     InsertBufferUAVBarrier(pContext, pControl);
     InsertBufferUAVBarrier(pContext, pLightProxyCounters);
+    InsertBufferUAVBarrier(pContext, m_ProxyJobs);
+
+    pContext->SetPipelineState(m_FinalizePSO);
+    pContext->CommitShaderResources(m_FinalizeSRB, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+    pContext->DispatchCompute(SingleGroup);
 
     // Scatter each light's index into its claimed proxy-table range.
     pContext->SetPipelineState(m_ScatterPSO);
     pContext->CommitShaderResources(m_ScatterSRB, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-    pContext->DispatchCompute(LightDispatch);
+    DispatchComputeIndirectAttribs Indirect;
+    Indirect.pAttribsBuffer                   = m_ProxyDispatchArgs;
+    Indirect.AttribsBufferStateTransitionMode = RESOURCE_STATE_TRANSITION_MODE_TRANSITION;
+    pContext->DispatchComputeIndirect(Indirect);
     InsertBufferUAVBarrier(pContext, pLightSamplingProxies);
 
     return true;

@@ -1005,6 +1005,33 @@ void EvalBSDF(StandardBSDFData bsdfData, float3 wo, float3 wi, float specProb, o
     pdf = bsdf.evalPdf(viewLocal, scatterLocal);
 }
 
+float4 EvalBSDFValue(StandardBSDFData bsdfData, float3 wo, float3 wi)
+{
+    float3 tangent, bitangent;
+    BranchlessONB(bsdfData.N, tangent, bitangent);
+    const float3 viewLocal = float3(dot(wo, tangent), dot(wo, bitangent), dot(bsdfData.N, wo));
+    const float3 scatterLocal = float3(dot(wi, tangent), dot(wi, bitangent), dot(bsdfData.N, wi));
+    if (viewLocal.z < kMinCosTheta || abs(scatterLocal.z) < kMinCosTheta)
+        return 0.0;
+    FalcorBSDF bsdf = FalcorBSDF::make(MakeMaterialHeader(bsdfData), bsdfData.N, wo, bsdfData);
+    return bsdf.eval(viewLocal, scatterLocal);
+}
+
+// Candidate selection needs only the PDF. Keep full BSDF evaluation after visibility,
+// matching RTXPT-fork PathTracerNEE::EvalSampleWeight / ProcessLightSample.
+float EvalBSDFPdf(StandardBSDFData bsdfData, float3 wo, float3 wi)
+{
+    float3 tangent, bitangent;
+    BranchlessONB(bsdfData.N, tangent, bitangent);
+    const float3 viewLocal = float3(dot(wo, tangent), dot(wo, bitangent), dot(bsdfData.N, wo));
+    const float3 scatterLocal = float3(dot(wi, tangent), dot(wi, bitangent), dot(bsdfData.N, wi));
+    if (viewLocal.z < kMinCosTheta || abs(scatterLocal.z) < kMinCosTheta)
+        return 0.0;
+    const MaterialHeader mtl = MakeMaterialHeader(bsdfData);
+    FalcorBSDF bsdf = FalcorBSDF::make(mtl, bsdfData.N, wo, bsdfData);
+    return bsdf.evalPdf(viewLocal, scatterLocal);
+}
+
 // Importance-sample an incident direction Wi. preGeneratedSample.xy samples the chosen lobe,
 // and preGeneratedSample.z selects between BSDF lobe families.
 bool SampleBSDF(StandardBSDFData bsdfData, float3 wo, float3 preGeneratedSample,

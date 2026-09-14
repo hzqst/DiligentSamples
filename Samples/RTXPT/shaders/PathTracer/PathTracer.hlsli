@@ -83,75 +83,31 @@ namespace PathTracer
     }
 
 #if PATH_TRACER_MODE != PATH_TRACER_MODE_BUILD_STABLE_PLANES
-    float ComputeLightVsBSDFMISForLightSample(DirectLightSample sample, uint fullSamples)
+    float ComputeLightVsBSDFMISForLightSample(DirectLightSample sample, uint fullSamples, uint candidates, float thisPdf, float otherPdf)
     {
         if (!sample.sampleableByBSDF || sample.bsdfPdf <= 0.0 || sample.proposalPdf <= 0.0)
             return 1.0;
 
-        const float lightPdf = sample.proposalPdf * float(max(fullSamples, 1u));
-        return PowerHeuristic(1.0, lightPdf, 1.0, sample.bsdfPdf);
-    }
-
-    float3 SampleEnvironmentNEE(StandardBSDFData bsdfData, float3 hitPos, float3 faceNormal, float3 vertexNormal,
-                                float shadowNoLFadeout, float3 wo, inout SampleGenerator sg, float fireflyFilterK)
-    {
-        EnvMapSampler envSampler = RTXPTCreateEnvMapSampler(Bridge::getEnvMapConstants());
-        const DistantLightSample envSample = envSampler.MIPDescentSample(sampleNext2D(sg));
-        if (envSample.Pdf <= 0.0)
-            return float3(0.0, 0.0, 0.0);
-
-        const float specProb = getSpecularProbability(bsdfData, wo);
-        float3      f;
-        float       bsdfPdf;
-        EvalBSDF(bsdfData, wo, envSample.Dir, specProb, f, bsdfPdf);
-        if (bsdfPdf <= 0.0)
-            return float3(0.0, 0.0, 0.0);
-
-        const float3 visibilityOrigin = MakeVisibilityOrigin(hitPos, faceNormal, bsdfData.N, envSample.Dir);
-        const bool visible = TraceVisibilityRay(visibilityOrigin, envSample.Dir, kVisibilityRayTMax);
-        if (!visible)
-            return float3(0.0, 0.0, 0.0);
-
-        const float misWeight = PowerHeuristic(1.0, envSample.Pdf, 1.0, bsdfPdf);
-        const float fadeOut   = ComputeShadowNoLFadeout(envSample.Dir, vertexNormal, shadowNoLFadeout);
-        float3      contribution = f * envSample.Le * (fadeOut * misWeight / envSample.Pdf);
-
-        const float ffThreshold = g_Const.ptConsts.fireflyFilterThreshold;
-        if (ffThreshold != 0.0)
-        {
-            const float neeK = ComputeNewScatterFireflyFilterK(fireflyFilterK, envSample.Pdf, 1.0);
-            contribution *= FireflyFilterShort(Average(contribution), ffThreshold, neeK);
-        }
-
-        return contribution;
-    }
-
-    float ComputeBSDFMISForEmissiveTriangle(uint2 pixelPos, uint triangleLightIndex, float bsdfPdf, float emissiveSolidAnglePdf, uint fullSamples)
-    {
-        if (bsdfPdf <= 0.0 || emissiveSolidAnglePdf <= 0.0 || triangleLightIndex == 0xFFFFFFFFu)
-            return 1.0;
-
-        // Per-triangle selection probability: the proxy table selects this exact triangle proportional to its
-        // power, so the MIS light pdf must use this triangle's selection pdf (matching the NEE side).
-        const float selectionPdf = GetLightSelectionPdf(pixelPos, triangleLightIndex);
-        if (selectionPdf <= 0.0)
-            return 1.0;
-
-        const float lightPdf = selectionPdf * emissiveSolidAnglePdf * float(max(fullSamples, 1u));
-        return PowerHeuristic(1.0, bsdfPdf, 1.0, lightPdf);
+        if (UseApproximateLightMIS())
+            return LightVsBSDFMISApprox(sample.bsdfPdf, candidates, fullSamples, true);
+        const float lightPdf = (thisPdf + otherPdf) * float(fullSamples) * sample.solidAnglePdf;
+        return EvalLightSamplingMIS(1.0, lightPdf, 1.0, sample.bsdfPdf);
     }
 
     float3 SampleDirectLightNEE(StandardBSDFData bsdfData, float3 hitPos, float3 faceNormal, float3 vertexNormal,
                                 float shadowNoLFadeout, float3 wo, uint2 pixelPos, inout SampleGenerator sg,
-                                float fireflyFilterK, out bool sampledEmissive)
+                                float fireflyFilterK, bool coherent, float3 pathThroughput, out float specularRadianceAvg)
     {
-        sampledEmissive = false;
+        specularRadianceAvg = 0.0;
 
-        const uint fullSamples = min(32u, g_Const.ptConsts.NEEFullSamples);
+        const uint fullSamples = min(RTXPT_LIGHTING_MAX_SAMPLE_COUNT, g_Const.ptConsts.NEEFullSamples);
         if (fullSamples == 0u || Bridge::getTotalLightCount() == 0u)
             return float3(0.0, 0.0, 0.0);
 
-        const uint candidateSamples = max(1u, min(32u, g_Const.ptConsts.NEECandidateSamples));
+        const uint candidateSamples = max(1u, min(RTXPT_LIGHTING_MAX_SAMPLE_COUNT, g_Const.ptConsts.NEECandidateSamples));
+        uint localCount, globalCount;
+        GetCandidateSampleCounts(Bridge::getLightingControl(), coherent && HasLocalLightSampling(Bridge::getLightingControl()),
+                                 candidateSamples, localCount, globalCount);
 
         float3 result = float3(0.0, 0.0, 0.0);
         [loop]
@@ -162,7 +118,7 @@ namespace PathTracer
             [loop]
             for (uint candidateIndex = 0u; candidateIndex < candidateSamples; ++candidateIndex)
             {
-                DirectLightSample candidate = GenerateDirectLightCandidate(bsdfData, hitPos, wo, pixelPos, sg);
+                DirectLightSample candidate = GenerateDirectLightCandidate(bsdfData, hitPos, wo, pixelPos, candidateIndex >= globalCount, sg);
                 wrs.Add(sampleNext1D(sg), candidate, EvalDirectLightCandidateWeight(candidate));
             }
 
@@ -178,40 +134,32 @@ namespace PathTracer
             if (!visible)
                 continue;
 
-            const float wrsScale   = 1.0 / (candidateProbability * float(candidateSamples));
-            const float misWeight  = ComputeLightVsBSDFMISForLightSample(picked, fullSamples);
+            float thisPdf, otherPdf, thisCount;
+            ComputeLightSelectionPdfs(picked, localCount, globalCount, pixelPos, thisPdf, otherPdf, thisCount);
+            const float wrsScale = EvalLightSamplingMIS(1.0, thisPdf, 1.0, otherPdf) / (candidateProbability * thisCount);
+            const float misWeight  = ComputeLightVsBSDFMISForLightSample(picked, fullSamples, candidateSamples, thisPdf, otherPdf);
             const float fadeOut    = ComputeShadowNoLFadeout(picked.dir, vertexNormal, shadowNoLFadeout);
-            float3      contribution = picked.bsdfF * picked.radianceOverPdf * (fadeOut * wrsScale * misWeight / float(fullSamples));
+            const float4 bsdfValue = EvalBSDFValue(bsdfData, wo, picked.dir);
+            const float3 incidentRadiance = picked.radianceOverPdf * (fadeOut * wrsScale * misWeight / float(fullSamples));
+            float3 contribution = bsdfValue.rgb * incidentRadiance;
+            const float specularContribution = bsdfValue.w * Average(incidentRadiance) * Average(pathThroughput);
+            const float3 feedbackContribution = contribution * Average(pathThroughput);
 
             const float ffThreshold = g_Const.ptConsts.fireflyFilterThreshold;
             if (ffThreshold != 0.0)
             {
                 const float neeK = ComputeNewScatterFireflyFilterK(fireflyFilterK, picked.proposalPdf, 1.0);
-                contribution *= FireflyFilterShort(Average(contribution), ffThreshold, neeK);
+                const float filter = FireflyFilterShort(Average(contribution), ffThreshold, neeK);
+                contribution *= filter;
             }
 
             // picked.index is the unified global light index for both analytic lights and emissive triangles.
-            InsertFeedbackFromNEE(pixelPos, picked.index, contribution, sampleNext1D(sg));
-            sampledEmissive = sampledEmissive || picked.kind == kLightProxyKindEmissiveTriangle;
+            InsertFeedbackFromNEE(pixelPos, picked.index, feedbackContribution, sampleNext1D(sg), coherent);
+            specularRadianceAvg += specularContribution;
             result += contribution;
         }
 
         return result;
-    }
-#endif
-
-#if PATH_TRACER_MODE == PATH_TRACER_MODE_REFERENCE
-    float ComputeBSDFEnvMISWeight(bool didEnvNEE, float prevBsdfPdf, float3 rayDir)
-    {
-        if (!didEnvNEE || prevBsdfPdf <= 0.0)
-            return 1.0;
-
-        EnvMapSampler envSampler = RTXPTCreateEnvMapSampler(Bridge::getEnvMapConstants());
-        const float envPdf = envSampler.MIPDescentEvalPdf(rayDir);
-        if (envPdf <= 0.0)
-            return 1.0;
-
-        return PowerHeuristic(1.0, prevBsdfPdf, 1.0, envPdf);
     }
 #endif
 
@@ -226,9 +174,9 @@ namespace PathTracer
 #endif
     }
 
-    inline float3 ApplyReferenceFireflyFilter(float3 radiance, const PathState path, const WorkingContext workingContext)
+    inline float3 ApplyEmissionFireflyFilter(float3 radiance, const PathState path, const WorkingContext workingContext)
     {
-#if PATH_TRACER_MODE == PATH_TRACER_MODE_REFERENCE
+#if PATH_TRACER_MODE != PATH_TRACER_MODE_BUILD_STABLE_PLANES
         const float ffThreshold = workingContext.PtConsts.fireflyFilterThreshold;
         if (ffThreshold != 0.0)
             radiance = FireflyFilter(radiance, ffThreshold, path.GetFireflyFilterK());
@@ -401,25 +349,29 @@ namespace PathTracer
     inline NEEResult HandleNEE(const PathState preScatterPath,
                                const SurfaceData surfaceData,
                                inout SampleGenerator sgDirect,
-                               inout SampleGenerator sgEnv,
                                const WorkingContext workingContext)
     {
         NEEResult result = NEEResult::empty();
 
         const bool enableNEE     = workingContext.PtConsts.NEEEnabled != 0u;
-        const uint fullSamples   = min(32u, workingContext.PtConsts.NEEFullSamples);
+        const uint fullSamples   = min(RTXPT_LIGHTING_MAX_SAMPLE_COUNT, workingContext.PtConsts.NEEFullSamples);
         if (!enableNEE || fullSamples == 0u)
             return result;
         if (!ReferenceShouldRunNEE(preScatterPath, workingContext))
             return result;
+        const LightingControlData ctrl = Bridge::getLightingControl();
+        if (ctrl.TotalLightCount == 0u || (ctrl.ImportanceSamplingType != 0u && ctrl.SamplingProxyCount == 0u) ||
+            (FalcorBSDF::getLobes(surfaceData.bsdf.standardData) & kLobeTypeNonDelta) == 0u)
+            return result;
+        const bool coherent = IsScreenSpaceCoherent(ctrl, preScatterPath.rayCone.getWidth(), preScatterPath.GetSceneLength());
 
         result.BSDFMISInfo.LightSamplingEnabled = true;
-        result.BSDFMISInfo.LightSamplingIsSSC   = false;
+        result.BSDFMISInfo.LightSamplingIsSSC   = coherent;
         result.BSDFMISInfo.CandidateSamples     = min(NEEBSDFMISInfo::SampleCountLimit(), max(1u, workingContext.PtConsts.NEECandidateSamples));
         result.BSDFMISInfo.FullSamples          = min(NEEBSDFMISInfo::SampleCountLimit(), fullSamples);
 
         const float3 wo = surfaceData.shadingData.V;
-        bool sampledEmissive = false;
+        float specularRadianceAvg = 0.0;
         float3 directRadiance = SampleDirectLightNEE(surfaceData.bsdf.standardData,
                                                      surfaceData.shadingData.posW,
                                                      surfaceData.shadingData.faceNCorrected,
@@ -429,27 +381,14 @@ namespace PathTracer
                                                      preScatterPath.GetPixelPos(),
                                                      sgDirect,
                                                      preScatterPath.GetFireflyFilterK(),
-                                                     sampledEmissive);
+                                                     coherent,
+                                                     preScatterPath.GetThp(),
+                                                     specularRadianceAvg);
         directRadiance *= preScatterPath.GetThp();
-
-        const bool enableEnvNEE = (workingContext.PtConsts.environmentNEEEnabled & 1u) != 0u;
-        if (enableEnvNEE)
-        {
-            float3 envRadiance = SampleEnvironmentNEE(surfaceData.bsdf.standardData,
-                                                      surfaceData.shadingData.posW,
-                                                      surfaceData.shadingData.faceNCorrected,
-                                                      surfaceData.shadingData.vertexN,
-                                                      surfaceData.shadingData.shadowNoLFadeout,
-                                                      wo,
-                                                      sgEnv,
-                                                      preScatterPath.GetFireflyFilterK());
-            directRadiance += preScatterPath.GetThp() * envRadiance;
-        }
 
         if (any(directRadiance > 0.0))
         {
-            const float specAvg = preScatterPath.hasFlag(PathFlags::stablePlaneBaseScatterDiff) ? 0.0 : Average(directRadiance);
-            result.AccumulateRadiance(directRadiance, specAvg);
+            result.AccumulateRadiance(directRadiance, specularRadianceAvg);
         }
 
         return result;
@@ -687,15 +626,31 @@ namespace PathTracer
 #endif
 
         EnvMapSampler envSampler = RTXPTCreateEnvMapSampler(Bridge::getEnvMapConstants());
-        float3 environmentEmission = envSampler.Eval(rayDir, 0.0);
+        // RTXPT-fork defaults to MIP 2 after more than one diffuse bounce.
+        const float environmentMip = path.getCounter(PackedCounters::DiffuseBounces) > 1u ? 2.0 : 0.0;
+        float3 environmentEmission = envSampler.Eval(rayDir, environmentMip);
 
-#if PATH_TRACER_MODE == PATH_TRACER_MODE_REFERENCE
+#if PATH_TRACER_MODE != PATH_TRACER_MODE_BUILD_STABLE_PLANES
         const NEEBSDFMISInfo prevMISInfo = NEEBSDFMISInfo::Unpack16bit(path.GetPackedMISInfo());
         const bool didEnvNEE =
             prevMISInfo.LightSamplingEnabled &&
-            ((workingContext.PtConsts.environmentNEEEnabled & 1u) != 0u);
-        environmentEmission *= ComputeBSDFEnvMISWeight(didEnvNEE, path.GetBsdfScatterPdf(), rayDir);
-        environmentEmission = ApplyReferenceFireflyFilter(environmentEmission, path, workingContext);
+            ((workingContext.PtConsts.environmentNEEEnabled & 1u) != 0u) && Bridge::getLightingControl().EnvmapQuadNodeCount > 0u;
+        if (didEnvNEE && path.GetBsdfScatterPdf() > 0.0)
+        {
+            uint lightIndex = RTXPT_INVALID_LIGHT_INDEX;
+            float solidAnglePdf = 0.0;
+            if (!UseApproximateLightMIS())
+            {
+                uint width, height;
+                t_EnvironmentLightLookup.GetDimensions(width, height);
+                const uint2 texel = min(uint2(RTXPTDirToOctEqualArea(envSampler.ToLocal(rayDir)) * float2(width, height)), uint2(width, height) - 1u);
+                lightIndex = t_EnvironmentLightLookup.Load(int3(texel, 0));
+                solidAnglePdf = EnvironmentQuadSolidAnglePdf(t_EnvironmentLights[lightIndex]);
+            }
+            environmentEmission *= ComputeLightVsBSDFMISForBSDF(path.GetPixelPos(), lightIndex, path.GetBsdfScatterPdf(),
+                solidAnglePdf, prevMISInfo.CandidateSamples, prevMISInfo.FullSamples, prevMISInfo.LightSamplingIsSSC);
+        }
+        environmentEmission = ApplyEmissionFireflyFilter(environmentEmission, path, workingContext);
 #endif
 
 #if PATH_TRACER_MODE != PATH_TRACER_MODE_REFERENCE || defined(__INTELLISENSE__)
@@ -753,21 +708,23 @@ namespace PathTracer
         }
 
         float3 referenceSurfaceEmission = surfaceEmission;
-#if PATH_TRACER_MODE == PATH_TRACER_MODE_REFERENCE
+#if PATH_TRACER_MODE != PATH_TRACER_MODE_BUILD_STABLE_PLANES
         const NEEBSDFMISInfo prevMISInfo = NEEBSDFMISInfo::Unpack16bit(path.GetPackedMISInfo());
         const bool didEmissiveNEE =
             prevMISInfo.LightSamplingEnabled &&
             prevMISInfo.FullSamples > 0u &&
             Bridge::getEmissiveTriangleCount() > 0u;
-        if (didEmissiveNEE && path.GetBsdfScatterPdf() > 0.0 && surfaceData.emissiveLightPdf > 0.0)
+        if (didEmissiveNEE && path.GetBsdfScatterPdf() > 0.0)
         {
-            referenceSurfaceEmission *= ComputeBSDFMISForEmissiveTriangle(path.GetPixelPos(),
+            referenceSurfaceEmission *= ComputeLightVsBSDFMISForBSDF(path.GetPixelPos(),
                                                                           surfaceData.neeTriangleLightIndex,
                                                                           path.GetBsdfScatterPdf(),
                                                                           surfaceData.emissiveLightPdf,
-                                                                          prevMISInfo.FullSamples);
+                                                                          prevMISInfo.CandidateSamples,
+                                                                          prevMISInfo.FullSamples,
+                                                                          prevMISInfo.LightSamplingIsSSC);
         }
-        referenceSurfaceEmission = ApplyReferenceFireflyFilter(referenceSurfaceEmission, path, workingContext);
+        referenceSurfaceEmission = ApplyEmissionFireflyFilter(referenceSurfaceEmission, path, workingContext);
 #endif
 
         if (any(referenceSurfaceEmission > 0.0))
@@ -808,11 +765,7 @@ namespace PathTracer
                                                                          preScatterPath.getVertexIndex(),
                                                                          Bridge::getSampleIndex(),
                                                                          kSampleEffect_NEELightSampler);
-                SampleGenerator sgEnv = SampleGenerator_makeStateless(preScatterPath.GetPixelPos(),
-                                                                      preScatterPath.getVertexIndex(),
-                                                                      Bridge::getSampleIndex(),
-                                                                      kSampleEffect_NextEventEstimation);
-                const NEEResult neeResult = HandleNEE(preScatterPath, surfaceData, sgDirect, sgEnv, workingContext);
+                const NEEResult neeResult = HandleNEE(preScatterPath, surfaceData, sgDirect, workingContext);
                 AccumulateNEERadiance(workingContext, path, preScatterPath, neeResult);
             }
 #endif
@@ -838,11 +791,7 @@ namespace PathTracer
                                                                  preScatterPath.getVertexIndex(),
                                                                  Bridge::getSampleIndex(),
                                                                  kSampleEffect_NEELightSampler);
-        SampleGenerator sgEnv = SampleGenerator_makeStateless(preScatterPath.GetPixelPos(),
-                                                              preScatterPath.getVertexIndex(),
-                                                              Bridge::getSampleIndex(),
-                                                              kSampleEffect_NextEventEstimation);
-        NEEResult neeResult = HandleNEE(preScatterPath, surfaceData, sgDirect, sgEnv, workingContext);
+        NEEResult neeResult = HandleNEE(preScatterPath, surfaceData, sgDirect, workingContext);
         path.SetPackedMISInfo_ThpRuRuCorrection(neeResult.BSDFMISInfo.Pack16bit(), path.GetThpRuRuCorrection());
         AccumulateNEERadiance(workingContext, path, preScatterPath, neeResult);
 

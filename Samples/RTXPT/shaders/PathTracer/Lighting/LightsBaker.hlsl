@@ -52,9 +52,10 @@ void FillLocalSamplingCS(uint3 tile : SV_GroupID, uint index : SV_GroupIndex)
     if (index < RTXPT_LIGHTING_SAMPLING_BUFFER_TILE_SIZE * RTXPT_LIGHTING_SAMPLING_BUFFER_TILE_SIZE &&
         all(pixel < feedbackResolution))
     {
-        const uint candidate = t_FeedbackCandidates.Load(int3(pixel, 0)) & ~LFR_SCREEN_SPACE_COHERENT_FLAG;
+        const uint candidateRaw = t_FeedbackCandidates.Load(int3(pixel, 0));
+        const uint candidate = candidateRaw & ~LFR_SCREEN_SPACE_COHERENT_FLAG;
         const float weight = t_FeedbackTotalWeight.Load(int3(pixel, 0));
-        if (candidate < ctrl.TotalLightCount && weight > 0.0)
+        if ((candidateRaw & LFR_SCREEN_SPACE_COHERENT_FLAG) != 0u && candidate < ctrl.TotalLightCount && weight > 0.0)
         {
             g_FeedbackLights[index] = candidate;
             g_FeedbackWeights[index] = weight;

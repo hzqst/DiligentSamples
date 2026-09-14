@@ -98,6 +98,8 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
                                      IBuffer*              pLightProxyCounters,
                                      IBuffer*              pLightSamplingProxies,
                                      IBuffer*              pLocalSamplingBuffer,
+                                     IBuffer*              pEnvironmentLights,
+                                     ITextureView*         pEnvironmentLightLookup,
                                      ITextureView*         pFeedbackTotalWeightUAV,
                                      ITextureView*         pFeedbackCandidatesUAV,
                                      ITextureView*         pEnvironmentMapSRV,
@@ -118,7 +120,8 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
                                      bool                  EnableLDSamplerForBSDF,
                                      bool                  RayTracingSupported,
                                      bool                  StandaloneRTShadersSupported,
-                                     bool                  EnableInlineVisibility)
+                                     bool                  EnableInlineVisibility,
+                                     Uint32                NEEMISType)
 {
     Reset();
 
@@ -260,6 +263,7 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
 
         ShaderMacroHelper Macros;
         Macros.Add("PATH_TRACER_MODE", GetVariantModeMacro(Variant));
+        Macros.Add("RTXPT_USE_APPROXIMATE_MIS", NEEMISType == 2 || (NEEMISType == 1 && Variant != RTXPTPathTraceVariant::Reference) ? 1 : 0);
         Macros.Add("RTXPT_USE_INLINE_VISIBILITY", UseInlineVisibility ? 1 : 0);
         Macros.Add("RTXPT_INDEX_BUFFER_UINT16", IndexValueType == VT_UINT16 ? 1 : 0);
         if (UseTextures)
@@ -380,6 +384,8 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
             .AddVariable(DirectLightStages, "t_LightProxyCounters", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
             .AddVariable(DirectLightStages, "t_LightSamplingProxies", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
             .AddVariable(DirectLightStages, "t_LocalSamplingBuffer", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
+            .AddVariable(EnvStages, "t_EnvironmentLights", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
+            .AddVariable(EnvStages, "t_EnvironmentLightLookup", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
             .AddVariable(DirectLightStages, "u_FeedbackTotalWeight", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
             .AddVariable(DirectLightStages, "u_FeedbackCandidates", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
             .AddVariable(EnvStages, "t_EnvironmentMap", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
@@ -484,6 +490,8 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
         bool       EnvironmentSamplerFound           = false;
         bool       EnvironmentImportanceSamplerFound = false;
         const bool EnvironmentBridgeOk =
+            SetStaticForStages(EnvStages, "t_EnvironmentLights", pEnvironmentLights ? pEnvironmentLights->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr, "environment quads", false) &&
+            SetStaticForStages(EnvStages, "t_EnvironmentLightLookup", pEnvironmentLightLookup, "environment light lookup", false) &&
             SetStaticForStages(EnvStages, "t_EnvironmentMap", pEnvironmentMapView, "environment map", false, &EnvironmentMapFound) &&
             SetStaticForStages(EnvStages, "t_EnvironmentImportanceMap", pEnvironmentImportanceMapView, "environment importance map", false, &EnvironmentImportanceMapFound) &&
             SetStaticForStages(EnvStages, "t_EnvironmentRadianceMap", pEnvironmentRadianceMapView, "environment radiance map", false, &EnvironmentRadianceMapFound) &&
@@ -556,6 +564,10 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
         State.SBT->BindRayGenShader("Main");
         State.SBT->BindMissShader("PrimaryMiss", kRTXPTPrimaryRayIndex);
         State.SBT->BindHitGroupForTLAS(m_TLAS, kRTXPTPrimaryRayIndex, "PrimaryHit");
+        // The shared TLAS keeps a two-ray stride even when visibility uses RayQuery.
+        // Explicitly bind its unused slot so SBT validation sees a complete table.
+        if (UseInlineVisibility)
+            State.SBT->BindHitGroupForTLAS(m_TLAS, kRTXPTVisibilityRayIndex, nullptr);
         if (!UseInlineVisibility)
         {
             State.SBT->BindMissShader("VisibilityMiss", kRTXPTVisibilityRayIndex);

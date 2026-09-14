@@ -5,25 +5,24 @@
 // its power, and the sampling-proxy table is populated so each light is selected with probability
 // proportional to its weight (see Lighting/LightSampler.hlsli SampleGlobalLightIndex).
 //
-// Unified light index space (matches LightSampler.hlsli / the closest-hit MIS):
-//   [0, AnalyticLightCount)                                  -> analytic lights        (t_Lights)
-//   [AnalyticLightCount, AnalyticLightCount+TriangleCount)   -> emissive triangles     (t_EmissiveTriangles)
+// Unified index order: environment quads, analytic lights, emissive triangles.
 //
 // Pipeline (one Dispatch each, UAV barriers between):
 //   ResetProxyBuildCS      - clear the GPU-computed control scalars
 //   ComputeWeightsCS       - per-light weight + atomic weight-sum (RTXPT-fork ComputeWeights, simplified)
-//   ComputeProxyCountsCS   - per-light proxy count = round(budget * weight / weightSum)  (ComputeProxyCounts)
-//   ScatterProxiesCS       - fill the proxy table via an atomic running offset            (ExecuteProxyJobs)
+//   ComputeProxyCountsCS   - mix temporal feedback, allocate counts and 256-entry jobs
+//   FinalizeProxyJobsCS    - build a bounded two-dimensional indirect dispatch
+//   ScatterProxiesCS       - execute jobs in parallel (ExecuteProxyJobs)
 //
-// vs. RTXPT-fork: upstream balances the proxy scatter with a prefix-sum + task system (CreateProxyJobs /
-// ExecuteProxyJobs). This port uses a single atomic running offset and a per-light fill loop bounded by
-// RTXPT_LIGHTING_MAX_SAMPLING_PROXIES_PER_LIGHT, which yields an identical proxy distribution.
+// Atomic allocation replaces upstream's prefix sum while preserving per-light
+// multiplicities. A large light spans many workgroups instead of one serial thread.
 
 #ifndef __LIGHT_PROXY_BUILD_HLSL__
 #define __LIGHT_PROXY_BUILD_HLSL__
 
 #include "PathTracerShared.h"
 #include "Lighting/LightingTypes.hlsli"
+#include "Lighting/EnvironmentLight.hlsli"
 
 struct LightProxyBuildConstants
 {
@@ -38,9 +37,13 @@ ConstantBuffer<LightProxyBuildConstants> g_LightProxyBuildConstants;
 RWStructuredBuffer<LightingControlData> u_LightingControl;     // GPU writes WeightsSumUINT/SamplingProxyCount/ProxyBuildTaskCount
 StructuredBuffer<PolymorphicLightInfo>  t_Lights;              // analytic lights
 StructuredBuffer<EmissiveTriangle>      t_EmissiveTriangles;   // emissive triangles (world-space, baked radiance)
+StructuredBuffer<EnvironmentQuadLight> t_EnvironmentLights;
+StructuredBuffer<uint> t_FeedbackCounts;
 RWStructuredBuffer<float>               u_LightWeights;        // per-light weight [TotalLightCount]
 RWStructuredBuffer<uint>                u_LightProxyCounters;  // per-light proxy count [TotalLightCount]
 RWStructuredBuffer<uint>                u_LightSamplingProxies;// flat proxy -> light index table [ProxyBudget]
+RWStructuredBuffer<uint4> u_ProxyJobs;
+RWStructuredBuffer<uint> u_ProxyDispatchArgs;
 
 static const float kLightProxyPi = 3.14159265358979323846;
 
@@ -49,15 +52,21 @@ float ProxyLuminance(float3 c)
     return dot(c, float3(0.2126, 0.7152, 0.0722));
 }
 
-// Mirrors RTXPTLightsBaker.cpp EstimateAnalyticWeight (keeps analytic-light weighting unchanged from the
-// previous CPU proxy build).
+// RTXPT-fork sphere / point power, including the shaping flux factor.
 float ComputeAnalyticWeight(uint lightIndex)
 {
     const PolymorphicLightInfo light = t_Lights[lightIndex];
     const float luma             = ProxyLuminance(light.colorType.xyz);
     const float radius           = max(light.positionRadius.w, 0.0);
-    const float areaOrSolidAngle = (light.colorType.w == 2.0) ? max(light.shaping.w, 1e-8) : max(kLightProxyPi * radius * radius, 1.0);
-    return max(1e-6, luma * areaOrSolidAngle);
+    const float shapingFlux = light.shaping.x < -0.5 ? 1.0 : (1.0 - light.shaping.x) * lerp(1.0, 0.5, light.shaping.y) * 0.5;
+    float power = light.colorType.w == kPolymorphicLightTypePoint ? 4.0 * kLightProxyPi * luma :
+                  4.0 * kLightProxyPi * kLightProxyPi * radius * radius * luma;
+    power *= shapingFlux;
+    // Diligent retains explicit distant lights; upstream bakes them into its environment.
+    if (light.colorType.w == kPolymorphicLightTypeDirectional)
+        power = luma * max(light.shaping.w, 1e-8);
+    const float weight = pow(max(0.0, power), 0.8);
+    return weight >= RTXPT_LIGHTING_MIN_WEIGHT_THRESHOLD ? weight : 0.0;
 }
 
 // Mirrors RTXPT-fork TriangleLight::GetPower (PolymorphicLight.hlsli) + ComputeWeight: power = area*PI*Luminance,
@@ -76,6 +85,13 @@ float ComputeEmissiveTriangleWeight(uint triIndex)
 
 float ComputeLightWeight(uint lightIndex)
 {
+    const uint envCount = u_LightingControl[0].EnvmapQuadNodeCount;
+    if (lightIndex < envCount)
+    {
+        const float weight = pow(max(0.0, t_EnvironmentLights[lightIndex].Weight), 0.8);
+        return weight >= RTXPT_LIGHTING_MIN_WEIGHT_THRESHOLD ? weight : 0.0;
+    }
+    lightIndex -= envCount;
     if (lightIndex < g_LightProxyBuildConstants.AnalyticLightCount)
         return ComputeAnalyticWeight(lightIndex);
     return ComputeEmissiveTriangleWeight(lightIndex - g_LightProxyBuildConstants.AnalyticLightCount);
@@ -88,7 +104,10 @@ void ResetProxyBuildCS(uint dispatchThreadId : SV_DispatchThreadID)
         return;
     u_LightingControl[0].WeightsSumUINT      = 0u;
     u_LightingControl[0].SamplingProxyCount  = 0u;
-    u_LightingControl[0].ProxyBuildTaskCount = 0u; // reused as the proxy scatter cursor
+    u_LightingControl[0].ProxyBuildTaskCount = 0u;
+    u_ProxyDispatchArgs[0] = 0u;
+    u_ProxyDispatchArgs[1] = 1u;
+    u_ProxyDispatchArgs[2] = 1u;
 }
 
 // Single-group weight computation + reduction (avoids float atomics for cross-platform DXC/SPIR-V support):
@@ -139,7 +158,14 @@ void ComputeProxyCountsCS(uint dispatchThreadId : SV_DispatchThreadID)
     // Reserve one proxy per light so the per-light counts (each rounded up) still sum to <= budget.
     const uint  proxyPool   = (budget > totalLights) ? (budget - totalLights) : 0u;
     const float weightSum   = asfloat(u_LightingControl[0].WeightsSumUINT);
-    const float weight      = u_LightWeights[lightIndex];
+    float weight = u_LightWeights[lightIndex];
+    const LightingControlData ctrl = u_LightingControl[0];
+    if (ctrl.LastFrameTemporalFeedbackAvailable != 0u)
+    {
+        const uint validFeedbackCount = ctrl.TotalMaxFeedbackCount - t_FeedbackCounts[totalLights];
+        const float feedbackWeight = float(t_FeedbackCounts[lightIndex]) * weightSum / float(max(1u, validFeedbackCount));
+        weight = lerp(weight, feedbackWeight, ctrl.GlobalFeedbackUseWeight);
+    }
 
     uint proxyCount = 0u;
     if (weight > 0.0 && weightSum > 0.0)
@@ -153,32 +179,32 @@ void ComputeProxyCountsCS(uint dispatchThreadId : SV_DispatchThreadID)
 
     u_LightProxyCounters[lightIndex] = proxyCount;
     if (proxyCount > 0u)
-        InterlockedAdd(u_LightingControl[0].SamplingProxyCount, proxyCount);
+    {
+        uint proxyBase, jobBase;
+        InterlockedAdd(u_LightingControl[0].SamplingProxyCount, proxyCount, proxyBase);
+        const uint jobCount = (proxyCount + 255u) / 256u;
+        InterlockedAdd(u_LightingControl[0].ProxyBuildTaskCount, jobCount, jobBase);
+        [loop] for (uint job = 0u; job < jobCount; ++job)
+            u_ProxyJobs[jobBase + job] = uint4(lightIndex, proxyBase + job * 256u, min(256u, proxyCount - job * 256u), 0u);
+    }
 }
 
 [numthreads(256, 1, 1)]
-void ScatterProxiesCS(uint dispatchThreadId : SV_DispatchThreadID)
+void ScatterProxiesCS(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
 {
-    const uint lightIndex = dispatchThreadId;
-    if (lightIndex >= g_LightProxyBuildConstants.TotalLightCount)
-        return;
+    const uint index = groupId.x + groupId.y * 65535u;
+    if (index >= u_LightingControl[0].ProxyBuildTaskCount) return;
+    const uint4 job = u_ProxyJobs[index];
+    if (lane < job.z) u_LightSamplingProxies[job.y + lane] = job.x;
+}
 
-    const uint proxyCount = u_LightProxyCounters[lightIndex];
-    if (proxyCount == 0u)
-        return;
-
-    // Claim a contiguous range in the proxy table (ProxyBuildTaskCount is reused as the scatter cursor).
-    uint base;
-    InterlockedAdd(u_LightingControl[0].ProxyBuildTaskCount, proxyCount, base);
-
-    const uint budget = g_LightProxyBuildConstants.ProxyBudget;
-    [loop]
-    for (uint k = 0u; k < proxyCount; ++k)
-    {
-        const uint slot = base + k;
-        if (slot < budget)
-            u_LightSamplingProxies[slot] = lightIndex;
-    }
+[numthreads(1, 1, 1)]
+void FinalizeProxyJobsCS()
+{
+    const uint count = u_LightingControl[0].ProxyBuildTaskCount;
+    u_ProxyDispatchArgs[0] = min(count, 65535u);
+    u_ProxyDispatchArgs[1] = max(1u, (count + 65534u) / 65535u);
+    u_ProxyDispatchArgs[2] = 1u;
 }
 
 #endif // __LIGHT_PROXY_BUILD_HLSL__

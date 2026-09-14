@@ -88,8 +88,8 @@ float EvalSpotFalloff(PolymorphicLightInfo light, float3 dirToLight)
         return 0.0;
 
     const float cosTheta = dot(lightDir, -dirToLight);
-    const float falloff  = saturate((cosTheta - light.shaping.x) / max(light.shaping.y, 1.0e-4));
-    return falloff * falloff;
+    return light.shaping.y > 0.0 ? smoothstep(light.shaping.x, light.shaping.x + light.shaping.y, cosTheta) :
+                                  (cosTheta >= light.shaping.x ? 1.0 : 0.0);
 }
 
 LightSample SampleSphereLight(PolymorphicLightInfo light, float2 random, float3 surfacePos)

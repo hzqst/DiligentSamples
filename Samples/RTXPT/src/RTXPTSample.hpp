@@ -86,7 +86,7 @@ struct RTXPTReferenceUIState
     int                        NEEType                            = 2; // Phase R3 (G5): 0=Uniform, 1=Power+, 2=NEE-AT.
     int                        NEECandidateSamples                = 5; // Phase R3 (G5): RIS candidate count.
     int                        NEEFullSamples                     = 1; // Phase R3 (G5): visibility-tested full samples.
-    int                        NEEMISType                         = 1; // Phase R3 (G5): 0=Full, 1=ApproxInRealtime, 2=Approximate (deferred).
+    int                        NEEMISType                         = 1; // 0=Full, 1=ApproxInRealtime, 2=Approximate.
     float                      NEEAT_GlobalTemporalFeedbackWeight = 0.75f;
     float                      NEEAT_LocalToGlobalSampleRatio     = 0.65f;
     float                      NEEAT_DistantVsLocalImportance     = 1.0f;

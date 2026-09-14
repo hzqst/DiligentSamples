@@ -114,6 +114,8 @@ public:
                     IBuffer*              pLightProxyCounters,
                     IBuffer*              pLightSamplingProxies,
                     IBuffer*              pLocalSamplingBuffer,
+                    IBuffer*              pEnvironmentLights,
+                    ITextureView*         pEnvironmentLightLookup,
                     ITextureView*         pFeedbackTotalWeightUAV,
                     ITextureView*         pFeedbackCandidatesUAV,
                     ITextureView*         pEnvironmentMapSRV,
@@ -134,7 +136,8 @@ public:
                     bool                  EnableLDSamplerForBSDF,
                     bool                  RayTracingSupported,
                     bool                  StandaloneRTShadersSupported,
-                    bool                  EnableInlineVisibility);
+                    bool                  EnableInlineVisibility,
+                    Uint32                NEEMISType);
 
     bool Dispatch(IDeviceContext*                pContext,
                   RTXPTPathTraceVariant          Variant,

@@ -306,6 +306,7 @@ static const uint kPolymorphicLightTypePoint       = 4u;
 
 static const uint kLightProxyKindAnalytic         = 0u;
 static const uint kLightProxyKindEmissiveTriangle = 1u;
+static const uint kLightProxyKindEnvironmentQuad = 2u;
 
 // Mirrors Diligent::EmissiveTriangle in RTXPTLights.hpp (total size 64 bytes). One world-space,
 // NEE-eligible emissive triangle (constant emitter). Stores base + two edges + radiance like

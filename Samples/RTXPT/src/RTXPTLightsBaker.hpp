@@ -41,6 +41,8 @@
 #include "RTXPTLights.hpp"
 #include "RTXPTLightsBakerPass.hpp"
 #include "RTXPTLightProxyBuildPass.hpp"
+#include "RTXPTEnvironmentLights.hpp"
+#include "RTXPTLightFeedback.hpp"
 #include "RTXPTSceneGraph.hpp"
 
 namespace Diligent
@@ -81,6 +83,7 @@ struct RTXPTLightsBakerSettings
     Uint32                     EnvMapImportanceMapResolution = 0;
     Uint32                     EnvMapImportanceMapMipCount   = 0;
     LightsBakerEnvMapParamsCPU EnvMapParams                  = {};
+    ITextureView*              pEnvironmentRadianceMap       = nullptr;
     float                      DistantVsLocalImportanceScale = 1.0f;
     Int64                      FrameIndex                    = -1;
 };
@@ -92,6 +95,7 @@ struct RTXPTLightsBakerStats
     Uint32      TotalLightCount         = 0;
     Uint32      AnalyticLightCount      = 0;
     Uint32      TriangleLightCount      = 0;
+    Uint32      EnvironmentLightCount   = 0;
     Uint32      SamplingProxyCount      = 0;
     Uint32      LocalSamplingTileCountX = 0;
     Uint32      LocalSamplingTileCountY = 0;
@@ -112,7 +116,7 @@ public:
 
     bool CreateResources(IRenderDevice* pDevice, IEngineFactory* pEngineFactory, IRenderStateCache* pStateCache, Uint32 Width, Uint32 Height, bool ComputeSupported);
     bool UpdateBegin(IRenderDevice* pDevice, const RTXPTLights& Lights, const RTXPTLightsBakerSettings& Settings);
-    // Depth and motion-vector SRVs preserve the future NEE-AT feedback contract; they are accepted but not consumed yet.
+    // Process feedback after BUILD exported current depth and pixel-space motion.
     bool UpdateEnd(IDeviceContext* pContext, ITextureView* pDepthSRV, ITextureView* pMotionVectorsSRV);
 
     bool InfoGUI(float Indent);
@@ -123,6 +127,8 @@ public:
     IBuffer*                     GetLightProxyCounters() const { return m_LightProxyCounters; }
     IBuffer*                     GetLightSamplingProxies() const { return m_LightSamplingProxies; }
     IBuffer*                     GetLocalSamplingBuffer() const { return m_LocalSamplingBuffer; }
+    IBuffer*                     GetEnvironmentLights() const { return m_EnvironmentLights.GetLights(); }
+    ITextureView*                GetEnvironmentLightLookup() const { return m_EnvironmentLights.GetLookupSRV(); }
     ITextureView*                GetFeedbackTotalWeightUAV() const { return m_FeedbackTotalWeightUAV; }
     ITextureView*                GetFeedbackCandidatesUAV() const { return m_FeedbackCandidatesUAV; }
     ITextureView*                GetFeedbackTotalWeightSRV() const { return m_FeedbackTotalWeightSRV; }
@@ -152,10 +158,11 @@ private:
     RefCntAutoPtr<ITextureView> m_FeedbackCandidatesSRV;
     RefCntAutoPtr<ITextureView> m_FeedbackCandidatesUAV;
 
-    RTXPTLightsBakerPass m_FillLocalSamplingPass;
-    RTXPTLightsBakerPass m_ClearFeedbackPass;
-
     RTXPTLightProxyBuildPass m_ProxyBuildPass;
+    RTXPTEnvironmentLights      m_EnvironmentLights;
+    RTXPTLightFeedback          m_LightFeedback;
+    RefCntAutoPtr<ITextureView> m_EnvironmentRadianceMap;
+    bool                        m_EnvironmentBuildPending = false;
 
     Uint32                m_ProxyBudget          = 0;     // capacity of m_LightSamplingProxies
     Uint32                m_ProxyImportanceType  = 1;     // 0 = uniform, otherwise power-proportional

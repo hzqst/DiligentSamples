@@ -167,8 +167,8 @@ Hard constraints:
 | `RTXPTTraceVisibility(Origin, Dir, TMax)` | `PathTracer::TraceVisibilityRay(origin, dir, tMax)` (style) | |
 | `RTXPTSampleAnalyticNEE(...)` | `PathTracer::SampleAnalyticNEE(...)` (style) | |
 | `RTXPTSampleEnvNEE(...)` | `PathTracer::SampleEnvironmentNEE(...)` (style) | |
-| `RTXPTBSDFSampledEnvMISWeight(...)` | `PathTracer::ComputeBSDFEnvMISWeight(...)` (style) | |
-| `ComputeBSDFMISForEmissiveTriangle(neeTriangleLightIndex, ...)` | `PathTracer::ComputeBSDFMISForEmissiveTriangle(pixelPos, triangleLightIndex, bsdfPdf, emissiveSolidAnglePdf, fullSamples)` | folds the hit triangle's per-triangle selection pdf (`GetLightSelectionPdf`) into the power heuristic; triangle light index = `AnalyticLightCount + emissiveTriangleOffset + PrimitiveIndex()` |
+| `LightSampler::ComputeLightVsBSDF_MIS_ForBSDF` | `ComputeLightVsBSDFMISForBSDF` | Shared balance/approximate MIS for emissive hits and environment misses, including FILL. |
+| `EnvironmentQuadLight` reverse lookup | `t_EnvironmentLightLookup` + `EnvironmentQuadSolidAnglePdf` | Environment-first indices; triangles start at `EnvmapQuadNodeCount + AnalyticLightCount`. |
 | `ToneMapACES` | `ToneMapACES` (unchanged) | port-specific |
 
 Raygen locals become camelCase:
@@ -371,30 +371,19 @@ Raygen locals become camelCase:
   material textures at all.
   Emissive triangles are importance-sampled **per-triangle** proportional to power via the
   GPU proxy build (`LightProxyBuild.hlsl` / `RTXPTLightProxyBuildPass`), replacing the
-  earlier single "emissive bucket". Remaining divergences from RTXPT-fork:
-  - the proxy table is filled with a single atomic running-offset scatter rather than
-    upstream's prefix-sum + task system. Per-light proxy *counts* are identical; only the
-    order of light indices within the proxy table differs, which proxy sampling (a uniform
-    pick over the table) is invariant to.
-  - **proxy budget floor deviation:** the budget is `kProxyRatio * max(TotalLightCount, 1)`,
-    whereas RTXPT-fork uses `RTXPT_LIGHTING_SAMPLING_PROXY_RATIO * max(TotalLightCount,
-    RTXPT_LIGHTING_MAX_LIGHTS/10)`. For small/medium scenes upstream allocates a much larger
-    proxy pool, giving finer power-proportional granularity (lower selection-pdf
-    quantization / variance). Unbiased either way; this is a quality/parity deviation, not a
-    correctness one. Adopting the upstream floor costs a ~2.4 MB minimum proxy buffer
-    regardless of scene size. **Intentional, accepted:** we keep the tighter
-    `max(TotalLightCount, 1)` floor — the per-light proxy count scales with the actual scene,
-    so the extra granularity upstream buys only matters for very small light sets, and the
-    fixed ~2.4 MB floor is not worth paying on every scene. Revisit only if a scene with few
-    but high-variance emitters shows visible NEE noise.
-  - emissive triangles live in a separate `EmissiveTriangle` buffer rather than the unified
-    `PolymorphicLightInfo` light buffer.
-  - the proxy build re-runs on scene/lights change **and** after dynamic/skinned emissive
-    updates (`RTXPTLightsBaker::RequestProxyRebuild`, triggered alongside the in-place
-    emissive-triangle rebuild); it is not re-weighted on non-geometry per-frame changes.
+  earlier single "emissive bucket". The September 2026 sampler alignment restores
+  upstream's minimum proxy budget (`12 * max(lightCount, MAX_LIGHTS / 10)`), sphere /
+  point power and spot flux factors. NEE-AT mixes per-frame feedback counts into
+  the global weights. Proxy scatter now uses 256-entry jobs and a two-dimensional
+  indirect dispatch; atomic job allocation replaces upstream's prefix sum without
+  changing per-light multiplicities. Separate typed buffers hold environment,
+  analytic and triangle records in one logical index space.
 
-  Analytic-light weights keep the port's `EstimateAnalyticWeight` heuristic (ported to
-  `LightProxyBuild.hlsl`) instead of RTXPT-fork's `GetPower`.
+  Broader baker differences remain explicit: Diligent retains analytic directional
+  lights instead of baking their disks into the source environment. Upstream's
+  frustum/intensity-change importance boosts and moving-light history-ID remapping
+  are not implemented; table/environment changes reset feedback instead. These
+  differences must not be described as bit-for-bit equivalence of the entire baker.
   Emissive-NEE enable/dirty state is gated in-shader via `Bridge::getEmissiveTriangleCount`,
   which reads the *enabled* triangle count packed into `ptConsts.environmentNEEEnabled`
   (0 when the UI toggle is off or the emissive pass is dirty), rather than the raw baked
@@ -441,7 +430,8 @@ Raygen locals become camelCase:
 
 ## NEE-AT local table performance contract (2026-09-14)
 
-`Lighting/LightsBaker.hlsl::FillLocalSamplingCS` now dispatches one 128-thread
+The initial stored-count repair (superseded by the temporal path below) used
+`Lighting/LightsBaker.hlsl::FillLocalSamplingCS`, dispatching one 128-thread
 workgroup per tile. It preserves the port's proxy multiset and first-maximum
 feedback selection, sorts light indices with a groupshared bitonic network, and
 packs each light's full occurrence count into every corresponding entry. The
@@ -454,13 +444,44 @@ upstream stored-count/sorted-search contract. Local candidates reuse their known
 local PDF when forming the mixture. This replaces repeated 128-entry scans in
 the path-tracing loop. Sorting changes the random-number-to-light mapping, but
 not the local distribution or its mixed global/local PDF. The port's existing
-feedback collection and global proxy budget deviations remain as documented
-above; this is not a full upstream NEE-AT baker port.
+feedback collection used a simplified maximum-weight tile representative. This
+shader remains a deterministic table fixture for the PDF regression; production
+now dispatches `LightFeedback.hlsl::FillFeedbackTile`.
 
 `RTXPTGpuProfiler.hpp` provides opt-in asynchronous timestamp pairs, including
 separate RR preparation/evaluation measurements without an active query across
 NGX. See `tests/README.md` for GPU regression coverage, timing commands and cache
 invalidation requirements.
+
+### Unified sampler, MIS and temporal feedback (2026-09-14)
+
+`GenerateDirectLightCandidate` evaluates only the BSDF PDF. The selected visible
+sample performs cross-proposal lookup, late WRS balance MIS and full BSDF evaluation.
+Candidate counts, global-first/local-second stratification and the ray-cone-width /
+path-length coherence test follow upstream. Approximate light/BSDF MIS uses bias 3;
+Full uses the sum of participating conditional PDFs. `NEEMISType` now specializes
+each RT variant and can be changed in the UI. Both Reference and FILL apply reverse
+MIS on emissive hits and environment misses. Specular radiance and feedback use
+the upstream BSDF value and throughput-average conventions.
+
+`RTXPTEnvironmentLights` ports base quadtree subdivision (16 + 24 * 3 = 88 leaves),
+20 boost splits per base leaf (61 leaves each, 5368 total), packed FastSqrt priorities,
+equal-area-octahedral sampling, baked radiance/importance and direction-to-leaf lookup.
+Environment quads participate in the same reservoir as all other lights; the separate
+environment NEE shadow ray is removed. The quadtree is rebuilt on environment changes,
+with feedback reset, instead of rebuilding/remapping stable nodes every frame.
+
+`RTXPTLightFeedback` translates upstream preprocessing, SSC/WSC separation, global
+feedback counting, depth/motion reprojection, 2x2 blended reservoirs, 8x8 windows,
+64 top-up samples, R2 tile jitter and history decay. Active feedback/table dimensions
+follow the internal render resolution. Resource ping-pong is represented by explicit
+filtered/blended/processed textures. World-coherent feedback contributes to global
+weights but is removed before local-table construction. No CPU readback is used.
+
+The shared two-ray TLAS stride remains valid with inline visibility: the unused
+visibility hit-group slot is explicitly null-bound. Cache version 007 invalidates
+all preceding shader implementations. Regressions and measured limitations are in
+`tests/README.md`.
 
 ## Phase R4 EnvMapBaker Mapping
 

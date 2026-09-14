@@ -78,6 +78,9 @@ int main(int Argc, char** Argv)
 try
 {
     Require(Argc == 3, "Usage: LocalLightSamplingTest <engine DLL> <shader root>");
+    const std::string DLL   = Argv[1];
+    const auto        Slash = DLL.find_last_of("/\\");
+    if (Slash != std::string::npos) SetDllDirectoryA(DLL.substr(0, Slash).c_str());
     HMODULE Library = LoadLibraryA(Argv[1]);
     Require(Library != nullptr, "Cannot load engine");
     RefCntAutoPtr<IRenderDevice>  Device;
@@ -139,7 +142,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     float samplePdf;
     uint sampled = SampleLocalLightIndex(pixel, (float(tid.x % 128u) + 0.5) / 128.0, samplePdf);
     u_Results[tid.y * 257u + tid.x] = uint4(asuint(SampleLocalPDF(pixel, tid.x)),
-        asuint(GetLightSelectionPdf(pixel, tid.x)), sampled, asuint(samplePdf));
+        asuint(SampleGlobalPDF(tid.x)), sampled, asuint(samplePdf));
 })";
     Shader.Release();
     Device->CreateShader(SCI, &Shader);
@@ -238,7 +241,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         auto       Near = [](float Expected, Uint32 Bits) {
             float Value;
             std::memcpy(&Value, &Bits, sizeof(Value));
-            Require(std::abs(Expected - Value) < 1e-6f, "Incorrect local/sample/mixture PDF");
+            Require(std::abs(Expected - Value) < 1e-6f, "Incorrect conditional light PDF");
         };
         for (Uint32 TY = 0; TY < TilesY; ++TY)
             for (Uint32 TX = 0; TX < TilesX; ++TX)
@@ -250,7 +253,7 @@ void main(uint3 tid : SV_DispatchThreadID)
                     for (Uint32 X = TX * 8; X < std::min(Width, (TX + 1) * 8); ++X)
                     {
                         Uint32 Candidate = Candidates[Y * Width + X] & 0x7FFFFFFFu;
-                        if (Candidate < Control.TotalLightCount && Weights[Y * Width + X] > Best)
+                        if ((Candidates[Y * Width + X] & 0x80000000u) != 0u && Candidate < Control.TotalLightCount && Weights[Y * Width + X] > Best)
                         {
                             Best     = Weights[Y * Width + X];
                             Feedback = Candidate;
@@ -272,15 +275,136 @@ void main(uint3 tid : SV_DispatchThreadID)
                     const float  LocalPDF  = static_cast<float>(Expected[Light]) / Entries;
                     const float  GlobalPDF = Control.SamplingProxyCount == 0 || Light >= Control.TotalLightCount ? 0.0f :
                                                                                                                   static_cast<float>(ProxyCounts[Light]) / Control.SamplingProxyCount;
-                    const float Ratio = Control.SamplingProxyCount == 0 ? 0.0f : Control.LocalToGlobalSampleRatio;
                     Near(LocalPDF, PDFs[PDFBase]);
-                    Near(Ratio * LocalPDF + (1.0f - Ratio) * GlobalPDF, PDFs[PDFBase + 1]);
+                    Near(GlobalPDF, PDFs[PDFBase + 1]);
                     const Uint32 Sampled = PDFs[PDFBase + 2];
                     Require((Actual[Base + Light % Entries] >> 9) == Sampled, "Sampling changed the selected table entry");
                     Near(static_cast<float>(Expected[Sampled]) / Entries, PDFs[PDFBase + 3]);
                 }
             }
         std::cout << "Local light producer case " << Case << " passed\n";
+    }
+    // PDF-only evaluation must match the original combined BSDF/PDF function for
+    // diffuse, metallic, rough/delta dielectric and transmission configurations.
+    SCI.Source = R"(
+#include "PathTracer/Lighting/LightSampler.hlsli"
+#include "PathTracer/Lighting/LightSamplingMIS.hlsli"
+RWStructuredBuffer<uint4> u_Contract;
+[numthreads(64, 1, 1)]
+void main(uint3 tid : SV_DispatchThreadID)
+{
+    uint n = tid.x;
+    if (n >= 128) return;
+    LightingControlData ctrl = (LightingControlData)0;
+    ctrl.ImportanceSamplingType = 2;
+    ctrl.LocalToGlobalSampleRatio = float(n % 5) * 0.25;
+    uint localCount, globalCount;
+    GetCandidateSampleCounts(ctrl, (n & 1) != 0, n / 2, localCount, globalCount);
+    float pdf = float(n % 7) * 0.25;
+    float lightMIS = LightVsBSDFMISApprox(pdf, 5, 1, true);
+    float bsdfMIS = LightVsBSDFMISApprox(pdf, 5, 1, false);
+    u_Contract[n] = uint4(localCount, globalCount, asuint(lightMIS), asuint(bsdfMIS));
+    StandardBSDFData d = (StandardBSDFData)0;
+    d.N = float3(0,0,1);
+    d.diffuse = 0.5;
+    d.specular = 0.04;
+    d.transmission = 0.8;
+    d.roughness = float(n % 4) / 3.0;
+    d.alpha = d.roughness * d.roughness;
+    d.eta = (n & 1) != 0 ? 1.5 : 1.0 / 1.5;
+    d.metallic = (n % 3) == 0 ? 1 : 0;
+    d.specularTransmission = (n % 3) == 1 ? 1 : 0;
+    d.diffuseTransmission = (n % 3) == 2 ? 0.5 : 0;
+    d.thinSurface = (n & 1) != 0;
+    d.activeLobes = 0x3f;
+    float3 wo = normalize(float3(0.2, 0.1, 1));
+    float3 wi = normalize(float3(float(n % 5) - 2, 0.3, (n & 4) != 0 ? -1 : 1));
+    float3 f;
+    float fullPdf;
+    EvalBSDF(d, wo, wi, 0, f, fullPdf);
+    u_Contract[128 + n] = uint4(asuint(EvalBSDFPdf(d, wo, wi)), asuint(fullPdf),
+        asuint(EvalLightSamplingMIS(1, 0.2, 1, 0.8)), asuint(EvalLightSamplingMIS(1, 0, 1, 0)));
+    // Enumerate every candidate combination and reservoir outcome. The expected
+    // integral of the two lights is 2 + 4, including disjoint local support.
+    float pGlobal = 0.05 + 0.9 * float(n % 17) / 16.0;
+    float pLocal = float(n % 3) * 0.5;
+    float expectedLight = 0.0;
+    for (uint mask = 0u; mask < 32u; ++mask)
+    {
+        float tupleProbability = 1.0;
+        float weights[5], densities[5];
+        uint lights[5];
+        float weightSum = 0.0;
+        for (uint i = 0u; i < 5u; ++i)
+        {
+            lights[i] = (mask >> i) & 1u;
+            float p = i < 3u ? pGlobal : pLocal;
+            densities[i] = lights[i] == 0u ? p : 1.0 - p;
+            tupleProbability *= densities[i];
+            weights[i] = densities[i] > 0.0 ? (lights[i] == 0u ? 2.0 : 4.0) / densities[i] : 0.0;
+            weightSum += weights[i];
+        }
+        if (tupleProbability == 0.0) continue;
+        for (uint i = 0u; i < 5u; ++i)
+        {
+            float pOther = i < 3u ? pLocal : pGlobal;
+            float otherPdf = lights[i] == 0u ? pOther : 1.0 - pOther;
+            float probability = weights[i] / weightSum;
+            float outerMIS = EvalLightSamplingMIS(1, densities[i] + otherPdf, 1, 0.5);
+            float contribution = weights[i] * EvalLightSamplingMIS(1, densities[i], 1, otherPdf) /
+                                 (probability * (i < 3u ? 3.0 : 2.0)) * outerMIS;
+            expectedLight += tupleProbability * probability * contribution;
+        }
+    }
+    float expectedBSDF = 2.0 * EvalLightSamplingMIS(1, 0.5, 1, pGlobal + pLocal) +
+                         4.0 * EvalLightSamplingMIS(1, 0.5, 1, 2.0 - pGlobal - pLocal);
+    const float4 value = EvalBSDFValue(d, wo, wi);
+    PolymorphicLightInfo spot = (PolymorphicLightInfo)0;
+    spot.shaping = float4(0.5, 0.25, 0, 0);
+    spot.directionRange = float4(0, 0, 1, 0);
+    u_Contract[256 + n] = uint4(asuint(max(abs(value.x-f.x), max(abs(value.y-f.y), abs(value.z-f.z)))),
+                               asuint(expectedLight + expectedBSDF), asuint(value.w),
+                               asuint(EvalSpotFalloff(spot, float3(sqrt(1.0 - 0.625 * 0.625), 0, -0.625))));
+})";
+    Shader.Release();
+    Device->CreateShader(SCI, &Shader);
+    Require(Shader != nullptr, "Light sampling contract shader compilation failed");
+    PCI.pCS = Shader;
+    RefCntAutoPtr<IPipelineState> ContractPSO;
+    Device->CreateComputePipelineState(PCI, &ContractPSO);
+    Require(ContractPSO != nullptr, "Light sampling contract PSO failed");
+    auto                                  ContractOutput = Buffer(Device, "Light sampling contract", 384 * sizeof(uint4), BIND_UNORDERED_ACCESS, nullptr, sizeof(uint4));
+    RefCntAutoPtr<IShaderResourceBinding> ContractSRB;
+    ContractPSO->CreateShaderResourceBinding(&ContractSRB, true);
+    ContractSRB->GetVariableByName(SHADER_TYPE_COMPUTE, "u_Contract")->Set(ContractOutput->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS));
+    Context->SetPipelineState(ContractPSO);
+    Context->CommitShaderResources(ContractSRB, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+    DispatchComputeAttribs ContractDispatch;
+    ContractDispatch.ThreadGroupCountX = 2;
+    Context->DispatchCompute(ContractDispatch);
+    const auto ContractResults = Read(Context, Device, ContractOutput);
+    auto       FloatAt         = [&](size_t Index) {
+        float Value;
+        std::memcpy(&Value, &ContractResults[Index], sizeof(Value));
+        Require(std::isfinite(Value), "Non-finite light sampling result");
+        return Value;
+    };
+    for (Uint32 N = 0; N < 128; ++N)
+    {
+        const Uint32 Count = N / 2;
+        const Uint32 Local = Count > 0 && (N & 1) ? std::min(Count - 1, Uint32((Count - 1) * (N % 5) * 0.25f + 0.75f)) : 0;
+        Require(Local == ContractResults[N * 4] && Count - Local == ContractResults[N * 4 + 1], "Candidate count contract");
+        const float Pdf = (N % 7) * 0.25f;
+        Require(std::abs(15.0f / (15.0f + Pdf) - FloatAt(N * 4 + 2)) < 1e-6f, "Approximate light MIS");
+        Require(std::abs(Pdf / (15.0f + Pdf) - FloatAt(N * 4 + 3)) < 1e-6f, "Approximate BSDF MIS");
+        const size_t Base = (128 + N) * 4;
+        Require(std::abs(FloatAt(Base + 1) - FloatAt(Base)) <= 1e-5f * std::max(1.0f, FloatAt(Base + 1)), "PDF-only BSDF evaluation differs");
+        Require(std::abs(0.2f - FloatAt(Base + 2)) < 1e-6f && 0.0f == FloatAt(Base + 3), "Balance MIS / zero-density boundary");
+        const size_t ValueBase = (256 + N) * 4;
+        Require(FloatAt(ValueBase) <= 1e-6f, "Value-only BSDF evaluation differs");
+        Require(std::abs(6.0f - FloatAt(ValueBase + 1)) < 1e-4f, "Stratified WRS / forward and reverse MIS changed the integral");
+        Require(FloatAt(ValueBase + 2) >= 0.0f, "Invalid specular radiance average");
+        Require(std::abs(0.5f - FloatAt(ValueBase + 3)) < 1e-6f, "Spotlight falloff differs from upstream smoothstep");
     }
     Require(Errors == 0, "Graphics validation errors");
     std::cout << "Local light sampling regression passed\n";
