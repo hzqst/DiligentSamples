@@ -119,7 +119,7 @@ public:
         }
         return Settings;
     }
-    CommandLineStatus   ProcessCommandLine(int argc, const char* const* argv) override;
+    CommandLineStatus ProcessCommandLine(int argc, const char* const* argv) override;
 
 protected:
     virtual void UpdateUI() override final;
