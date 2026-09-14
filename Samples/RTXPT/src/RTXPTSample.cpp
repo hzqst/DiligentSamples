@@ -79,7 +79,7 @@ constexpr Uint32 kRTXPTRealtimeNoisePeriod = 8192u;
 
 // Disk file used to persist the render state cache (compiled shaders + pipeline states)
 // across runs. Resolved relative to the working directory set in Initialize().
-constexpr char kStateCachePath[] = "RTXPTCache_007.bin";
+constexpr char kStateCachePath[] = "RTXPTCache_011.bin";
 
 bool IsStandaloneNrdAvailable()
 {
@@ -1493,6 +1493,7 @@ bool RTXPTSample::PathTrace()
         return false;
 
     m_GpuProfiler.Begin(m_pImmediateContext, RTXPTGpuProfiler::Stage::LightsBaker);
+    m_LightsBaker.UpdateFrame(m_Camera.GetViewMatrix() * m_Camera.GetProjMatrix());
     const bool LightsOk = m_LightsBaker.UpdateEnd(m_pImmediateContext,
                                                   m_RenderTargets.GetDepthSRV(),
                                                   m_RenderTargets.GetScreenMotionVectorsSRV());
@@ -2057,10 +2058,10 @@ void RTXPTSample::Update(double CurrTime, double ElapsedTime, bool DoUpdateUI)
     if ((m_EnvMapBakerDirty || m_EnvMapBakerSettingsDirty) && UpdateEnvMapBaker(m_EnvMapBakerDirty))
     {
         m_LightsBakerSettingsDirty = true;
-        RequestAccumulationReset("Environment map changed");
+        RequestAccumulationReset("Environment map changed", true, false);
     }
 
-    if (m_LightsBakerSettingsDirty && UpdateLightsBaker(true))
+    if (m_LightsBakerSettingsDirty && UpdateLightsBaker(false))
         RecreateSceneDependentPasses = true;
 
     if (m_RayTracingPassSettingsDirty)
@@ -2785,7 +2786,7 @@ void RTXPTSample::UpdateUI()
     {
         ImGui::Indent(Indent);
 
-        if (ResetOnChange(ImGui::Checkbox("Enabled", &m_ReferenceUI.EnvironmentMapEnabled), "Environment map toggled"))
+        if (ImGui::Checkbox("Enabled", &m_ReferenceUI.EnvironmentMapEnabled))
             m_EnvMapBakerSettingsDirty = true;
 
         const char* EnvPreview = "none";
@@ -2806,7 +2807,7 @@ void RTXPTSample::UpdateUI()
                     m_EnvMapSettings.SourceRelativePath = m_EnvMapSources[Index].RelativePath;
                     m_EnvMapBakerDirty                  = true;
                     m_EnvMapBakerSettingsDirty          = true;
-                    RequestAccumulationReset("Environment source changed");
+                    // UpdateEnvMapBaker resets image history after rebuilding; keep light-source history for remapping.
                 }
                 if (Selected)
                     ImGui::SetItemDefaultFocus();
@@ -2814,10 +2815,10 @@ void RTXPTSample::UpdateUI()
             ImGui::EndCombo();
         }
 
-        if (ResetOnChange(ImGui::SliderFloat("Intensity", &m_EnvIntensity, 0.0f, 20.0f), "Environment intensity changed"))
+        if (ImGui::SliderFloat("Intensity", &m_EnvIntensity, 0.0f, 20.0f))
             m_EnvMapBakerSettingsDirty = true;
 
-        if (ResetOnChange(ImGui::SliderFloat("Rotation", &m_EnvMapSettings.RotationRadians, -PI_F, PI_F), "Environment rotation changed"))
+        if (ImGui::SliderFloat("Rotation", &m_EnvMapSettings.RotationRadians, -PI_F, PI_F))
             m_EnvMapBakerSettingsDirty = true;
 
         const RTXPTEnvMapBakerStats& EnvStats = m_EnvMapBaker.GetStats();
@@ -3118,11 +3119,12 @@ void RTXPTSample::UpdateUI()
     ImGui::End();
 }
 
-void RTXPTSample::RequestAccumulationReset(const char* /*Reason*/, bool ResetTemporalHistory)
+void RTXPTSample::RequestAccumulationReset(const char* /*Reason*/, bool ResetTemporalHistory, bool ResetLightFeedback)
 {
     m_AccumulationFrame        = 0;
     m_ResetAccumulationPending = true;
-    m_LightsBaker.RequestFeedbackReset();
+    if (ResetLightFeedback && (!m_RealtimeUI.RealtimeMode || ResetTemporalHistory))
+        m_LightsBaker.RequestFeedbackReset();
 
     if (!m_RealtimeUI.RealtimeMode || ResetTemporalHistory)
     {

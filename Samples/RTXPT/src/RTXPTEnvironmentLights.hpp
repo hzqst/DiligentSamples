@@ -21,8 +21,8 @@ namespace Diligent
 {
 
 // Owns the upstream two-stage environment quadtree and direction-to-light map.
-// Rebuilt with the processed environment; stable node IDs require no history remap
-// between rebuilds. The caller resets light feedback whenever the environment changes.
+// Rebuilt with the processed environment; RTXPTLightHistory maps changed node IDs
+// through the previous and current lookup maps before consuming temporal feedback.
 class RTXPTEnvironmentLights
 {
 public:

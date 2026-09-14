@@ -13,6 +13,7 @@
 #include "../../../../DiligentCore/Graphics/GraphicsEngineVulkan/interface/EngineFactoryVk.h"
 #include "../src/RTXPTFrameConstants.hpp"
 #include "../src/RTXPTEnvironmentLights.hpp"
+#include "../src/RTXPTLightHistory.hpp"
 using namespace Diligent;
 using uint     = Uint32;
 using float3x4 = std::array<float4, 3>;
@@ -72,6 +73,10 @@ try
     Require(Device && Context, "Cannot create device");
     RTXPTEnvironmentLights Baker;
     Require(Baker.Initialize(Device, Factory, nullptr), "Cannot initialize production environment baker");
+    RTXPTLightHistory History;
+    Require(History.Initialize(Device, Factory, nullptr), "Cannot initialize production history mapper");
+    std::vector<Quad>   PreviousNodes;
+    std::vector<Uint32> PreviousLookup;
     constexpr Uint32 Resolution = 128, MipCount = 8;
     for (Uint32 Case = 0; Case < 3; ++Case)
     {
@@ -113,6 +118,7 @@ try
         Require(Radiance != nullptr, "Cannot create radiance pyramid");
         LightingControlData Control{};
         Control.EnvmapQuadNodeCount                             = RTXPT_NEEAT_ENVMAP_QT_TOTAL_NODE_COUNT;
+        Control.TotalLightCount                                 = Control.EnvmapQuadNodeCount;
         Control.BakerConstants.EnvMapImportanceMapResolution    = Resolution;
         Control.BakerConstants.EnvMapImportanceMapMIPCount      = MipCount;
         Control.BakerConstants.DistantVsLocalRelativeImportance = 0.0002f;
@@ -122,7 +128,7 @@ try
         ControlDesc.Name = "Environment test control";
         ControlDesc.Size = ControlDesc.ElementByteStride = sizeof(Control);
         ControlDesc.Mode                                 = BUFFER_MODE_STRUCTURED;
-        ControlDesc.BindFlags                            = BIND_SHADER_RESOURCE;
+        ControlDesc.BindFlags                            = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
         BufferData             ControlData{&Control, sizeof(Control)};
         RefCntAutoPtr<IBuffer> ControlBuffer;
         Device->CreateBuffer(ControlDesc, &ControlData, &ControlBuffer);
@@ -210,6 +216,7 @@ try
             Expected.insert(Expected.end(), Leaves.begin(), Leaves.end());
         }
         std::vector<Uint32> Coverage(Resolution * Resolution, 0);
+        std::vector<Uint32> CurrentLookup(Resolution * Resolution);
         double              Area = 0;
         for (Uint32 I = 0; I < Actual.size(); ++I)
         {
@@ -228,12 +235,59 @@ try
                 {
                     const auto* Row = reinterpret_cast<const Uint32*>(static_cast<const Uint8*>(LookupData.pData) + Y * LookupData.Stride);
                     Require(I == Row[X], "Environment direction lookup does not match the sampled quad");
+                    CurrentLookup[Y * Resolution + X] = Row[X];
                     ++Coverage[Y * Resolution + X];
                 }
         }
         Context->UnmapTextureSubresource(ReadTexture, 0, 0);
         Require(std::abs(1.0 - Area) < 1e-12, "Quad solid angles do not cover the sphere");
         for (Uint32 Count : Coverage) Require(1 == Count, "Environment lookup has an overlap or a hole");
+        History.SetSources({}, Control.TotalLightCount, Control.EnvmapQuadNodeCount);
+        Require(History.Prepare(Context, ControlBuffer, Baker.GetLights(), Baker.GetLookupSRV()), "Map changed environment history");
+        auto ReadMap = [&](IBuffer* Source) {
+            BufferDesc Desc;
+            Desc.Size           = Source->GetDesc().Size;
+            Desc.Usage          = USAGE_STAGING;
+            Desc.CPUAccessFlags = CPU_ACCESS_READ;
+            RefCntAutoPtr<IBuffer> Readback;
+            Device->CreateBuffer(Desc, nullptr, &Readback);
+            Context->CopyBuffer(Source, 0, RESOURCE_STATE_TRANSITION_MODE_TRANSITION, Readback, 0, Desc.Size, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+            Context->WaitForIdle();
+            void* Data = nullptr;
+            Context->MapBuffer(Readback, MAP_READ, MAP_FLAG_DO_NOT_WAIT, Data);
+            Require(Data != nullptr, "Cannot read history map");
+            std::vector<Uint32> Result(Desc.Size / sizeof(Uint32));
+            std::memcpy(Result.data(), Data, static_cast<size_t>(Desc.Size));
+            Context->UnmapBuffer(Readback, MAP_READ);
+            return Result;
+        };
+        const auto Forward           = ReadMap(History.GetCurrentToPast());
+        const auto Reverse           = ReadMap(History.GetPastToCurrent());
+        bool       FoundSplitOrMerge = false;
+        for (Uint32 I = 0; I < Actual.size(); ++I)
+        {
+            if (PreviousNodes.empty()) Require(Forward[I] == ~0u, "First environment frame must have no history");
+            else
+            {
+                const Quad&  Current         = Actual[I];
+                const Quad&  Previous        = PreviousNodes[I];
+                const Uint32 ExpectedForward = PreviousLookup[(Current.Y * Resolution / Current.Dim) * Resolution + Current.X * Resolution / Current.Dim];
+                const Uint32 ExpectedReverse = CurrentLookup[(Previous.Y * Resolution / Previous.Dim) * Resolution + Previous.X * Resolution / Previous.Dim];
+                Require(ExpectedForward == Forward[I] && ExpectedReverse == Reverse[I], "Environment split/merge history differs from independent LUT oracle");
+                FoundSplitOrMerge |= Current.Dim != PreviousNodes[Forward[I]].Dim;
+            }
+        }
+        if (Case != 0) Require(FoundSplitOrMerge, "Environment test did not exercise changing subdivisions");
+        Require(History.Finish(Context, Baker.GetLights(), Baker.GetLookupSRV()), "Retain environment history");
+        PreviousNodes  = Actual;
+        PreviousLookup = CurrentLookup;
+        if (Case == 2)
+        {
+            Require(Baker.CreateResources(Device, 0), "Disable environment for remapping");
+            History.SetSources({}, 0, 0);
+            Require(History.Prepare(Context, ControlBuffer, Baker.GetLights(), Baker.GetLookupSRV()), "Map disabled environment");
+            for (Uint32 Index : ReadMap(History.GetPastToCurrent())) Require(Index == ~0u, "Disabled environment must invalidate old node references");
+        }
         std::cout << "Environment case " << Case << ": all 5368 nodes, power/radiance and lookup coverage passed\n";
     }
     Require(Baker.CreateResources(Device, 0) && Baker.GetLightCount() == 0, "Disabled environment must have no light candidates");

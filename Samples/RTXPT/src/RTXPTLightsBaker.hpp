@@ -43,6 +43,7 @@
 #include "RTXPTLightProxyBuildPass.hpp"
 #include "RTXPTEnvironmentLights.hpp"
 #include "RTXPTLightFeedback.hpp"
+#include "RTXPTLightHistory.hpp"
 #include "RTXPTSceneGraph.hpp"
 
 namespace Diligent
@@ -85,6 +86,9 @@ struct RTXPTLightsBakerSettings
     LightsBakerEnvMapParamsCPU EnvMapParams                  = {};
     ITextureView*              pEnvironmentRadianceMap       = nullptr;
     float                      DistantVsLocalImportanceScale = 1.0f;
+    float                      ImportanceBoostIntensityDelta      = 64.0f;
+    float                      ImportanceBoostFrustumMul          = 8.0f;
+    float                      ImportanceBoostFrustumFadeDistance = 5.0f;
     Int64                      FrameIndex                    = -1;
 };
 
@@ -116,6 +120,7 @@ public:
 
     bool CreateResources(IRenderDevice* pDevice, IEngineFactory* pEngineFactory, IRenderStateCache* pStateCache, Uint32 Width, Uint32 Height, bool ComputeSupported);
     bool UpdateBegin(IRenderDevice* pDevice, const RTXPTLights& Lights, const RTXPTLightsBakerSettings& Settings);
+    void UpdateFrame(const float4x4& ViewProj);
     // Process feedback after BUILD exported current depth and pixel-space motion.
     bool UpdateEnd(IDeviceContext* pContext, ITextureView* pDepthSRV, ITextureView* pMotionVectorsSRV);
 
@@ -123,6 +128,7 @@ public:
     bool DebugGUI(float Indent);
 
     const RTXPTLightsBakerStats& GetStats() const { return m_Stats; }
+    Uint32                       GetFeedbackHistoryFrameCount() const { return m_LightFeedback.GetHistoryFrameCount(); }
     IBuffer*                     GetControlBuffer() const { return m_ControlBuffer; }
     IBuffer*                     GetLightProxyCounters() const { return m_LightProxyCounters; }
     IBuffer*                     GetLightSamplingProxies() const { return m_LightSamplingProxies; }
@@ -161,6 +167,8 @@ private:
     RTXPTLightProxyBuildPass m_ProxyBuildPass;
     RTXPTEnvironmentLights      m_EnvironmentLights;
     RTXPTLightFeedback          m_LightFeedback;
+    RTXPTLightHistory           m_LightHistory;
+    std::array<float4, 5>       m_FrustumPlanes = {};
     RefCntAutoPtr<ITextureView> m_EnvironmentRadianceMap;
     bool                        m_EnvironmentBuildPending = false;
 

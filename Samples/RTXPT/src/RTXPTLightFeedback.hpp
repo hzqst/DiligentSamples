@@ -60,7 +60,7 @@ public:
         }
         BufferDesc Constants;
         Constants.Name      = "RTXPT feedback frame constants";
-        Constants.Size      = 8 * sizeof(Uint32);
+        Constants.Size      = 12 * sizeof(Uint32);
         Constants.BindFlags = BIND_UNIFORM_BUFFER;
         pDevice->CreateBuffer(Constants, nullptr, &m_Constants);
         for (size_t I = 0; I < m_Textures.size(); ++I)
@@ -92,7 +92,7 @@ public:
         return m_Counts != nullptr;
     }
 
-    bool Prepare(IDeviceContext* pContext, IBuffer* pControl, IBuffer* pProxies, IBuffer* pLocal, ITexture* pWeights, ITexture* pCandidates, ITextureView* pDepth, ITextureView* pMotion, bool ResetHistory)
+    bool Prepare(IDeviceContext* pContext, IBuffer* pControl, IBuffer* pProxies, IBuffer* pLocal, ITexture* pWeights, ITexture* pCandidates, ITextureView* pDepth, ITextureView* pMotion, bool ResetHistory, IBuffer* pHistoryRemap = nullptr)
     {
         if (!m_Counts || !m_Constants || !pDepth || !pMotion) return false;
         m_OutputWeights       = pWeights;
@@ -101,7 +101,7 @@ public:
         m_Width               = DepthDesc.Width;
         m_Height              = DepthDesc.Height;
         if (m_Width > m_Textures[0]->GetDesc().Width || m_Height > m_Textures[0]->GetDesc().Height) return false;
-        ResetHistory |= m_PreviousWidth != m_Width || m_PreviousHeight != m_Height;
+        ResetHistory |= m_Frame == 0u || m_PreviousWidth != m_Width || m_PreviousHeight != m_Height;
         m_PreviousWidth  = m_Width;
         m_PreviousHeight = m_Height;
         if (ResetHistory)
@@ -118,7 +118,7 @@ public:
         m_JitterX                       = std::min(static_cast<Uint32>(m_JitterFX * 8.0f), 7u);
         m_JitterY                       = std::min(static_cast<Uint32>(m_JitterFY * 8.0f), 7u);
         const Uint32 Constants[]        = {m_Width, m_Height, ++m_Frame, ResetHistory ? 1u : 0u,
-                                    m_JitterX, m_JitterY, PreviousJitterX, PreviousJitterY};
+                                    m_JitterX, m_JitterY, PreviousJitterX, PreviousJitterY, pHistoryRemap ? 1u : 0u, 0u, 0u, 0u};
         pContext->UpdateBuffer(m_Constants, 0, sizeof(Constants), Constants, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
         m_TilesX = (m_Width + 14u) / 8u;
         m_TilesY = (m_Height + 14u) / 8u;
@@ -141,6 +141,7 @@ public:
             Set("t_Depth", pDepth);
             Set("t_Motion", pMotion);
             Set("t_LightSamplingProxies", pProxies->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE));
+            Set("t_HistoryRemapPastToCurrent", (pHistoryRemap ? pHistoryRemap : pProxies)->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE));
             Set("u_LocalSamplingBuffer", pLocal->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS));
         }
         Dispatch(pContext, 0, (m_LightCount + 256u) / 256u, 1u);
@@ -172,6 +173,7 @@ public:
     }
 
     IBuffer* GetCounts() const { return m_Counts; }
+    Uint32   GetHistoryFrameCount() const { return m_Frame; }
 
 private:
     template <typename ResourceType>

@@ -30,6 +30,11 @@ struct LightProxyBuildConstants
     uint AnalyticLightCount;
     uint ProxyBudget;          // capacity of u_LightSamplingProxies (kProxyRatio * TotalLightCount)
     uint ImportanceSamplingType; // 0 = uniform (1 proxy/light), otherwise power-proportional
+    uint HistoricWeightCount;
+    uint HasHistoryRemap;
+    uint HasFrustumPlanes;
+    uint Padding;
+    float4 FrustumPlanes[5];
 };
 
 ConstantBuffer<LightProxyBuildConstants> g_LightProxyBuildConstants;
@@ -39,6 +44,8 @@ StructuredBuffer<PolymorphicLightInfo>  t_Lights;              // analytic light
 StructuredBuffer<EmissiveTriangle>      t_EmissiveTriangles;   // emissive triangles (world-space, baked radiance)
 StructuredBuffer<EnvironmentQuadLight> t_EnvironmentLights;
 StructuredBuffer<uint> t_FeedbackCounts;
+StructuredBuffer<uint> t_HistoryRemapCurrentToPast;
+StructuredBuffer<float> t_HistoricLightWeights;
 RWStructuredBuffer<float>               u_LightWeights;        // per-light weight [TotalLightCount]
 RWStructuredBuffer<uint>                u_LightProxyCounters;  // per-light proxy count [TotalLightCount]
 RWStructuredBuffer<uint>                u_LightSamplingProxies;// flat proxy -> light index table [ProxyBudget]
@@ -97,6 +104,46 @@ float ComputeLightWeight(uint lightIndex)
     return ComputeEmissiveTriangleWeight(lightIndex - g_LightProxyBuildConstants.AnalyticLightCount);
 }
 
+float ImportanceBooster(uint lightIndex, float weight)
+{
+    const LightingControlData ctrl = u_LightingControl[0];
+    const LightsBakerConstants constants = ctrl.BakerConstants;
+    if (constants.ImportanceBoostFrustumMul > 0.0)
+    {
+        float boostK = 0.5;
+        const uint localIndex = lightIndex - ctrl.EnvmapQuadNodeCount;
+        const bool analytic = localIndex < ctrl.AnalyticLightCount;
+        bool distant = lightIndex < ctrl.EnvmapQuadNodeCount;
+        if (!distant && analytic) distant = t_Lights[localIndex].colorType.w == kPolymorphicLightTypeDirectional;
+        if (!distant)
+        {
+            float3 center;
+            if (analytic) center = t_Lights[localIndex].positionRadius.xyz;
+            else
+            {
+                const EmissiveTriangle tri = t_EmissiveTriangles[localIndex - ctrl.AnalyticLightCount];
+                center = tri.base.xyz + (tri.edge1.xyz + tri.edge2.xyz) / 3.0;
+            }
+            float distanceMin = 0.0;
+            [unroll] for (uint i = 0u; i < 5u; ++i)
+            {
+                const float4 plane = g_LightProxyBuildConstants.HasFrustumPlanes != 0u ? g_LightProxyBuildConstants.FrustumPlanes[i] : constants.FrustumPlanes[i];
+                distanceMin = min(distanceMin, dot(center, plane.xyz) - plane.w);
+            }
+            boostK = saturate(1.0 + distanceMin / max(1e-5, constants.ImportanceBoostFrustumFadeDistance));
+        }
+        weight *= 1.0 + constants.ImportanceBoostFrustumMul * boostK;
+    }
+    if (ctrl.LastFrameTemporalFeedbackAvailable != 0u && constants.ImportanceBoostIntensityDelta > 0.0)
+    {
+        const uint previous = g_LightProxyBuildConstants.HasHistoryRemap != 0u ? t_HistoryRemapCurrentToPast[lightIndex] : lightIndex;
+        const uint safePrevious = min(previous, max(1u, g_LightProxyBuildConstants.HistoricWeightCount) - 1u);
+        const float historicWeight = previous < g_LightProxyBuildConstants.HistoricWeightCount ? t_HistoricLightWeights[safePrevious] : 0.0;
+        weight += constants.ImportanceBoostIntensityDelta * max(0.0, weight - historicWeight * 1.1);
+    }
+    return weight;
+}
+
 [numthreads(1, 1, 1)]
 void ResetProxyBuildCS(uint dispatchThreadId : SV_DispatchThreadID)
 {
@@ -128,7 +175,7 @@ void ComputeWeightsCS(uint groupThreadId : SV_GroupThreadID)
     [loop]
     for (uint lightIndex = from; lightIndex < to; ++lightIndex)
     {
-        const float weight       = ComputeLightWeight(lightIndex);
+        const float weight       = ImportanceBooster(lightIndex, ComputeLightWeight(lightIndex));
         u_LightWeights[lightIndex] = weight;
         sum += weight;
     }

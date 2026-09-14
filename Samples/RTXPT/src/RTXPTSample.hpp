@@ -145,7 +145,7 @@ private:
     bool BuildEmissiveTriangles();
     bool EnsureRenderTargets();
     void ClearFallback(const float4& ClearColor);
-    void RequestAccumulationReset(const char* Reason, bool ResetTemporalHistory = true);
+    void RequestAccumulationReset(const char* Reason, bool ResetTemporalHistory = true, bool ResetLightFeedback = true);
     void RequestRealtimeReset(RTXPTRealtimeResetFlags Flags, const char* Reason);
     void RequestRealtimeCachesReset(const char* Reason);
     void BeginRealtimeFrameResetScope();

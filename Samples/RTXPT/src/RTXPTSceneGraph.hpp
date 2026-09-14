@@ -133,6 +133,7 @@ struct RTXPTMaterialExtension
 
 struct RTXPTSceneLightMetadata
 {
+    RTXPTSceneId   GraphNodeId = InvalidRTXPTSceneId;
     std::string    Name;
     std::string    Type;
     float4x4       GlobalTransform = float4x4::Identity();

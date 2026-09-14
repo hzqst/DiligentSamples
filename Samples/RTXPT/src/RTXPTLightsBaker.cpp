@@ -131,6 +131,7 @@ void RTXPTLightsBaker::Reset()
     m_ProxyBuildPass.Reset();
     m_EnvironmentLights.Reset();
     m_LightFeedback.Reset();
+    m_LightHistory.Reset();
     m_EnvironmentRadianceMap.Release();
     m_EnvironmentBuildPending = false;
     m_ControlBuffer.Release();
@@ -158,6 +159,7 @@ void RTXPTLightsBaker::Reset()
 
 void RTXPTLightsBaker::SceneReloaded()
 {
+    m_LightHistory.ClearHistory();
     m_ProxyBuildPending = false;
     RequestFeedbackReset();
     m_LocalSamplingEnabled     = false;
@@ -198,7 +200,8 @@ bool RTXPTLightsBaker::CreateResources(IRenderDevice* pDevice, IEngineFactory* p
     const bool LocalOk             = CreateLocalSamplingBuffer(pDevice, Width, Height);
     const bool ProxyBuildOk        = FeedbackOk && LocalOk && m_ProxyBuildPass.Initialize(pDevice, pEngineFactory, pStateCache) &&
         m_LightFeedback.Initialize(pDevice, pEngineFactory, pStateCache, Width, Height);
-    const bool EnvBuildOk = m_EnvironmentLights.Initialize(pDevice, pEngineFactory, pStateCache);
+    const bool EnvBuildOk = m_EnvironmentLights.Initialize(pDevice, pEngineFactory, pStateCache) &&
+        m_LightHistory.Initialize(pDevice, pEngineFactory, pStateCache);
     m_Stats.Ready         = FeedbackOk && LocalOk && ProxyBuildOk && EnvBuildOk;
     return m_Stats.Ready;
 }
@@ -222,12 +225,19 @@ bool RTXPTLightsBaker::UpdateBegin(IRenderDevice* pDevice, const RTXPTLights& Li
     }
     m_EnvironmentRadianceMap  = Settings.pEnvironmentRadianceMap;
     m_EnvironmentBuildPending = true;
-    RequestFeedbackReset(); // Environment/node IDs and the unified light table may have changed.
 
     // Allocate the GPU proxy buffers sized to the current light count; the per-triangle power-proportional
     // proxy contents are filled on the GPU in UpdateEnd (RunProxyBuild), which needs a device context.
     if (!CreateProxyBuffers(pDevice, Lights, Settings))
         return false;
+    std::vector<RTXPTLightSourceRange> Sources = Lights.GetAnalyticSources();
+    for (auto& Source : Sources) Source.Base += m_Stats.EnvironmentLightCount;
+    for (auto Source : Lights.GetTriangleSources())
+    {
+        Source.Base += m_Stats.EnvironmentLightCount + m_Stats.AnalyticLightCount;
+        Sources.push_back(Source);
+    }
+    m_LightHistory.SetSources(std::move(Sources), m_Stats.TotalLightCount, m_Stats.EnvironmentLightCount);
     if (!m_LightFeedback.SetLightCount(pDevice, m_Stats.TotalLightCount))
         return false;
     if (!UploadControlBuffer(pDevice, Lights, Settings))
@@ -257,10 +267,15 @@ bool RTXPTLightsBaker::UpdateEnd(IDeviceContext* pContext,
         m_EnvironmentBuildPending = false;
     }
 
+    if (!m_LightHistory.Prepare(pContext, m_ControlBuffer, m_EnvironmentLights.GetLights(), m_EnvironmentLights.GetLookupSRV()))
+    {
+        m_Stats.LastError = "RTXPT light history mapping failed";
+        return false;
+    }
     // Per-triangle power-proportional proxy build (GPU). Runs after the emissive-triangle build pass (so the
     // emissive radiance is current) and before the local-sampling fill (which reads the proxy table).
     if (!m_LightFeedback.Prepare(pContext, m_ControlBuffer, m_LightSamplingProxies, m_LocalSamplingBuffer,
-                                 m_FeedbackTotalWeight, m_FeedbackCandidates, pDepthSRV, pMotionVectorsSRV, m_ResetFeedbackPending))
+                                 m_FeedbackTotalWeight, m_FeedbackCandidates, pDepthSRV, pMotionVectorsSRV, m_ResetFeedbackPending, m_LightHistory.GetPastToCurrent()))
     {
         m_Stats.LastError = "RTXPT temporal light feedback preparation failed";
         return false;
@@ -281,6 +296,11 @@ bool RTXPTLightsBaker::UpdateEnd(IDeviceContext* pContext,
         return false;
     }
     m_ResetFeedbackPending = false;
+    if (!m_LightHistory.Finish(pContext, m_EnvironmentLights.GetLights(), m_EnvironmentLights.GetLookupSRV()))
+    {
+        m_Stats.LastError = "RTXPT light history snapshot failed";
+        return false;
+    }
 
     m_Stats.LastError.clear();
     return true;
@@ -482,7 +502,9 @@ bool RTXPTLightsBaker::RunProxyBuild(IDeviceContext* pContext)
                                   m_Stats.TotalLightCount,
                                   m_Stats.AnalyticLightCount,
                                   m_ProxyBudget,
-                                  m_ProxyImportanceType);
+                                  m_ProxyImportanceType,
+                                  m_LightHistory.GetCurrentToPast(),
+                                  m_FrustumPlanes.data());
 }
 
 void RTXPTLightsBaker::RequestProxyRebuild()
@@ -542,6 +564,9 @@ bool RTXPTLightsBaker::UploadControlBuffer(IRenderDevice* pDevice, const RTXPTLi
     Control.BakerPadding[10]                 = FloatAsUint(Settings.ViewportSize.x > 0.0f ? Settings.PrevViewportSize.x / Settings.ViewportSize.x : 1.0f);
     Control.BakerPadding[11]                 = FloatAsUint(Settings.ViewportSize.y > 0.0f ? Settings.PrevViewportSize.y / Settings.ViewportSize.y : 1.0f);
     Control.BakerPadding[14]                 = m_Stats.UpdateCounter + 1u;
+    Control.BakerPadding[16]                 = FloatAsUint(Settings.ImportanceBoostIntensityDelta);
+    Control.BakerPadding[17]                 = FloatAsUint(Settings.ImportanceBoostFrustumMul);
+    Control.BakerPadding[18]                 = FloatAsUint(Settings.ImportanceBoostFrustumFadeDistance);
     Control.BakerPadding[20]                 = FloatAsUint(Settings.CameraPosition.x);
     Control.BakerPadding[21]                 = FloatAsUint(Settings.CameraPosition.y);
     Control.BakerPadding[22]                 = FloatAsUint(Settings.CameraPosition.z);
@@ -581,6 +606,26 @@ bool RTXPTLightsBaker::UploadControlBuffer(IRenderDevice* pDevice, const RTXPTLi
         return false;
     }
     return true;
+}
+
+void RTXPTLightsBaker::UpdateFrame(const float4x4& ViewProj)
+{
+    if (!m_Stats.Ready || !m_ControlBuffer) return;
+    // Diligent uses forward Z (near = clip.z), whereas upstream uses reversed Z
+    // (near = clip.w - clip.z). The four side planes use the same row-vector math.
+    const float4 X{ViewProj._11, ViewProj._21, ViewProj._31, ViewProj._41};
+    const float4 Y{ViewProj._12, ViewProj._22, ViewProj._32, ViewProj._42};
+    const float4 Z{ViewProj._13, ViewProj._23, ViewProj._33, ViewProj._43};
+    const float4 W{ViewProj._14, ViewProj._24, ViewProj._34, ViewProj._44};
+    m_FrustumPlanes = {W + X, W - X, W - Y, W + Y, Z};
+    for (auto& Plane : m_FrustumPlanes)
+    {
+        const float Length = std::sqrt(Plane.x * Plane.x + Plane.y * Plane.y + Plane.z * Plane.z);
+        Plane              = Length > 0.0f ? Plane / Length : float4{};
+        Plane.w            = -Plane.w;
+    }
+    // Frustum importance and intensity history must follow every rendered frame.
+    m_ProxyBuildPending = true;
 }
 
 } // namespace Diligent

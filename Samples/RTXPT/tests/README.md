@@ -551,3 +551,65 @@ comes primarily from path tracing. The upstream 7.910-7.971 ms result remains
 faster. General scatter tracing/material dispatch and the documented broader
 LightsBaker differences remain candidates for investigation; the existing SER-off
 experiment does not isolate HitObject/SER and cannot establish its contribution.
+
+### LightsBaker importance and source history (2026-09-14)
+
+Cache **011** adds frustum and intensity-delta importance boosts and bidirectional
+source history maps. The new regression coverage includes:
+
+- Known per-light weights across three frames, including the frustum boundary,
+  distant half boost, intensity changes, reordered IDs and a newly appearing light.
+- CPU source-range reorder, removal/reappearance and changed triangle count;
+  GPU environment lookup remapping and return to identity on unchanged frames.
+- Production 5368-node environment trees changing from uniform to a concentrated
+  HDR source and then black, exercising actual split/merge maps in both directions;
+  disabling the environment invalidates its old IDs.
+- Feedback selected-ID remapping before global counts, invalid/removed IDs and
+  historical local-table fallback. Mixed-light tables verify sorted IDs and
+  per-entry multiplicities against their histograms.
+
+GPU-assisted Vulkan validation exposed a shared-memory sorting race. The bitonic
+step now has each lane read both inputs, synchronize, write its own output and
+synchronize again. The GPU-assisted regression completes without validation errors.
+
+Release build, `LightFeedbackTest` and `EnvironmentLightSamplingTest` passed on
+D3D12 and Vulkan; Vulkan GPU-assisted `LightFeedbackTest` also exited zero.
+The production RR sequence now has 14 stages, adding environment intensity,
+disable and re-enable changes and assertions that camera/environment changes retain
+light-feedback history. D3D12 Full MIS and Vulkan ApproxInRealtime both completed
+with zero failures and 320 RR executions (six/five creates respectively, nine image
+history resets). Vulkan still skips the three NRD/TAA/SR mode checks due to the
+existing RGB10A2 UAV limitation.
+
+The final Vulkan 1920x1080 Balanced/E startup smoke also rendered 1256 RR frames
+with no logged errors (one feature create and one history reset).
+
+During integration, allocating the previous-environment buffer in initialization
+reproducibly caused Vulkan device loss, including with all history dispatches
+disabled. The preceding commit passed the same scene; isolated SRB and constants
+allocations also passed. The final implementation allocates the snapshot on first
+use from the live buffer description, and the full history-enabled regression
+passes without extra waits. GPU-assisted instrumentation changed the reproduction
+and reported no corresponding buffer error. The underlying allocation-order
+interaction is still unresolved; the experiment does not establish a driver or
+backend root cause. No speculative AS/emissive implementation changes are retained.
+
+Final D3D12 performance uses the same RTX 5060, convergence-test, 1920x1080 /
+1114x626, RR Balanced/F, defaults and disabled VSync/validation as the preceding
+measurement. Mean of 1931 timestamp records after frame 240 (`final-history-1080.csv`):
+
+| GPU stage | Mean (ms) |
+| --- | ---: |
+| Total | 12.521099 |
+| BUILD | 0.325100 |
+| LightsBaker | 0.451288 |
+| FILL | 8.248081 |
+| Guides | 0.283243 |
+| RRPrepare | 0.215227 |
+| RR | 2.863749 |
+| PostProcess | 0.096304 |
+
+Observed window rates were 77.9-79.2 FPS. The preceding total/FILL means were
+12.439642/8.198489 ms, so this run establishes no performance improvement; remaining
+FILL work is still the dominant gap. This change corrects temporal light selection
+behavior rather than closing the original upstream performance gap.

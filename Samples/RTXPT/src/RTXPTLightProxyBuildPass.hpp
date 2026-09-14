@@ -33,6 +33,7 @@
 #include "RefCntAutoPtr.hpp"
 #include "RenderDevice.h"
 #include "ShaderResourceBinding.h"
+#include "BasicMath.hpp"
 
 namespace Diligent
 {
@@ -67,7 +68,9 @@ public:
                Uint32          TotalLightCount,
                Uint32          AnalyticLightCount,
                Uint32          ProxyBudget,
-               Uint32          ImportanceSamplingType);
+               Uint32          ImportanceSamplingType,
+               IBuffer*        pHistoryRemapCurrentToPast = nullptr,
+               const float4*   pFrustumPlanes             = nullptr);
 
 private:
     bool CreatePSO(IRenderStateCache* pStateCache, IShader* pCS, const char* Name, RefCntAutoPtr<IPipelineState>& PSO, RefCntAutoPtr<IShaderResourceBinding>& SRB);
@@ -94,6 +97,9 @@ private:
     RefCntAutoPtr<IBuffer>                m_Constants;
     RefCntAutoPtr<IBuffer>                m_ProxyJobs;
     RefCntAutoPtr<IBuffer>                m_ProxyDispatchArgs;
+    RefCntAutoPtr<IBuffer>                m_HistoricLightWeights;
+    IBuffer*                              m_HistoryRemap        = nullptr;
+    Uint32                                m_HistoricWeightCount = 0;
     RefCntAutoPtr<IRenderDevice>          m_Device;
     bool                                  m_Ready = false;
 };

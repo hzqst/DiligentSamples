@@ -34,6 +34,7 @@
 #include "GLTFLoader.hpp"
 #include "RefCntAutoPtr.hpp"
 #include "RenderDevice.h"
+#include "RTXPTLightSourceHistory.hpp"
 
 namespace Diligent
 {
@@ -87,6 +88,8 @@ public:
     Uint32                                   GetEmissiveTriangleCount() const { return m_Stats.EmissiveTriangleCount; }
     const std::vector<PolymorphicLightInfo>& GetAnalyticLights() const { return m_AnalyticLights; }
     float                                    GetEmissiveProxyWeight() const { return m_EmissiveProxyWeight; }
+    const std::vector<RTXPTLightSourceRange>& GetAnalyticSources() const { return m_AnalyticSources; }
+    const std::vector<RTXPTLightSourceRange>& GetTriangleSources() const { return m_TriangleSources; }
 
 private:
     bool UploadLightBuffer(IRenderDevice* pDevice, std::vector<PolymorphicLightInfo>& Lights);
@@ -95,6 +98,7 @@ private:
     RefCntAutoPtr<IBuffer>            m_LightBuffer;
     RefCntAutoPtr<IBuffer>            m_EmissiveTriangleBuffer;
     std::vector<PolymorphicLightInfo> m_AnalyticLights;
+    std::vector<RTXPTLightSourceRange> m_AnalyticSources, m_TriangleSources;
     float                             m_EmissiveProxyWeight = 0.0f;
     RTXPTLightStats                   m_Stats;
 };

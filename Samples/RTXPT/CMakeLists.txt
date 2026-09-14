@@ -45,6 +45,8 @@ set(INCLUDE
     src/RTXPTLightsBaker.hpp
     src/RTXPTEnvironmentLights.hpp
     src/RTXPTLightFeedback.hpp
+    src/RTXPTLightHistory.hpp
+    src/RTXPTLightSourceHistory.hpp
     src/RTXPTLightsBakerPass.hpp
     src/RTXPTLightProxyBuildPass.hpp
     src/RTXPTFrameConstants.hpp
@@ -118,6 +120,7 @@ set(SHADERS
     shaders/PathTracer/Lighting/EnvironmentLight.hlsli
     shaders/PathTracer/Lighting/EnvironmentLightsBaker.hlsl
     shaders/PathTracer/Lighting/LightFeedback.hlsl
+    shaders/PathTracer/Lighting/LightHistory.hlsl
     shaders/PathTracer/SkinnedVertexBuild.csh
     shaders/PostProcessing/RTXPTFullscreen.vsh
     shaders/PostProcessing/RTXPTAccumulation.csh

@@ -10,7 +10,7 @@ void RTXPTSample::RunRayReconstructionValidation(double CurrTime)
     if (!m_ValidateRayReconstruction)
         return;
     constexpr Uint32 FramesPerStage = 32;
-    constexpr Uint32 StageCount     = 11;
+    constexpr Uint32 StageCount     = 14;
     const Uint32     Frame          = m_RayReconstructionValidationFrame++;
     auto&            RR             = m_PostProcessPipeline.GetRayReconstructionPass();
     if (Frame != 0 && Frame <= StageCount * FramesPerStage)
@@ -23,6 +23,14 @@ void RTXPTSample::RunRayReconstructionValidation(double CurrTime)
     }
     if (Frame != 0 && Frame <= StageCount * FramesPerStage && Frame % FramesPerStage == 0)
     {
+        // Smooth motion and environment table changes must retain light feedback,
+        // even when image-denoiser history is invalidated independently.
+        if ((Frame == 2 * FramesPerStage || Frame >= 12 * FramesPerStage) &&
+            m_LightsBaker.GetFeedbackHistoryFrameCount() <= FramesPerStage)
+        {
+            ++m_RayReconstructionValidationFailures;
+            LOG_ERROR_MESSAGE("Light feedback history was reset during camera/environment changes at frame ", Frame);
+        }
         LOG_INFO_MESSAGE("RR validation stage ", Frame / FramesPerStage - 1, " wall time: ",
                          (CurrTime - m_RayReconstructionValidationStageStart) * 1000.0 / FramesPerStage,
                          " ms/frame (includes stage setup)");
@@ -112,6 +120,18 @@ void RTXPTSample::RunRayReconstructionValidation(double CurrTime)
             RequestAccumulationReset("RR validation lighting change");
             m_LightIntensityScale *= 0.8f;
             break;
+        case 11:
+            m_EnvIntensity *= 2.0f;
+            m_EnvMapBakerSettingsDirty = true;
+            return;
+        case 12:
+            m_ReferenceUI.EnvironmentMapEnabled = false;
+            m_EnvMapBakerSettingsDirty          = true;
+            return;
+        case 13:
+            m_ReferenceUI.EnvironmentMapEnabled = true;
+            m_EnvMapBakerSettingsDirty          = true;
+            return;
     }
     RequestRealtimeCachesReset("RR scene validation stage changed");
 }

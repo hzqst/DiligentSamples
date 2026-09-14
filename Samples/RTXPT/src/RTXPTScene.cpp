@@ -603,6 +603,7 @@ bool AppendRTXPTGraphNode(RTXPTSceneGraphData&  Data,
         StoredNode.Type == "SpotLight" || StoredNode.Type == "EnvironmentLight")
     {
         RTXPTSceneLightMetadata Light;
+        Light.GraphNodeId     = NodeId;
         Light.Name            = StoredNode.Name;
         Light.Type            = StoredNode.Type;
         Light.GlobalTransform = StoredNode.GlobalTransform;

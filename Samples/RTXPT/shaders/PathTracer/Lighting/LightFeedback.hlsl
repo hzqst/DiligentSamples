@@ -8,6 +8,8 @@ cbuffer g_FeedbackConstants
     uint ResetHistory;
     uint2 TileJitter;
     uint2 PreviousTileJitter;
+    uint HasHistoryRemap;
+    uint3 Padding;
 };
 RWStructuredBuffer<LightingControlData> u_LightingControl;
 Texture2D<float> t_FeedbackTotalWeight;
@@ -22,6 +24,7 @@ Texture2D<float4> t_Motion;
 RWTexture2D<float> u_HistoryDepth;
 RWStructuredBuffer<uint> u_FeedbackCounts;
 StructuredBuffer<uint> t_LightSamplingProxies;
+StructuredBuffer<uint> t_HistoryRemapPastToCurrent;
 RWStructuredBuffer<uint> u_LocalSamplingBuffer;
 
 static const float kHistoryDropoff = 0.005;
@@ -50,6 +53,19 @@ struct MicroRng
 };
 
 uint2 EmptyFeedback() { return uint2(0u, RTXPT_INVALID_LIGHT_INDEX); }
+uint RemapPastToCurrent(uint index)
+{
+    const LightingControlData ctrl = u_LightingControl[0];
+    if (index == RTXPT_INVALID_LIGHT_INDEX) return index;
+    if (HasHistoryRemap != 0u)
+    {
+        // Keep even a speculated descriptor load in bounds on Vulkan devices
+        // without robust buffer access. The map always allocates at least one word.
+        const uint safeIndex = min(index, max(1u, ctrl.HistoricTotalLightCount) - 1u);
+        index = index < ctrl.HistoricTotalLightCount ? t_HistoryRemapPastToCurrent[safeIndex] : RTXPT_INVALID_LIGHT_INDEX;
+    }
+    return index < ctrl.TotalLightCount ? index : RTXPT_INVALID_LIGHT_INDEX;
+}
 float FeedbackWeight(uint2 value) { return value.y == RTXPT_INVALID_LIGHT_INDEX ? 0.0 : asfloat(value.x); }
 bool IsSSC(uint2 value) { return value.y != RTXPT_INVALID_LIGHT_INDEX && (value.y & LFR_SCREEN_SPACE_COHERENT_FLAG) != 0u; }
 uint2 LoadRaw(int2 pixel)
@@ -132,7 +148,8 @@ void PreFilterFeedback(uint2 pixel : SV_DispatchThreadID)
             if (random < cdf[j] / sum) { pick = j; break; }
         selected = kernel[pick];
     }
-    const uint lightIndex = selected.y & ~LFR_SCREEN_SPACE_COHERENT_FLAG;
+    const uint lightIndex = RemapPastToCurrent(selected.y & ~LFR_SCREEN_SPACE_COHERENT_FLAG);
+    selected.y = lightIndex == RTXPT_INVALID_LIGHT_INDEX ? lightIndex : lightIndex | (selected.y & LFR_SCREEN_SPACE_COHERENT_FLAG);
     // All feedback affects global weights; only SSC feedback belongs in local tables.
     InterlockedAdd(u_FeedbackCounts[min(lightIndex, u_LightingControl[0].TotalLightCount)], 1u);
     u_Filtered[pixel] = IsSSC(selected) && lightIndex < u_LightingControl[0].TotalLightCount ? selected : EmptyFeedback();
@@ -175,7 +192,7 @@ void ReprojectFeedback(uint2 pixel : SV_DispatchThreadID)
         const uint2 tile = min((uint2(previous) + ctrl.LocalSamplingTileJitterPrev) / RTXPT_LIGHTING_SAMPLING_BUFFER_TILE_SIZE,
                               ctrl.LocalSamplingResolution - 1u);
         const uint index = rng.Next() % RTXPT_LIGHTING_LOCAL_PROXY_COUNT;
-        result.y = UnpackMiniListLight(u_LocalSamplingBuffer[LLSB_ComputeBaseAddress(tile, ctrl.LocalSamplingResolution) + index]);
+        result.y = RemapPastToCurrent(UnpackMiniListLight(u_LocalSamplingBuffer[LLSB_ComputeBaseAddress(tile, ctrl.LocalSamplingResolution) + index]));
     }
     if (result.y == RTXPT_INVALID_LIGHT_INDEX) result.y = SampleGlobal(rng);
     u_Processed[pixel] = result;
@@ -224,13 +241,12 @@ void FillFeedbackTile(uint2 tile : SV_GroupID, uint index : SV_GroupIndex)
         [unroll] for (uint stride = size >> 1u; stride > 0u; stride >>= 1u)
         {
             const uint other = index ^ stride;
-            if (other > index)
-            {
-                const uint a = g_LocalLights[index], b = g_LocalLights[other];
-                const bool ascending = (index & size) == 0u;
-                g_LocalLights[index] = ascending ? min(a, b) : max(a, b);
-                g_LocalLights[other] = ascending ? max(a, b) : min(a, b);
-            }
+            const uint a = g_LocalLights[index], b = g_LocalLights[other];
+            const bool keepMinimum = ((index & size) == 0u) == ((index & stride) == 0u);
+            // All lanes finish reading the previous sorting stage before any lane
+            // overwrites it. Each lane then owns exactly one shared-memory store.
+            GroupMemoryBarrierWithGroupSync();
+            g_LocalLights[index] = keepMinimum ? min(a, b) : max(a, b);
             GroupMemoryBarrierWithGroupSync();
         }
     lightIndex = g_LocalLights[index];

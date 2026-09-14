@@ -44,8 +44,13 @@ struct LightProxyBuildConstantsCPU
     Uint32 AnalyticLightCount     = 0;
     Uint32 ProxyBudget            = 0;
     Uint32 ImportanceSamplingType = 1;
+    Uint32 HistoricWeightCount    = 0;
+    Uint32 HasHistoryRemap        = 0;
+    Uint32 HasFrustumPlanes       = 0;
+    Uint32 Padding                = 0;
+    float4 FrustumPlanes[5]       = {};
 };
-static_assert(sizeof(LightProxyBuildConstantsCPU) == 16, "LightProxyBuildConstants must match LightProxyBuild.hlsl");
+static_assert(sizeof(LightProxyBuildConstantsCPU) == 112, "LightProxyBuildConstants must match LightProxyBuild.hlsl");
 
 constexpr Uint32 kProxyBuildThreads = 256u;
 
@@ -78,6 +83,9 @@ void RTXPTLightProxyBuildPass::Reset()
     m_Constants.Release();
     m_ProxyJobs.Release();
     m_ProxyDispatchArgs.Release();
+    m_HistoricLightWeights.Release();
+    m_HistoryRemap        = nullptr;
+    m_HistoricWeightCount = 0;
     m_Device.Release();
     m_Ready = false;
 }
@@ -219,6 +227,8 @@ bool RTXPTLightProxyBuildPass::BindResources(IShaderResourceBinding* pSRB,
         SetVar("u_ProxyJobs", m_ProxyJobs->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS)) &&
         SetVar("u_ProxyDispatchArgs", m_ProxyDispatchArgs->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS)) &&
         SetVar("t_FeedbackCounts", pFeedbackCounts->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE)) &&
+        SetVar("t_HistoryRemapCurrentToPast", (m_HistoryRemap ? m_HistoryRemap : pFeedbackCounts)->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE)) &&
+        SetVar("t_HistoricLightWeights", m_HistoricLightWeights->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE)) &&
         SetVar("u_LightWeights", pLightWeights->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS)) &&
         SetVar("u_LightProxyCounters", pLightProxyCounters->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS)) &&
         SetVar("u_LightSamplingProxies", pLightSamplingProxies->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS));
@@ -236,7 +246,9 @@ bool RTXPTLightProxyBuildPass::Build(IDeviceContext* pContext,
                                      Uint32          TotalLightCount,
                                      Uint32          AnalyticLightCount,
                                      Uint32          ProxyBudget,
-                                     Uint32          ImportanceSamplingType)
+                                     Uint32          ImportanceSamplingType,
+                                     IBuffer*        pHistoryRemapCurrentToPast,
+                                     const float4*   pFrustumPlanes)
 {
     if (!m_Ready || pContext == nullptr || TotalLightCount == 0u)
         return false;
@@ -244,6 +256,18 @@ bool RTXPTLightProxyBuildPass::Build(IDeviceContext* pContext,
         pEnvironmentLights == nullptr || pLightWeights == nullptr || pLightProxyCounters == nullptr || pLightSamplingProxies == nullptr)
         return false;
 
+    m_HistoryRemap = pHistoryRemapCurrentToPast;
+    if (!m_HistoricLightWeights)
+    {
+        BufferDesc Desc;
+        Desc.Name              = "RTXPT historic light weights";
+        Desc.Size              = sizeof(float);
+        Desc.Mode              = BUFFER_MODE_STRUCTURED;
+        Desc.ElementByteStride = sizeof(float);
+        Desc.BindFlags         = BIND_SHADER_RESOURCE;
+        m_Device->CreateBuffer(Desc, nullptr, &m_HistoricLightWeights);
+        if (!m_HistoricLightWeights) return false;
+    }
     {
         MapHelper<LightProxyBuildConstantsCPU> Mapped{pContext, m_Constants, MAP_WRITE, MAP_FLAG_DISCARD};
         if (Mapped == nullptr)
@@ -252,6 +276,10 @@ bool RTXPTLightProxyBuildPass::Build(IDeviceContext* pContext,
         Mapped->AnalyticLightCount     = AnalyticLightCount;
         Mapped->ProxyBudget            = ProxyBudget;
         Mapped->ImportanceSamplingType = ImportanceSamplingType;
+        Mapped->HistoricWeightCount    = m_HistoricWeightCount;
+        Mapped->HasHistoryRemap        = m_HistoryRemap ? 1u : 0u;
+        Mapped->HasFrustumPlanes       = pFrustumPlanes ? 1u : 0u;
+        if (pFrustumPlanes) std::copy(pFrustumPlanes, pFrustumPlanes + 5, Mapped->FrustumPlanes);
     }
 
     const Uint64 JobsSize = (Uint64{TotalLightCount} + (Uint64{ProxyBudget} + 255u) / 256u) * 4u * sizeof(Uint32);
@@ -334,6 +362,25 @@ bool RTXPTLightProxyBuildPass::Build(IDeviceContext* pContext,
     Indirect.AttribsBufferStateTransitionMode = RESOURCE_STATE_TRANSITION_MODE_TRANSITION;
     pContext->DispatchComputeIndirect(Indirect);
     InsertBufferUAVBarrier(pContext, pLightSamplingProxies);
+
+    // Preserve the boosted weight (not the temporally mixed proxy weight), matching
+    // upstream's ping-pong weights. Copy after all reads of the preceding frame.
+    const Uint64 WeightBytes = Uint64{TotalLightCount} * sizeof(float);
+    if (m_HistoricLightWeights->GetDesc().Size < WeightBytes)
+    {
+        m_HistoricLightWeights.Release();
+        BufferDesc Desc;
+        Desc.Name              = "RTXPT historic light weights";
+        Desc.Size              = WeightBytes;
+        Desc.Mode              = BUFFER_MODE_STRUCTURED;
+        Desc.ElementByteStride = sizeof(float);
+        Desc.BindFlags         = BIND_SHADER_RESOURCE;
+        m_Device->CreateBuffer(Desc, nullptr, &m_HistoricLightWeights);
+        if (!m_HistoricLightWeights) return false;
+    }
+    pContext->CopyBuffer(pLightWeights, 0, RESOURCE_STATE_TRANSITION_MODE_TRANSITION,
+                         m_HistoricLightWeights, 0, WeightBytes, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+    m_HistoricWeightCount = TotalLightCount;
 
     return true;
 }

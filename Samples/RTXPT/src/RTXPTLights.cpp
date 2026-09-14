@@ -155,6 +155,8 @@ void RTXPTLights::Reset()
     m_LightBuffer.Release();
     m_EmissiveTriangleBuffer.Release();
     m_AnalyticLights.clear();
+    m_AnalyticSources.clear();
+    m_TriangleSources.clear();
     m_EmissiveProxyWeight = 0.0f;
     m_Stats               = {};
 }
@@ -231,6 +233,7 @@ bool RTXPTLights::Upload(IRenderDevice* pDevice, const GLTF::Scene& Scene, const
         if (pNode->Index < 0 || static_cast<size_t>(pNode->Index) >= Transforms.NodeGlobalMatrices.size())
             continue;
 
+        m_AnalyticSources.push_back({{0u, reinterpret_cast<Uint64>(pNode), 0u, 0u}, static_cast<Uint32>(Lights.size()), 1u});
         Lights.emplace_back(MakeLightData(*pNode->pLight, Transforms.NodeGlobalMatrices[pNode->Index]));
     }
 
@@ -277,6 +280,7 @@ bool RTXPTLights::Upload(IRenderDevice* pDevice, const RTXPTSceneGraphData& Scen
         {
             continue;
         }
+        m_AnalyticSources.push_back({{1u, LightMeta.GraphNodeId, 0u, 0u}, static_cast<Uint32>(Lights.size() - 1u), 1u});
     }
 
     return UploadLightBuffer(pDevice, Lights);
@@ -284,6 +288,7 @@ bool RTXPTLights::Upload(IRenderDevice* pDevice, const RTXPTSceneGraphData& Scen
 
 bool RTXPTLights::UploadEmissiveTriangles(IRenderDevice* pDevice, const RTXPTSceneGraphData& SceneData)
 {
+    m_TriangleSources.clear();
     m_Stats.EmissiveTriangleCount = 0;
     m_Stats.LastError.clear();
     m_EmissiveProxyWeight = 0.0f;
@@ -329,6 +334,9 @@ bool RTXPTLights::UploadEmissiveTriangles(IRenderDevice* pDevice, const RTXPTSce
                     return false;
                 }
 
+                m_TriangleSources.push_back({{2u, Instance.GraphNodeId, reinterpret_cast<Uint64>(&Primitive), static_cast<Uint64>(pNode->Index)},
+                                             static_cast<Uint32>(EmissiveTriangleCount),
+                                             TriangleCount});
                 EmissiveTriangleCount = NewCount;
                 m_EmissiveProxyWeight += static_cast<float>(TriangleCount) *
                     std::max(1e-6f, GetMaterialEmissionMagnitude(Model.Materials[Primitive.MaterialId], pExtension));

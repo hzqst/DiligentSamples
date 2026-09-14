@@ -380,10 +380,11 @@ Raygen locals become camelCase:
   analytic and triangle records in one logical index space.
 
   Broader baker differences remain explicit: Diligent retains analytic directional
-  lights instead of baking their disks into the source environment. Upstream's
-  frustum/intensity-change importance boosts and moving-light history-ID remapping
-  are not implemented; table/environment changes reset feedback instead. These
-  differences must not be described as bit-for-bit equivalence of the entire baker.
+  lights instead of baking their disks into the source environment. Frustum and
+  intensity-change importance boosts, source history-ID remapping and environment
+  split/merge mapping are implemented (see the history alignment section below).
+  Separate typed light storage and atomic proxy allocation still differ from the
+  upstream representation; this is not bit-for-bit equivalence of the entire baker.
   Emissive-NEE enable/dirty state is gated in-shader via `Bridge::getEmissiveTriangleCount`,
   which reads the *enabled* triangle count packed into `ptConsts.environmentNEEEnabled`
   (0 when the UI toggle is off or the emissive pass is dirty), rather than the raw baked
@@ -469,7 +470,8 @@ the upstream BSDF value and throughput-average conventions.
 equal-area-octahedral sampling, baked radiance/importance and direction-to-leaf lookup.
 Environment quads participate in the same reservoir as all other lights; the separate
 environment NEE shadow ray is removed. The quadtree is rebuilt on environment changes,
-with feedback reset, instead of rebuilding/remapping stable nodes every frame.
+with old/current lookup maps preserving feedback through changing subdivisions.
+Unchanged trees use identity history mapping instead of repeating subdivision work.
 
 `RTXPTLightFeedback` translates upstream preprocessing, SSC/WSC separation, global
 feedback counting, depth/motion reprojection, 2x2 blended reservoirs, 8x8 windows,
@@ -482,6 +484,44 @@ The shared two-ray TLAS stride remains valid with inline visibility: the unused
 visibility hit-group slot is explicitly null-bound. Cache version 007 invalidates
 all preceding shader implementations. Regressions and measured limitations are in
 `tests/README.md`.
+
+### LightsBaker importance and history alignment (2026-09-14)
+
+`LightProxyBuild.hlsl::ImportanceBooster` now follows upstream's five-plane frustum
+distance, multiplier 8, fade distance 5, and half-strength boost for distant lights.
+The camera planes are uploaded every rendered frame. The near-plane extraction is
+translated for Diligent's forward-Z projection; copying upstream's reversed-Z near
+plane would incorrectly use the far plane. Light centers use analytic positions or
+triangle centroids. The intensity-delta boost uses multiplier 64 and the upstream
+1.1 threshold against the previous **boosted** weight, before global-feedback mixing.
+`RTXPTLightProxyBuildPass` retains those weights on the GPU between builds.
+
+`RTXPTLightSourceHistory` matches analytic source nodes and emissive primitive ranges
+independently of light-table offsets, transforms and radiance. `RTXPTLightHistory`
+uploads both source maps and translates `EnvLightsMapPastToCurrent` plus the reverse
+lookup from `EnvLightsSubdivideBoost`: each node's upper-left coordinate is looked
+up in the other frame's map. This preserves non-bijective split/merge semantics.
+Missing sources and changed triangle counts invalidate history. Maps only link the
+immediately preceding rendered frame, so a removed/reappearing light cannot recover
+an obsolete two-frame-old ID. Unchanged tables return to identity after a remap is
+consumed. Environment snapshots and boosted weights stay on the GPU; no readback or
+GPU-idle wait is added to rendering.
+
+Feedback preprocessing remaps selected historic reservoirs before accumulating
+global counts. Historic local-table fallback also remaps before entering current
+reservoirs. Scene reload, resolution changes and explicit resets still invalidate
+feedback; camera motion, ordinary animated geometry and environment UI changes no
+longer unconditionally discard it. Image-denoiser resets remain independent.
+Cache version **011** is required for the new bindings and constant layouts.
+
+The environment history snapshot is allocated from the live environment buffer
+description at first use, alongside the lookup snapshot. Allocating it earlier in
+scene initialization triggered a Vulkan device-loss regression in the convergence
+scene even with history dispatch disabled; SRB-only and constants-only controls
+did not. First-use allocation passes the scene regressions without a GPU-idle wait.
+The underlying allocation-order interaction in the initial scene GPU work remains
+unexplained; this is not claimed as a general Vulkan backend fix. See the validation
+record in `tests/README.md`.
 
 ## Phase R4 EnvMapBaker Mapping
 
