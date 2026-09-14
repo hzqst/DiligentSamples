@@ -355,3 +355,103 @@ A validation-enabled D3D12/F 1080p run collected 1267 steady frames: Total
 Vulkan/E TraceRay fallback also ran with validation at 640x360; its PNG capture
 was inspected for scene/RR output. No new graphics errors were reported; the
 pre-existing `rgb10_a2` shader and missing-PIX warnings remain.
+
+### Further FILL upstream-parity audit (2026-09-14)
+
+The production baseline is Samples commit `bb9f98c8` (inline shadows and
+upstream alpha filtering). This audit changes only isolated shader copies under
+`%TEMP%/rtxpt-perf-diagnosis/fill-audit-*`, with separate working directories and
+fresh caches. It does not change the production renderer. Settings are D3D12
+Release, convergence-test, RR Balanced/F, 1920x1080 output / 1114x626 render,
+1 spp, 5 candidates, VSync/validation off. GPU runs are sequential; CSV means
+exclude frames 1–240. Measurements are GPU sample-rendering times, not Present
+or upstream per-stage measurements.
+
+| Isolated experiment | Frames | Total GPU ms | FILL GPU ms | RR GPU ms |
+|---|---:|---:|---:|---:|
+| Production baseline | 1240 | 18.236 | 13.876 | 2.902 |
+| Full BSDF evaluation only for the selected visible light | 1310 | 16.130 | 11.752 | 2.913 |
+| Defer mixed-PDF lookup/correction until selected light is visible | 1202 | 17.381 | 13.025 | 2.901 |
+| Both preceding changes | 1354 | 15.572 | 11.204 | 2.906 |
+| Disable independent environment NEE (diagnostic, biased) | 1593 | 13.945 | 9.568 | 2.915 |
+| Surface bounce limit 18 instead of 20 | 1124 | 18.124 | 13.768 | 2.897 |
+| Unmodified baseline repeated after experiments | 1238 | 18.175 | 13.833 | 2.884 |
+
+Confirmed source differences and interpretation:
+
+1. **Full BSDF work inside the candidate loop.** Upstream
+   `D:/RTXPT-fork/Rtxpt/Shaders/PathTracer/PathTracerNEE.hlsli::EvalSampleWeight`
+   uses radiance times BSDF PDF; `ProcessLightSample` evaluates full BSDF only
+   after visibility. The port's `Lighting/LightSampler.hlsli::GenerateDirectLightCandidate`
+   calls `EvalBSDF` and saves `bsdfF` for every candidate. Its reservoir weight
+   uses only `bsdfPdf`. The prototype stops storing candidate `bsdfF`, allowing
+   DXC to eliminate the unused full evaluation, and evaluates it once after the
+   chosen shadow ray succeeds. This preserves candidate PDFs and RNG order and
+   saves approximately 2.1 ms here. Production implementation should expose an
+   explicit PDF-only helper and verify numerical output equivalence.
+
+2. **Other-proposal PDF queried too early.** Upstream `GenerateLightSample`
+   uses local/global candidate counts, conditional proposal PDFs and
+   `LATE_WRS_MIS`; cross-proposal density queries happen in `ProcessLightSample`
+   after visibility. The port randomly selects a proposal component, immediately
+   calculates the mixed density for each candidate, then runs the reservoir.
+   The diagnostic retains that random component selection, stores its selection
+   PDF, weights candidates with the conditional density, and corrects the chosen
+   visible sample by `conditionalPdf / mixedPdf` before outer MIS. It saves
+   approximately 0.85 ms alone. This is not a full upstream stratified-sampling
+   port and changes reservoir selection/variance; boundary, estimator and image
+   regressions are required before merging. Combined with item 1 it saves
+   2.66 ms, not the sum of the individual savings.
+
+3. **Environment lighting follows a separate NEE path.** Upstream's
+   `Lighting/PolymorphicLight.hlsli::EnvironmentQuadLight` participates in the
+   unified light sampler and its environment-direction reverse lookup/MIS.
+   The port calls `SampleDirectLightNEE` plus `SampleEnvironmentNEE` from
+   `PathTracer.hlsli::HandleNEE`: potentially two visibility rays per eligible
+   vertex instead of one selected unified-light sample when FullSamples=1.
+   Disabling the independent environment path removes about 4.3 ms, but leaves
+   its BSDF-miss MIS in place and is deliberately biased. This measures a cost
+   opportunity, not a valid optimization or an additive predicted saving.
+   Alignment requires environment proxy generation, unified candidate sampling,
+   direction-to-light PDF lookup and both MIS directions together.
+
+4. **Local sampling coherence is not aligned.** Upstream
+   `LightSampler::IsScreenSpaceCoherentHeuristic` uses ray-cone width / total
+   travel to select screen-local versus global-only candidates, and passes the
+   same classification into temporal feedback. The port's candidate routine
+   enables local sampling whenever the local table exists and its feedback
+   path passes `true`; `HandleNEE` nevertheless records LightSamplingIsSSC=false.
+   This is a further sampler/feedback contract difference, not yet isolated
+   quantitatively in this audit. Address it with the complete sampler port.
+
+5. **Defaults and shared path mechanics.** Upstream `SampleUI.cpp` applies the
+   Balanced performance preset at startup: 18 surface bounces, 2 diffuse
+   bounces, 5 candidates, 1 full sample and 3 stable planes. The port has 20
+   surface bounces; the measured difference is only ~0.11 ms here. Both main
+   payloads are 80 bytes. Both FILL raygens resume plane 0 via FirstHitFromVBuffer
+   and narrow the first ray's interval to 0.99–1.01 of its stored distance;
+   there is no extra full traversal of all three planes in the port's FILL loop.
+
+6. **SER and material specialization remain unmeasured.** The original Release
+   executable was run directly with `--d3d12 --nonInteractive --scene
+   convergence-test.scene.json --width 1920 --height 1080
+   --overrideToRealtimeMode --realtimeAA 3 --stopAnimations`. Six window-title
+   measurements were 7.910–7.971 ms (125.4–126.4 FPS), confirming the user's
+   result and the same 1114x626 internal resolution. Upstream
+   `PathTracerSample.hlsl::nextHit` uses inline scatter traversal, HitObject,
+   reordering and hit invocation; `SampleCommon/PTPipelineBaker.cpp` builds
+   material-specialized hit shaders. The port uses TraceRay for scatter and a
+   general hit shader. **Do not treat `--noSER` as an off measurement in this
+   build:** `build/CMakeCache.txt` selects Agility SDK 619, and
+   `SampleUI.cpp:145–151` enables DXHitObjectExtension independently of the
+   NVAPI capability flag masked by `disableSER`. A genuine off test must disable
+   the DX path/reorder setting and confirm the resulting macros. No valid SER
+   off experiment or separate material-specialization timing was obtained.
+
+Recommended implementation order: PDF-only candidate evaluation, then a tested
+upstream sampler/MIS/coherence port, then unified environment lighting. Obtain a
+valid DX SER/material-specialization comparison before attributing the rest of
+the gap to them. These experiments establish FILL costs; they do not establish
+full image-quality equivalence or promise upstream frame rates after combining
+all changes. Raw CSVs/logs and experimental shader copies remain in the temporary
+diagnostic directory; aggregate evidence and source entry points are retained here.
