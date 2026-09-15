@@ -258,7 +258,6 @@ DirectLightSample GenerateDirectLightCandidate(StandardBSDFData bsdfData, float3
         sample.solidAnglePdf = EnvironmentQuadSolidAnglePdf(light);
         sample.proposalPdf = selectionPdf * sample.solidAnglePdf;
         sample.radianceOverPdf = light.Radiance / sample.proposalPdf;
-        sample.bsdfPdf = EvalBSDFPdf(bsdfData, wo, sample.dir);
         sample.kind = kLightProxyKindEnvironmentQuad;
         sample.index = lightIndex;
         sample.valid = true;
@@ -274,14 +273,11 @@ DirectLightSample GenerateDirectLightCandidate(StandardBSDFData bsdfData, float3
         if (lightPdf <= 0.0)
             return sample;
 
-        const float bsdfPdf = EvalBSDFPdf(bsdfData, wo, light.dir);
-
         sample.dir              = light.dir;
         sample.distance         = light.distance;
         sample.radianceOverPdf  = light.radiance * max(g_Const.ptConsts.lightIntensityScale, 0.0) / lightPdf;
         sample.proposalPdf      = lightPdf;
         sample.solidAnglePdf    = light.solidAnglePdf;
-        sample.bsdfPdf          = bsdfPdf;
         sample.kind             = kLightProxyKindAnalytic;
         sample.index            = lightIndex;
         sample.valid            = true;
@@ -324,19 +320,20 @@ DirectLightSample GenerateDirectLightCandidate(StandardBSDFData bsdfData, float3
         if (trianglePdf <= 0.0)
             return sample;
 
-        const float bsdfPdf = EvalBSDFPdf(bsdfData, wo, wi);
-
         sample.dir              = wi;
         sample.distance         = dist;
         sample.radianceOverPdf  = tri.radiance.rgb / trianglePdf;
         sample.proposalPdf      = trianglePdf;
         sample.solidAnglePdf    = solidAnglePdf;
-        sample.bsdfPdf          = bsdfPdf;
         sample.kind             = kLightProxyKindEmissiveTriangle;
         sample.index            = lightIndex; // unified light index (used for temporal feedback)
         sample.valid            = true;
         sample.sampleableByBSDF = true;
     }
+
+    // Evaluate the candidate PDF after the light-type branches reconverge, as in RTXPT-fork.
+    if (sample.valid)
+        sample.bsdfPdf = EvalBSDFPdf(bsdfData, wo, sample.dir);
 
     if (!sample.valid || sample.bsdfPdf <= 0.0)
         return DirectLightSample_make_empty();
