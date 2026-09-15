@@ -1,5 +1,8 @@
 # RR input and resource contract GPU regression
 
+For same-boundary upstream GPU timings and the measured NEE/FILL investigation,
+see [GPU performance comparison](GPU_PERFORMANCE_COMPARISON.md).
+
 `RRPrepareInputsTest.cpp` exercises the production resource owner, frame adapter,
 C++ prepare wrapper and mode 9 shader on D3D12 or Vulkan. It reads all six outputs.
 It requires an NGX-capable device for real Native/Quality source-size queries,

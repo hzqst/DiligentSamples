@@ -650,11 +650,15 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
     Args.Parse("gpu_profile", m_EnableGpuProfiling);
     Args.Parse("inline_shadows", m_EnableInlineVisibility);
     Args.Parse("fp16", m_ReferenceUI.UseFp16Types);
+    Args.Parse("bounces", m_MaxBounces);
+    m_MaxBounces = std::clamp(m_MaxBounces, 1u, static_cast<Uint32>(kMaxBounceSliderValue));
     Args.Parse("nee", m_EnableNEE);
     Args.Parse("nee_env", m_EnableEnvNEE);
     Args.Parse("nee_emissive", m_EnableEmissiveNEE);
     Args.Parse("nee_mis", m_ReferenceUI.NEEMISType);
     Args.Parse("nee_type", m_ReferenceUI.NEEType);
+    Args.Parse("nee_candidates", m_ReferenceUI.NEECandidateSamples);
+    m_ReferenceUI.NEECandidateSamples = std::clamp(m_ReferenceUI.NEECandidateSamples, 1, kNEEMaxSampleCount);
     m_ReferenceUI.NEEMISType = std::clamp(m_ReferenceUI.NEEMISType, 0, 2);
     m_ReferenceUI.NEEType    = std::clamp(m_ReferenceUI.NEEType, 0, 2);
     Args.Parse("gpu_profile_csv", m_GpuProfileCSV);
@@ -1992,6 +1996,17 @@ bool RTXPTSample::RunRealtimePathTraceOnly()
 
 void RTXPTSample::Render()
 {
+    if (m_EnableGpuProfiling && m_FrameIndex == 120)
+    {
+        const auto& Pt  = m_LastFrameConstants.ptConsts;
+        const auto  Pos = m_Camera.GetPos();
+        std::cout << "GPU profile settings: render=" << Pt.imageWidth << 'x' << Pt.imageHeight
+                  << " camera=(" << Pos.x << ',' << Pos.y << ',' << Pos.z << ") fovRadians=" << m_CameraVerticalFov
+                  << " bounces=" << Pt.bounceCount << " diffuse=" << Pt.diffuseBounceCount
+                  << " spp=" << m_RealtimeUI.ActualSamplesPerPixel() << " NEE=" << Pt.NEEEnabled
+                  << " type=" << Pt.NEEType << " candidates=" << Pt.NEECandidateSamples << " full=" << Pt.NEEFullSamples
+                  << " planes=" << Pt._activeStablePlaneCount << " rrPreset=" << static_cast<int>(m_RayReconstructionSettings.Preset) << std::endl;
+    }
     auto Timing          = m_GpuProfiler.BeginFrame(m_pDevice, m_pImmediateContext, m_EnableGpuProfiling, m_GpuProfileCSV);
     m_LastFrameSucceeded = false;
     if (m_RealtimeUI.RealtimeMode)
