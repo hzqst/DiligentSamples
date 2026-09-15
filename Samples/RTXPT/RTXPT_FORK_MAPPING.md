@@ -539,6 +539,29 @@ Cache version **012** invalidates the prior shader implementation. The opt-in sc
 regression also exercises 0 full samples, 1 candidate / 2 full samples, 8 / 2,
 Reference 1 / 1, and restoration of the realtime 5 / 1 defaults.
 
+### Native FP16 BSDF path (2026-09-15)
+
+`RTXPTRayTracingPass` defaults to upstream's
+`RTXPT_LP_TYPES_USE_16BIT_PRECISION=1` and DXC `-enable-16bit-types` on capable
+devices. `--fp16 false` selects the FP32 permutation. Diligent's opt-in
+`SHADER_COMPILE_FLAG_ENABLE_16BIT_TYPES` forwards the argument for both DXIL and
+SPIR-V; other samples and non-BSDF compute passes retain their existing settings.
+
+`PathTracerHelpers.hlsli` mirrors `Utils.hlsli`'s native float/integer aliases and
+FP32 fallback. `StandardBSDFData` in the port's `BxDF.hlsli` uses upstream's low
+precision material fields and getters; `ActiveBSDF::estimateSpecDiffBSDF` mirrors
+the low precision albedo arithmetic in upstream `StandardBSDF.hlsli`. The stable
+plane roughness view uses the same precision. Lobe evaluation, Fresnel/GGX, world
+directions, and PDFs retain upstream's FP32 computation types. This does not
+replace the port's BSDF interfaces or change sampling algorithms.
+
+The sample requests optional `ShaderFloat16` and `ResourceBuffer16BitAccess` and
+requires both for this permutation. The latter identifies native 16-bit support
+on D3D12 (minimum precision alone is insufficient) and enables Vulkan shaderInt16
+used by `lpuint`. Unsupported devices fall back to FP32 with a startup log.
+Cache **013** invalidates the previous shader implementation. See `tests/README.md`
+for the compiler test, scene regressions and measured performance.
+
 ## Phase R4 EnvMapBaker Mapping
 
 | RTXPT-fork | Diligent RTXPT | Notes |

@@ -655,3 +655,60 @@ can pause rendering for shader compilation; restoring it reuses the state cache.
 Local artifacts are in `%TEMP%/rtxpt-perf-diagnosis/`: `nee-specialization-build.log`,
 `nee-specialization-d3d12-regression.*`, `nee-specialization-vk-regression.*`,
 and `nee-specialization-before/after.csv` plus their runner logs.
+
+### Native FP16 BSDF validation (2026-09-15)
+
+Cache **013** enables upstream's native `lpfloat`/`lpuint` types for the RT
+permutations by default, using DXC `-enable-16bit-types`. Use `--fp16 false` for
+the FP32 control. Startup logs report both requested and effective precision.
+Material storage, getters, stable-plane roughness and albedo estimation follow
+upstream's precision boundaries; lobe evaluation and PDFs remain FP32. Device
+feature checks fall back to FP32 when native 16-bit support is unavailable.
+
+Verification:
+
+- Release `RTXPT` and `DiligentCoreAPITest` builds passed. One intermediate relink
+  encountered LNK1104 while the task's test application held RTXPT.exe open;
+  the final build succeeded after that application exited.
+- `DXCompilerTest.Native16BitTypes` compiles native float16/uint16 arithmetic via
+  the public compile flag for both DXIL and SPIR-V. It and `IncludeResolution`
+  passed (2 tests), covering the opt-in path and existing default compilation.
+- Final D3D12 Full MIS / RR F and Vulkan ApproxInRealtime / RR E scene regressions
+  completed all 19 stages with **failures=0**, 448 RR executions and 13 resets
+  each (7 D3D12 / 6 Vulkan creates). Vulkan retains the previously documented
+  three NRD/TAA/SR skips. Both logs confirm native FP16 enabled. New narrowing
+  conversions are explicit; no BSDF compilation or API validation errors appeared.
+- clang-format 10 changed-line checks and `git diff --check` passed. These scene
+  regressions check execution/resource/history behavior, not pixel equivalence
+  between FP16 and FP32.
+
+Sequential RTX 5060 / D3D12 measurements used convergence-test, 1920x1080 output,
+1114x626 internal resolution, Balanced/F, default NEE 5/1, VSync off and validation
+off. Each run warmed up for 30 seconds and sampled the title eight times; the
+table averages the final 1000 GPU timestamp rows. All runs used the same final
+Release executable. The pre-change control restored the four modified shader
+files from Samples commit `90f69ead` into an isolated temporary shader tree.
+
+| Stage (ms) | Pre-change shaders | New shaders, FP32 | Default FP16 |
+|---|---:|---:|---:|
+| BUILD | 0.3183 | 0.3180 | 0.3260 |
+| LightsBaker | 0.4390 | 0.4349 | 0.4438 |
+| FILL | 8.0521 | 8.1129 | 8.1044 |
+| Guides | 0.2963 | 0.2929 | 0.2957 |
+| RR prepare | 0.2290 | 0.2260 | 0.2277 |
+| RR | 3.0487 | 3.0539 | 3.0425 |
+| Post-process | 0.1032 | 0.1039 | 0.1052 |
+| Total | 12.5204 | 12.5768 | 12.5799 |
+
+The title stayed around 77-79 FPS in all three runs. There is **no discernible
+performance gain** from native FP16 in this scene: versus the new FP32 control,
+FILL changes by -0.0085 ms and total by +0.0030 ms. Versus pre-change shaders,
+total changes by +0.0595 ms (under 0.5%). This session's pre-change control is also
+slower than the earlier NEE benchmark, so the earlier 83-84 FPS is not a valid
+same-session baseline for this change. The remaining upstream gap is unresolved.
+
+Artifacts: `%TEMP%/rtxpt-perf-diagnosis/fp16-final-build.log`,
+`fp16-compiler-final.log`, `fp16-d3d12-final.*`, `fp16-vk-final.*`, and
+`fp16-original/before/after.csv` with corresponding runner logs. Initial
+`fp16-*-regression.*` runs preceded the final explicit casts / roughness-view
+alignment; the `*-final.*` logs validate the delivered shaders.

@@ -161,7 +161,7 @@ namespace PathTracer
         shadingData.emission          = surfaceEmission;
 
         ActiveBSDF bsdf;
-        bsdf.data.roughness = roughness;
+        bsdf.data.roughness = lpfloat(roughness);
         bsdf.standardData = MakeStandardBSDFData(worldNormal,
                                                  baseColor,
                                                  metallic,
@@ -182,7 +182,7 @@ namespace PathTracer
 #if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_STABLE_PLANES
                                  worldPos,
 #endif
-                                 ior,
+                                 lpfloat(ior),
                                  neeTriangleLightIndex,
                                  0xFFFFFFFFu,
                                   emissiveLightPdf);

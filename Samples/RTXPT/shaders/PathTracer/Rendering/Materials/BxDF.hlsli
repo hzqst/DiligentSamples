@@ -6,6 +6,7 @@
 // metallic, roughness, and shading normal from the payload.
 
 #include "../../Utils/SampleGenerators.hlsli"
+#include "../../PathTracerHelpers.hlsli"
 #include "../../Scene/Material/MaterialData.hlsli"
 #include "LobeType.hlsli"
 
@@ -25,42 +26,45 @@ static const uint kBSDFLobeDelta                = kLobeTypeDelta;
 static const uint kBSDFLobeTransmission         = kLobeTypeTransmission;
 
 // Shading inputs resolved into the form the lobes consume.
+// Match upstream StandardBSDFData's low-precision material storage. Directions,
+// lobe evaluation, GGX alpha and PDFs retain their full-precision types.
 struct StandardBSDFData
 {
     float3 N;
-    float3 diffuse;
-    float3 specular;
-    float3 transmission;
-    float  roughness;
+    lpfloat3 diffuse;
+    lpfloat3 specular;
+    lpfloat3 transmission;
+    lpfloat  roughness;
     float  alpha;
-    float  eta;
-    float  metallic;
-    float  diffuseTransmission;
-    float  specularTransmission;
+    lpfloat  eta;
+    lpfloat  metallic;
+    lpfloat  diffuseTransmission;
+    lpfloat  specularTransmission;
     bool   thinSurface;
     uint   activeLobes;
     uint   psdExclude;
     uint   psdBlockMotionVectorsAtSurface;
     uint   psdDominantDeltaLobeP1;
 
-    float3 Diffuse() { return diffuse; }
-    float3 Specular() { return specular; }
-    float3 Transmission() { return transmission; }
-    float  Roughness() { return roughness; }
-    float  Metallic() { return metallic; }
-    float  Eta() { return eta; }
-    float  DiffuseTransmission() { return diffuseTransmission; }
-    float  SpecularTransmission() { return specularTransmission; }
+    lpfloat3 Diffuse() { return diffuse; }
+    lpfloat3 Specular() { return specular; }
+    lpfloat3 Transmission() { return transmission; }
+    lpfloat  Roughness() { return roughness; }
+    lpfloat  Metallic() { return metallic; }
+    lpfloat  Eta() { return eta; }
+    lpfloat  DiffuseTransmission() { return diffuseTransmission; }
+    lpfloat  SpecularTransmission() { return specularTransmission; }
 
     void SetEta(float value)
     {
-        eta = value;
+        eta = lpfloat(value);
     }
 
     void SetRoughness(float value)
     {
-        roughness            = saturate(value);
-        const float newAlpha = roughness * roughness;
+        roughness            = lpfloat(saturate(value));
+        const float dataRoughness = roughness;
+        const float newAlpha = dataRoughness * dataRoughness;
         alpha                = (newAlpha < kMinGGXAlpha) ? 0.0 : max(newAlpha, kMinGGXAlpha);
     }
 };
@@ -101,15 +105,15 @@ StandardBSDFData MakeStandardBSDFData(float3 N,
 
     StandardBSDFData bsdfData;
     bsdfData.N                              = N;
-    bsdfData.diffuse                        = baseColor * (1.0 - m);
-    bsdfData.specular                       = lerp(float3(dielectric, dielectric, dielectric), baseColor, m);
-    bsdfData.transmission                   = baseColor;
-    bsdfData.roughness                      = r;
+    bsdfData.diffuse                        = lpfloat3(baseColor * (1.0 - m));
+    bsdfData.specular                       = lpfloat3(lerp(float3(dielectric, dielectric, dielectric), baseColor, m));
+    bsdfData.transmission                   = lpfloat3(baseColor);
+    bsdfData.roughness                      = lpfloat(r);
     bsdfData.alpha                          = (alpha < kMinGGXAlpha) ? 0.0 : max(alpha, kMinGGXAlpha);
-    bsdfData.eta                            = frontFacing ? safeOutsideIoR / safeMaterialIoR : safeMaterialIoR / safeOutsideIoR;
-    bsdfData.metallic                       = m;
-    bsdfData.diffuseTransmission            = saturate(diffuseTransmissionFactor) * (1.0 - m);
-    bsdfData.specularTransmission           = saturate(transmissionFactor) * (1.0 - m);
+    bsdfData.eta                            = lpfloat(frontFacing ? safeOutsideIoR / safeMaterialIoR : safeMaterialIoR / safeOutsideIoR);
+    bsdfData.metallic                       = lpfloat(m);
+    bsdfData.diffuseTransmission            = lpfloat(saturate(diffuseTransmissionFactor) * (1.0 - m));
+    bsdfData.specularTransmission           = lpfloat(saturate(transmissionFactor) * (1.0 - m));
     bsdfData.thinSurface                    = thinSurface;
     bsdfData.activeLobes                    = activeLobes == 0u ? kLobeTypeAll : activeLobes;
     bsdfData.psdExclude                     = psdExclude ? 1u : 0u;
@@ -743,21 +747,24 @@ struct FalcorBSDF
         const uint activeLobes = mtl.getActiveLobes();
         psdExclude = mtl.isPSDExclude();
 
-        specularReflection.albedo      = data.Specular();
+        const lpfloat3 dataSpecular = data.Specular();
+        const lpfloat dataEta = data.Eta();
+        specularReflection.albedo      = dataSpecular;
         specularReflection.alpha       = alpha;
         specularReflection.activeLobes = activeLobes;
 
         specularReflectionTransmission.transmissionAlbedo = transmissionAlbedo;
-        specularReflectionTransmission.alpha = data.Eta() == 1.0 ? 0.0 : alpha;
-        specularReflectionTransmission.eta = data.Eta();
+        specularReflectionTransmission.alpha = dataEta == 1.0 ? 0.0 : alpha;
+        specularReflectionTransmission.eta = dataEta;
         specularReflectionTransmission.activeLobes = activeLobes;
         specularReflectionTransmission.isThinSurface = isThinSurface;
 
         diffTrans = data.DiffuseTransmission();
         specTrans = data.SpecularTransmission();
 
-        const float metallicBRDF  = data.Metallic() * (1.0 - specTrans);
-        const float dielectricBSDF = (1.0 - data.Metallic()) * (1.0 - specTrans);
+        const lpfloat dataMetallic = data.Metallic();
+        const float metallicBRDF  = dataMetallic * (1.0 - specTrans);
+        const float dielectricBSDF = (1.0 - dataMetallic) * (1.0 - specTrans);
         const float specularBSDF  = specTrans;
         const float diffuseWeight = luminance(data.Diffuse());
         const float specularWeight = luminance(evalFresnelSchlick(data.Specular(), float3(1.0, 1.0, 1.0), saturate(dot(V, N))));
@@ -790,8 +797,8 @@ struct FalcorBSDF
     {
         const float alpha = data.Roughness() * data.Roughness();
         const bool  isDelta = alpha < kMinGGXAlpha;
-        const float diffTransValue = data.DiffuseTransmission();
-        const float specTransValue = data.SpecularTransmission();
+        const lpfloat diffTransValue = data.DiffuseTransmission();
+        const lpfloat specTransValue = data.SpecularTransmission();
 
         uint lobes = isDelta ? kLobeTypeDeltaReflection : kLobeTypeSpecularReflection;
         if (any(data.Diffuse() > 0.0) && specTransValue < 1.0)

@@ -123,7 +123,8 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
                                      bool                  EnableInlineVisibility,
                                      Uint32                NEEMISType,
                                      Uint32                NEECandidateSamples,
-                                     Uint32                NEEFullSamples)
+                                     Uint32                NEEFullSamples,
+                                     bool                  UseFp16Types)
 {
     Reset();
 
@@ -262,11 +263,14 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
         ShaderCI.SourceLanguage                  = SHADER_SOURCE_LANGUAGE_HLSL;
         ShaderCI.ShaderCompiler                  = SHADER_COMPILER_DXC;
         ShaderCI.CompileFlags                    = SHADER_COMPILE_FLAG_PACK_MATRIX_ROW_MAJOR;
+        if (UseFp16Types)
+            ShaderCI.CompileFlags |= SHADER_COMPILE_FLAG_ENABLE_16BIT_TYPES;
         ShaderCI.ShaderOptimizationLevel         = SHADER_OPTIMIZATION_LEVEL_3;
         ShaderCI.HLSLVersion                     = {6, 5};
         ShaderCI.pShaderSourceStreamFactory      = pShaderSourceFactory;
 
         ShaderMacroHelper Macros;
+        Macros.Add("RTXPT_LP_TYPES_USE_16BIT_PRECISION", UseFp16Types ? 1 : 0);
         Macros.Add("PATH_TRACER_MODE", GetVariantModeMacro(Variant));
         Macros.Add("RTXPT_NEE_TOTAL_CANDIDATE_SAMPLE_COUNT", NEECandidateSamples);
         Macros.Add("RTXPT_NEE_FULL_SAMPLE_COUNT", NEEFullSamples);

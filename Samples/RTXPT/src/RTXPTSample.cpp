@@ -79,7 +79,7 @@ constexpr Uint32 kRTXPTRealtimeNoisePeriod = 8192u;
 
 // Disk file used to persist the render state cache (compiled shaders + pipeline states)
 // across runs. Resolved relative to the working directory set in Initialize().
-constexpr char kStateCachePath[] = "RTXPTCache_012.bin";
+constexpr char kStateCachePath[] = "RTXPTCache_013.bin";
 
 bool IsStandaloneNrdAvailable()
 {
@@ -623,6 +623,9 @@ void RTXPTSample::ModifyEngineInitInfo(const ModifyEngineInitInfoAttribs& Attrib
     SampleBase::ModifyEngineInitInfo(Attribs);
 
     Attribs.EngineCI.Features.RayTracing = DEVICE_FEATURE_STATE_ENABLED;
+    Attribs.EngineCI.Features.ShaderFloat16 = DEVICE_FEATURE_STATE_OPTIONAL;
+    // Also enables shaderInt16 on Vulkan and identifies native 16-bit support on D3D12.
+    Attribs.EngineCI.Features.ResourceBuffer16BitAccess = DEVICE_FEATURE_STATE_OPTIONAL;
     // Bindless material textures are mandatory: the emissive-triangle build bakes textured per-triangle radiance
     // for NEE, and the closest-hit path must sample the same textures so the NEE pdf and BSDF-hit MIS weight
     // describe the same emitter. Requiring the feature here fails device creation on backends without bindless
@@ -646,6 +649,7 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
     Args.Parse("realtime", m_RealtimeUI.RealtimeMode);
     Args.Parse("gpu_profile", m_EnableGpuProfiling);
     Args.Parse("inline_shadows", m_EnableInlineVisibility);
+    Args.Parse("fp16", m_ReferenceUI.UseFp16Types);
     Args.Parse("nee", m_EnableNEE);
     Args.Parse("nee_env", m_EnableEnvNEE);
     Args.Parse("nee_emissive", m_EnableEmissiveNEE);
@@ -1311,6 +1315,12 @@ void RTXPTSample::CreateSceneDependentPasses()
     // factor-only path left is the legitimate texture-less scene (MaterialTextureCount == 0).
     const bool EnableMaterialTextures = m_Materials.GetTextureCount() > 0;
     const bool EnableAnyHit           = EnableMaterialTextures || m_AccelerationStructures.GetStats().ExcludedFromNEEGeometryCount > 0;
+    const auto& Features               = m_pDevice->GetDeviceInfo().Features;
+    const bool  UseFp16Types           = m_ReferenceUI.UseFp16Types &&
+        Features.ShaderFloat16 == DEVICE_FEATURE_STATE_ENABLED &&
+        Features.ResourceBuffer16BitAccess == DEVICE_FEATURE_STATE_ENABLED;
+    LOG_INFO_MESSAGE("RTXPT native FP16: ", UseFp16Types ? "enabled" : "disabled",
+                     "; requested: ", m_ReferenceUI.UseFp16Types ? "yes" : "no");
 
     m_EmissiveTrianglePass.Initialize(m_pDevice,
                                       m_pEngineFactory,
@@ -1366,7 +1376,8 @@ void RTXPTSample::CreateSceneDependentPasses()
                                     m_EnableInlineVisibility,
                                     static_cast<Uint32>(m_ReferenceUI.NEEMISType),
                                     static_cast<Uint32>(std::clamp(m_ReferenceUI.NEECandidateSamples, 1, kNEEMaxSampleCount)),
-                                    static_cast<Uint32>(std::clamp(m_ReferenceUI.NEEFullSamples, 0, kNEEMaxSampleCount)));
+                                    static_cast<Uint32>(std::clamp(m_ReferenceUI.NEEFullSamples, 0, kNEEMaxSampleCount)),
+                                    UseFp16Types);
 
     if (!RTReady)
     {

@@ -74,6 +74,7 @@ struct RTXPTFeatureCaps
 // (D:/RTXPT-fork/Rtxpt/SampleUI.h).
 struct RTXPTReferenceUIState
 {
+    bool                       UseFp16Types                    = true;
     bool                       EnableRussianRoulette           = true; // RR: always on; start bounce == Min bounces (RR start).
     bool                       ReferenceFireflyFilterEnabled   = true; // Phase R1 (G1): adaptive firefly filter.
     float                      ReferenceFireflyFilterThreshold = 5.0f; // Phase R1 (G1).

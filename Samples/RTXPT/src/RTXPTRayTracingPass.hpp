@@ -141,7 +141,8 @@ public:
                     bool                  EnableInlineVisibility,
                     Uint32                NEEMISType,
                     Uint32                NEECandidateSamples,
-                    Uint32                NEEFullSamples);
+                    Uint32                NEEFullSamples,
+                    bool                  UseFp16Types);
 
     bool Dispatch(IDeviceContext*                pContext,
                   RTXPTPathTraceVariant          Variant,

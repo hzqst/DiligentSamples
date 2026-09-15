@@ -39,6 +39,21 @@
 #    define RTXPT_NESTED_DIELECTRICS_QUALITY 1
 #endif
 
+#ifndef RTXPT_LP_TYPES_USE_16BIT_PRECISION
+#    define RTXPT_LP_TYPES_USE_16BIT_PRECISION 0
+#endif
+
+#if RTXPT_LP_TYPES_USE_16BIT_PRECISION
+typedef float16_t    lpfloat;
+typedef float16_t2   lpfloat2;
+typedef float16_t3   lpfloat3;
+typedef float16_t4   lpfloat4;
+typedef float16_t3x3 lpfloat3x3;
+typedef uint16_t     lpuint;
+typedef uint16_t2    lpuint2;
+typedef uint16_t3    lpuint3;
+typedef uint16_t4    lpuint4;
+#else
 typedef float    lpfloat;
 typedef float2   lpfloat2;
 typedef float3   lpfloat3;
@@ -48,6 +63,7 @@ typedef uint     lpuint;
 typedef uint2    lpuint2;
 typedef uint3    lpuint3;
 typedef uint4    lpuint4;
+#endif
 
 float ComputeRayOriginComponent(float worldPosition, float faceNormal)
 {
@@ -155,6 +171,13 @@ float Average(float3 v)
 {
     return (v.x + v.y + v.z) * 0.3333333333333333;
 }
+
+#if RTXPT_LP_TYPES_USE_16BIT_PRECISION
+lpfloat Average(lpfloat3 v)
+{
+    return (v.x + v.y + v.z) / 3.0;
+}
+#endif
 
 // Ray-cone spread angle implied by a scatter pdf (RTXPT ComputeRayConeSpreadAngleExpansionByScatterPDF,
 // growthFactor folded to 1.0). A delta lobe (pdf==0 sentinel) has zero spread.

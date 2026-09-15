@@ -83,8 +83,8 @@ namespace PathTracer
 
     struct StablePlaneBSDFData
     {
-        float roughness;
-        float Roughness() { return roughness; }
+        lpfloat roughness;
+        lpfloat Roughness() { return roughness; }
     };
 
     struct ActiveBSDF
@@ -124,28 +124,28 @@ namespace PathTracer
 
         void estimateSpecDiffBSDF(out float3 diffBSDFEstimate, out float3 specBSDFEstimate, float3 normal, float3 view)
         {
-            const float dataDiffuseTransmission  = standardData.DiffuseTransmission();
-            const float dataSpecularTransmission = standardData.SpecularTransmission();
-            const float3 dataTransmission        = standardData.Transmission();
+            const lpfloat dataDiffuseTransmission  = standardData.DiffuseTransmission();
+            const lpfloat dataSpecularTransmission = standardData.SpecularTransmission();
+            const lpfloat3 dataTransmission        = standardData.Transmission();
 
-            const float3 diffuseReflectionAlbedo =
-                (1.0 - dataDiffuseTransmission) *
-                (1.0 - dataSpecularTransmission) *
+            const lpfloat3 diffuseReflectionAlbedo =
+                (lpfloat(1.0) - dataDiffuseTransmission) *
+                (lpfloat(1.0) - dataSpecularTransmission) *
                 standardData.Diffuse();
-            const float3 diffuseTransmissionAlbedo =
+            const lpfloat3 diffuseTransmissionAlbedo =
                 dataDiffuseTransmission *
                 dataTransmission *
-                (1.0 - dataSpecularTransmission);
-            const float3 specularReflectionAlbedo =
-                (1.0 - dataSpecularTransmission) *
+                (lpfloat(1.0) - dataSpecularTransmission);
+            const lpfloat3 specularReflectionAlbedo =
+                (lpfloat(1.0) - dataSpecularTransmission) *
                 standardData.Specular();
-            const float3 specularTransmissionAlbedo =
+            const lpfloat3 specularTransmissionAlbedo =
                 dataSpecularTransmission *
                 dataTransmission;
 
             diffBSDFEstimate = diffuseReflectionAlbedo + diffuseTransmissionAlbedo;
 
-            const float dataRoughness = standardData.Roughness();
+            const lpfloat dataRoughness = standardData.Roughness();
             const float alpha         = dataRoughness * dataRoughness;
             const float roughness     = alpha < kMinGGXAlpha ? 0.0 : dataRoughness;
             const float NdotV         = saturate(dot(normal, view));
