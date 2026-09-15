@@ -613,3 +613,45 @@ Observed window rates were 77.9-79.2 FPS. The preceding total/FILL means were
 12.439642/8.198489 ms, so this run establishes no performance improvement; remaining
 FILL work is still the dominant gap. This change corrects temporal light selection
 behavior rather than closing the original upstream performance gap.
+
+### NEE sample-count specialization (2026-09-15)
+
+Cache **012** specializes the full and total candidate sample counts in all RT
+variants. Changing either count rebuilds before dispatch; the outgoing MIS state
+uses the same counts. The scene regression now has 19 stages, including full=0,
+candidates=1/full=2, candidates=8/full=2, Reference 1/1, and realtime default 5/1
+restoration. Each added stage checks the compiled counts and successful rendering.
+
+Release build passed. D3D12 Full MIS and Vulkan ApproxInRealtime, both with API
+validation enabled, completed all 19 stages with **failures=0**, 448 RR executions
+and 13 history resets (7 D3D12 / 6 Vulkan creates). Vulkan retains the documented
+NRD/TAA/SR skips. The first D3D12 run ended before all cold permutations compiled;
+the final run allowed 95 seconds and completed. No errors were logged in the final
+regressions or performance runs.
+
+Sequential performance comparison: RTX 5060, D3D12 Release, convergence-test,
+1920x1080 output / 1114x626 input, RR Balanced/F, default 5/1 NEE, VSync and
+validation disabled. The same executable used an isolated copy of the preceding
+shader tree for the before run and the production shader tree for the after run.
+Distinct shader hashes confirm the changed code was compiled. Means exclude the
+first 240 frames: 2778 before / 2954 after records.
+
+| GPU stage | Before (ms) | After (ms) |
+| --- | ---: | ---: |
+| Total | 12.478870 | 11.762980 |
+| BUILD | 0.319502 | 0.319070 |
+| LightsBaker | 0.439976 | 0.444980 |
+| FILL | 8.261499 | 7.555130 |
+| Guides | 0.280712 | 0.277228 |
+| RRPrepare | 0.213611 | 0.212247 |
+| RR | 2.833419 | 2.825355 |
+| PostProcess | 0.098721 | 0.098032 |
+
+FILL decreased by 0.706 ms (8.6%); total GPU time decreased by 0.716 ms (5.7%).
+Window rates were 77.1-79.7 FPS before and 82.5-84.5 FPS after. This closes only
+part of the upstream performance gap. First use of a new sample-count permutation
+can pause rendering for shader compilation; restoring it reuses the state cache.
+
+Local artifacts are in `%TEMP%/rtxpt-perf-diagnosis/`: `nee-specialization-build.log`,
+`nee-specialization-d3d12-regression.*`, `nee-specialization-vk-regression.*`,
+and `nee-specialization-before/after.csv` plus their runner logs.

@@ -10,7 +10,7 @@ void RTXPTSample::RunRayReconstructionValidation(double CurrTime)
     if (!m_ValidateRayReconstruction)
         return;
     constexpr Uint32 FramesPerStage = 32;
-    constexpr Uint32 StageCount     = 14;
+    constexpr Uint32 StageCount     = 19;
     const Uint32     Frame          = m_RayReconstructionValidationFrame++;
     auto&            RR             = m_PostProcessPipeline.GetRayReconstructionPass();
     if (Frame != 0 && Frame <= StageCount * FramesPerStage)
@@ -25,7 +25,7 @@ void RTXPTSample::RunRayReconstructionValidation(double CurrTime)
     {
         // Smooth motion and environment table changes must retain light feedback,
         // even when image-denoiser history is invalidated independently.
-        if ((Frame == 2 * FramesPerStage || Frame >= 12 * FramesPerStage) &&
+        if ((Frame == 2 * FramesPerStage || (Frame >= 12 * FramesPerStage && Frame <= 14 * FramesPerStage)) &&
             m_LightsBaker.GetFeedbackHistoryFrameCount() <= FramesPerStage)
         {
             ++m_RayReconstructionValidationFailures;
@@ -34,6 +34,19 @@ void RTXPTSample::RunRayReconstructionValidation(double CurrTime)
         LOG_INFO_MESSAGE("RR validation stage ", Frame / FramesPerStage - 1, " wall time: ",
                          (CurrTime - m_RayReconstructionValidationStageStart) * 1000.0 / FramesPerStage,
                          " ms/frame (includes stage setup)");
+        if (Frame >= 15 * FramesPerStage)
+        {
+            const auto& RTStats = m_RayTracingPass.GetStats();
+            if (!RTStats.Ready ||
+                RTStats.NEECandidateSamples != static_cast<Uint32>(m_ReferenceUI.NEECandidateSamples) ||
+                RTStats.NEEFullSamples != static_cast<Uint32>(m_ReferenceUI.NEEFullSamples))
+            {
+                ++m_RayReconstructionValidationFailures;
+                LOG_ERROR_MESSAGE("NEE shader permutation did not follow the changed sampling settings");
+            }
+            LOG_INFO_MESSAGE("NEE permutation validated: candidates=", RTStats.NEECandidateSamples,
+                             ", full=", RTStats.NEEFullSamples);
+        }
     }
     if (Frame == StageCount * FramesPerStage)
     {
@@ -132,6 +145,26 @@ void RTXPTSample::RunRayReconstructionValidation(double CurrTime)
             m_ReferenceUI.EnvironmentMapEnabled = true;
             m_EnvMapBakerSettingsDirty          = true;
             return;
+        case 14: // Zero full samples must compile out NEE without invalid bindings.
+            m_ReferenceUI.NEEFullSamples = 0;
+            break;
+        case 15: // Exercise a single proposal and multiple complete samples.
+            m_ReferenceUI.NEECandidateSamples = 1;
+            m_ReferenceUI.NEEFullSamples      = 2;
+            break;
+        case 16:
+            m_ReferenceUI.NEECandidateSamples = 8;
+            break;
+        case 17: // Reference has its own MIS/shader permutation.
+            m_RealtimeUI.RealtimeMode         = false;
+            m_ReferenceUI.NEECandidateSamples = 1;
+            m_ReferenceUI.NEEFullSamples      = 1;
+            break;
+        case 18: // Restore the default permutation, including its cache path.
+            m_RealtimeUI.RealtimeMode         = true;
+            m_ReferenceUI.NEECandidateSamples = 5;
+            m_ReferenceUI.NEEFullSamples      = 1;
+            break;
     }
     RequestRealtimeCachesReset("RR scene validation stage changed");
 }

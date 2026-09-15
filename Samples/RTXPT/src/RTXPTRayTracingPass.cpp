@@ -121,9 +121,14 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
                                      bool                  RayTracingSupported,
                                      bool                  StandaloneRTShadersSupported,
                                      bool                  EnableInlineVisibility,
-                                     Uint32                NEEMISType)
+                                     Uint32                NEEMISType,
+                                     Uint32                NEECandidateSamples,
+                                     Uint32                NEEFullSamples)
 {
     Reset();
+
+    m_Stats.NEECandidateSamples = NEECandidateSamples;
+    m_Stats.NEEFullSamples      = NEEFullSamples;
 
     if (pDevice == nullptr || pContext == nullptr || pEngineFactory == nullptr)
     {
@@ -155,8 +160,8 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
         return false;
     }
 
-    const bool UseTextures = EnableMaterialTextures && pMaterialTextures != nullptr && MaterialTextureCount > 0;
-    const bool UseAnyHit   = EnableAnyHit;
+    const bool UseTextures         = EnableMaterialTextures && pMaterialTextures != nullptr && MaterialTextureCount > 0;
+    const bool UseAnyHit           = EnableAnyHit;
     const bool UseInlineVisibility = EnableInlineVisibility &&
         (pDevice->GetAdapterInfo().RayTracing.CapFlags & RAY_TRACING_CAP_FLAG_INLINE_RAY_TRACING) != 0;
 
@@ -263,6 +268,8 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
 
         ShaderMacroHelper Macros;
         Macros.Add("PATH_TRACER_MODE", GetVariantModeMacro(Variant));
+        Macros.Add("RTXPT_NEE_TOTAL_CANDIDATE_SAMPLE_COUNT", NEECandidateSamples);
+        Macros.Add("RTXPT_NEE_FULL_SAMPLE_COUNT", NEEFullSamples);
         Macros.Add("RTXPT_USE_APPROXIMATE_MIS", NEEMISType == 2 || (NEEMISType == 1 && Variant != RTXPTPathTraceVariant::Reference) ? 1 : 0);
         Macros.Add("RTXPT_USE_INLINE_VISIBILITY", UseInlineVisibility ? 1 : 0);
         Macros.Add("RTXPT_INDEX_BUFFER_UINT16", IndexValueType == VT_UINT16 ? 1 : 0);
@@ -597,10 +604,10 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
     m_Stats.EnvironmentBridgeBound = EnvironmentBridgeReflectedAny && m_Stats.EnvironmentBridgeBound;
     if (!UseTextures)
         m_Stats.MaterialTexturesBound = false;
-    m_Stats.AnyHitEnabled = UseAnyHit;
+    m_Stats.AnyHitEnabled           = UseAnyHit;
     m_Stats.InlineVisibilityEnabled = UseInlineVisibility;
     LOG_INFO_MESSAGE("RTXPT visibility rays: ", UseInlineVisibility ? "inline RayQuery" : "TraceRay");
-    m_Stats.Ready         = true;
+    m_Stats.Ready = true;
     return true;
 }
 

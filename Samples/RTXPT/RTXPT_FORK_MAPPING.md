@@ -523,6 +523,22 @@ The underlying allocation-order interaction in the initial scene GPU work remain
 unexplained; this is not claimed as a general Vulkan backend fix. See the validation
 record in `tests/README.md`.
 
+### NEE sample-count shader specialization (2026-09-15)
+
+`RTXPTRayTracingPass` supplies upstream's `RTXPT_NEE_FULL_SAMPLE_COUNT` and
+`RTXPT_NEE_TOTAL_CANDIDATE_SAMPLE_COUNT` for each path-tracing variant. NEE loops
+and the outgoing BSDF MIS metadata consume the same compiled counts. The explicit
+`[loop]` annotations are removed so DXC can optimize the default 1 full / 5 candidate
+case. Shader consumers without these macros retain the runtime fallback.
+
+Before dispatch, the sample compares the clamped UI counts with the pipeline's
+compiled counts and rebuilds on changes. The macros participate in render-state
+cache keys, including when restoring a previously used setting. Local/global
+proposal allocation still follows the live sampling ratio and coherence state.
+Cache version **012** invalidates the prior shader implementation. The opt-in scene
+regression also exercises 0 full samples, 1 candidate / 2 full samples, 8 / 2,
+Reference 1 / 1, and restoration of the realtime 5 / 1 defaults.
+
 ## Phase R4 EnvMapBaker Mapping
 
 | RTXPT-fork | Diligent RTXPT | Notes |

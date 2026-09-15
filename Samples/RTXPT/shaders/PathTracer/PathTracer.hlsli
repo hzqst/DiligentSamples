@@ -22,6 +22,15 @@
 static const float kVisibilityRayTMin = 0.0;
 static const float kVisibilityRayTMax = 1e30;
 
+// Production pipelines specialize these settings, as in RTXPT-fork. Retain
+// runtime defaults for shader consumers that do not supply the permutation.
+#ifndef RTXPT_NEE_FULL_SAMPLE_COUNT
+#define RTXPT_NEE_FULL_SAMPLE_COUNT min(RTXPT_LIGHTING_MAX_SAMPLE_COUNT, g_Const.ptConsts.NEEFullSamples)
+#endif
+#ifndef RTXPT_NEE_TOTAL_CANDIDATE_SAMPLE_COUNT
+#define RTXPT_NEE_TOTAL_CANDIDATE_SAMPLE_COUNT max(1u, min(RTXPT_LIGHTING_MAX_SAMPLE_COUNT, g_Const.ptConsts.NEECandidateSamples))
+#endif
+
 namespace PathTracer
 {
     static const float kSpecularRoughnessThreshold = 0.25;
@@ -100,22 +109,20 @@ namespace PathTracer
     {
         specularRadianceAvg = 0.0;
 
-        const uint fullSamples = min(RTXPT_LIGHTING_MAX_SAMPLE_COUNT, g_Const.ptConsts.NEEFullSamples);
+        const uint fullSamples = RTXPT_NEE_FULL_SAMPLE_COUNT;
         if (fullSamples == 0u || Bridge::getTotalLightCount() == 0u)
             return float3(0.0, 0.0, 0.0);
 
-        const uint candidateSamples = max(1u, min(RTXPT_LIGHTING_MAX_SAMPLE_COUNT, g_Const.ptConsts.NEECandidateSamples));
+        const uint candidateSamples = RTXPT_NEE_TOTAL_CANDIDATE_SAMPLE_COUNT;
         uint localCount, globalCount;
         GetCandidateSampleCounts(Bridge::getLightingControl(), coherent && HasLocalLightSampling(Bridge::getLightingControl()),
                                  candidateSamples, localCount, globalCount);
 
         float3 result = float3(0.0, 0.0, 0.0);
-        [loop]
         for (uint sampleIndex = 0u; sampleIndex < fullSamples; ++sampleIndex)
         {
             NEEWeightedReservoirSampler wrs = NEEWeightedReservoirSampler::make();
 
-            [loop]
             for (uint candidateIndex = 0u; candidateIndex < candidateSamples; ++candidateIndex)
             {
                 DirectLightSample candidate = GenerateDirectLightCandidate(bsdfData, hitPos, wo, pixelPos, candidateIndex >= globalCount, sg);
@@ -354,7 +361,7 @@ namespace PathTracer
         NEEResult result = NEEResult::empty();
 
         const bool enableNEE     = workingContext.PtConsts.NEEEnabled != 0u;
-        const uint fullSamples   = min(RTXPT_LIGHTING_MAX_SAMPLE_COUNT, workingContext.PtConsts.NEEFullSamples);
+        const uint fullSamples   = RTXPT_NEE_FULL_SAMPLE_COUNT;
         if (!enableNEE || fullSamples == 0u)
             return result;
         if (!ReferenceShouldRunNEE(preScatterPath, workingContext))
@@ -367,7 +374,7 @@ namespace PathTracer
 
         result.BSDFMISInfo.LightSamplingEnabled = true;
         result.BSDFMISInfo.LightSamplingIsSSC   = coherent;
-        result.BSDFMISInfo.CandidateSamples     = min(NEEBSDFMISInfo::SampleCountLimit(), max(1u, workingContext.PtConsts.NEECandidateSamples));
+        result.BSDFMISInfo.CandidateSamples     = min(NEEBSDFMISInfo::SampleCountLimit(), RTXPT_NEE_TOTAL_CANDIDATE_SAMPLE_COUNT);
         result.BSDFMISInfo.FullSamples          = min(NEEBSDFMISInfo::SampleCountLimit(), fullSamples);
 
         const float3 wo = surfaceData.shadingData.V;

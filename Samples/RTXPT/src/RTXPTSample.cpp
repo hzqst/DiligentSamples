@@ -79,7 +79,7 @@ constexpr Uint32 kRTXPTRealtimeNoisePeriod = 8192u;
 
 // Disk file used to persist the render state cache (compiled shaders + pipeline states)
 // across runs. Resolved relative to the working directory set in Initialize().
-constexpr char kStateCachePath[] = "RTXPTCache_011.bin";
+constexpr char kStateCachePath[] = "RTXPTCache_012.bin";
 
 bool IsStandaloneNrdAvailable()
 {
@@ -1364,7 +1364,9 @@ void RTXPTSample::CreateSceneDependentPasses()
                                     m_FeatureCaps.RayTracing,
                                     m_FeatureCaps.StandaloneRayTracingShaders,
                                     m_EnableInlineVisibility,
-                                    static_cast<Uint32>(m_ReferenceUI.NEEMISType));
+                                    static_cast<Uint32>(m_ReferenceUI.NEEMISType),
+                                    static_cast<Uint32>(std::clamp(m_ReferenceUI.NEECandidateSamples, 1, kNEEMaxSampleCount)),
+                                    static_cast<Uint32>(std::clamp(m_ReferenceUI.NEEFullSamples, 0, kNEEMaxSampleCount)));
 
     if (!RTReady)
     {
@@ -2064,7 +2066,12 @@ void RTXPTSample::Update(double CurrTime, double ElapsedTime, bool DoUpdateUI)
     if (m_LightsBakerSettingsDirty && UpdateLightsBaker(false))
         RecreateSceneDependentPasses = true;
 
-    if (m_RayTracingPassSettingsDirty)
+    // Compare the compiled counts as well as explicit UI invalidation so all
+    // callers (including automated scene validation) rebuild before dispatch.
+    const auto& RTStats = m_RayTracingPass.GetStats();
+    if (m_RayTracingPassSettingsDirty ||
+        RTStats.NEECandidateSamples != static_cast<Uint32>(std::clamp(m_ReferenceUI.NEECandidateSamples, 1, kNEEMaxSampleCount)) ||
+        RTStats.NEEFullSamples != static_cast<Uint32>(std::clamp(m_ReferenceUI.NEEFullSamples, 0, kNEEMaxSampleCount)))
     {
         RecreateSceneDependentPasses  = true;
         m_RayTracingPassSettingsDirty = false;

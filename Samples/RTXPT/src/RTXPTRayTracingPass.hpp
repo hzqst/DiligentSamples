@@ -95,6 +95,8 @@ struct RTXPTRayTracingPassStats
     bool   InlineVisibilityEnabled  = false;
     Uint32 MaterialTextureCount     = 0;
     Uint32 TraceCount               = 0;
+    Uint32 NEECandidateSamples      = 0;
+    Uint32 NEEFullSamples           = 0;
 };
 
 class RTXPTRayTracingPass
@@ -137,7 +139,9 @@ public:
                     bool                  RayTracingSupported,
                     bool                  StandaloneRTShadersSupported,
                     bool                  EnableInlineVisibility,
-                    Uint32                NEEMISType);
+                    Uint32                NEEMISType,
+                    Uint32                NEECandidateSamples,
+                    Uint32                NEEFullSamples);
 
     bool Dispatch(IDeviceContext*                pContext,
                   RTXPTPathTraceVariant          Variant,
