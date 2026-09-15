@@ -1,5 +1,8 @@
 # RTXPT upstream GPU comparison — 2026-09-15
 
+Follow-up: [NEE candidate/PDF/reservoir measurements](NEE_CANDIDATE_PERFORMANCE.md)
+test the candidate data flow with matched variants and repeated baselines.
+
 ## Result
 
 The measured remaining difference is concentrated in FILL's NEE-dependent work.
@@ -81,28 +84,36 @@ those modes. In the default NEE-AT mode that stage differs by only about 0.07 ms
   candidate PDF evaluations and final BSDF evaluation. FILL was 7.578 ms versus
   7.607 ms. Different compiled closest-hit hashes confirmed that the variant was
   loaded. This experiment did not establish a useful gain.
-- **Omit NEE visibility queries in both renderers:** valid selected samples were
-  treated as visible. FILL was 6.619 ms in the port and 2.982 ms upstream; the gap
-  remained 3.637 ms. More samples then reach final shading/feedback, so the net
-  difference must not be reported as the pure cost of shadow rays. The result
-  shows that removing shadow queries does not eliminate the main gap.
-- **Use upstream's ordinary TraceRay fallback:** only the `nextHit` conditional
-  in its runtime shader copy was changed to select the existing fallback,
-  bypassing HitObject construction, invocation and reordering. FILL was 2.976 ms
-  versus 2.944 ms. This is a stronger isolation than `--noSER`, which can leave
-  a HitObject path active. No multi-millisecond penalty appeared in this scene.
+- **Omit NEE visibility queries:** the port overlay measured FILL 6.619 ms.
+  The intended upstream variant did not run: only its inactive runtime copy was
+  changed (see correction below). The recorded upstream 2.982 ms is not a
+  no-visibility result, and the claimed paired 3.637 ms gap is withdrawn. The
+  port change also allows more samples to reach final shading/feedback, so its
+  delta is not the pure cost of shadow rays.
+- **Use upstream's ordinary TraceRay fallback:** this experiment also changed
+  only the inactive runtime copy. The recorded 2.976 ms cannot support a
+  conclusion about TraceRay versus HitObject/reordering. That conclusion is
+  withdrawn; a test of the active source is required.
 
 All experimental port shaders live in temporary overlay directories. Upstream's
 two runtime shader files were restored byte-for-byte to source and their write
 times advanced to invalidate the temporary compiled variants. The final baseline
 ran after restoration. No renderer shader source change is part of this delivery.
+Restoring a runtime copy did not prove that the experiment had used that copy.
+
+**Source-selection correction from the follow-up:**
+`SampleCommon/ShaderCompilerUtils.cpp`, `ShaderCompilerConfig::Initialize`,
+prefers `../Rtxpt/Shaders` relative to the executable whenever that development
+directory exists. `bin/ShaderDynamic/Source/Rtxpt` is only a fallback. Baseline
+stage captures and CLI-controlled NEE/type/count comparisons above remain valid.
+The two upstream shader ablations above are invalid and must not be reused.
 
 The remaining instruction/memory/register-pressure cause within the candidate
-path is not established by these experiments. The next optimization should
-measure the port's `GenerateDirectLightCandidate` / `EvalBSDFPdf` / reservoir data
-flow against upstream's `GenerateLightSample`, holding candidate count and sample
-selection stable. Material specialization or memory-layout explanations remain
-hypotheses until tested; they are not conclusions of this report.
+path is not established by these experiments. The linked follow-up measures
+`GenerateDirectLightCandidate` / `EvalBSDFPdf` / reservoir data flow against
+upstream's `GenerateLightSample`, including PDF call-site merging that retains
+candidate generation and weighting. Material specialization or memory-layout
+explanations still require evidence; they are not conclusions of this report.
 
 ## Reproduce
 
@@ -127,9 +138,11 @@ override the port's initial bounce value; this scene has no max-bounces override
 ## Validation and artifacts
 
 - Both final Release application builds completed successfully.
-- Eighteen accepted CSV captures passed numerical checks: at least 1000 samples,
+- Eighteen CSV captures passed numerical checks: at least 1000 samples,
   unique frame IDs, finite/nonnegative executed-stage times, and Total at least
-  FILL + RR. This is timing/resource execution validation, not image equivalence.
+  FILL + RR. This is timing/resource execution validation, not image equivalence
+  or proof that a shader variant was active. The two upstream shader ablations
+  were subsequently rejected as described above.
 - `upstream-power-one` was rejected because its settings file showed 5 candidates:
   the UI preset had overwritten the initial CLI value. The override now applies
   after presets; `upstream-power-one-valid` records 1 candidate and is used above.
