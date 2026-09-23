@@ -95,6 +95,11 @@ those modes. In the default NEE-AT mode that stage differs by only about 0.07 ms
   conclusion about TraceRay versus HitObject/reordering. That conclusion is
   withdrawn; a test of the active source is required.
 
+The subsequent [material/HitObject/SER experiment](MATERIAL_HITOBJECT_PERFORMANCE.md)
+performs that test with actual compiler macros and selected PSO hashes verified.
+It finds a large reorder benefit and a material-specialization interaction;
+use those new captures, not the withdrawn numbers above.
+
 All experimental port shaders live in temporary overlay directories. Upstream's
 two runtime shader files were restored byte-for-byte to source and their write
 times advanced to invalidate the temporary compiled variants. The final baseline

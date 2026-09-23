@@ -130,6 +130,10 @@ cost, changed quantized inputs/proxy weights, shader register pressure or
 control flow. Those require another measured ablation/profile; source layout
 similarity alone does not establish the cause.
 
+The follow-up [material/HitObject/SER ablation](MATERIAL_HITOBJECT_PERFORMANCE.md)
+measures these execution-path differences directly and changes the next priority
+to scatter-ray HitObject plus reordering, rather than material specialization.
+
 Capture integrity:
 
 - Before EXE SHA-256: `a83c638f37f7adc3f0dd172a7b7d974f0761afa235d6a7814536d20bd7389607`.
