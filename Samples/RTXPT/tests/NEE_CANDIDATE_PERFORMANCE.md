@@ -1,5 +1,8 @@
 # NEE candidate data-flow experiments — 2026-09-15
 
+Follow-up after the PDF merge was committed: [current baseline, candidate-count
+scan and constant-PDF diagnostic](NEE_POST_MERGE_PERFORMANCE.md) (2026-09-23).
+
 This follow-up uses the GPU stage profiler described in
 [GPU_PERFORMANCE_COMPARISON.md](GPU_PERFORMANCE_COMPARISON.md). It measures shader
 variants without shipping experimental renderer changes.
