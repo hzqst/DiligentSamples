@@ -1,5 +1,15 @@
 # RTXPT Fork Mapping
 
+## Native scatter HitObject (2026-09-23)
+
+`PathTracerSample.rgen::nextHit` now follows upstream `PathTracerSample.hlsl`:
+RayQuery scatter traversal, inline miss, HitObject, optional termination-hint
+reorder, and Invoke of the generic closest-hit shader. BUILD does not reorder.
+`PathTracerVisibility.hlsli::traceScatterRay` shares the production alpha predicate;
+`makeScatterHit` translates the result to Diligent's two-slot geometry SBT layout.
+Vulkan and D3D12 devices below SM 6.9 retain TraceRay. Material specialization is
+unchanged. See [runtime requirements, validation and timings](tests/HITOBJECT_PERFORMANCE.md).
+
 This document records the RTXPT-fork <-> DiligentEngine-port correspondence for
 the RTXPT Phase R0.5 reference path tracer migration. Its purpose is to make
 future upstream RTXPT re-ports close to a mechanical diff/merge while preserving

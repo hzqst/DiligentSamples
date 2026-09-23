@@ -172,6 +172,8 @@ private:
     RTXPTGpuProfiler                                        m_GpuProfiler;
     bool                                                    m_EnableGpuProfiling = false;
     bool                                                    m_EnableInlineVisibility = true;
+    bool                                                    m_EnableHitObject        = true;
+    bool                                                    m_EnableThreadReorder    = true;
     std::string                                             m_GpuProfileCSV;
     std::string                                             m_AssetsRoot;
     std::vector<std::string>                                m_AvailableScenes;

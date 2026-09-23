@@ -649,6 +649,8 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
     Args.Parse("realtime", m_RealtimeUI.RealtimeMode);
     Args.Parse("gpu_profile", m_EnableGpuProfiling);
     Args.Parse("inline_shadows", m_EnableInlineVisibility);
+    Args.Parse("hit_object", m_EnableHitObject);
+    Args.Parse("thread_reorder", m_EnableThreadReorder);
     Args.Parse("fp16", m_ReferenceUI.UseFp16Types);
     Args.Parse("bounces", m_MaxBounces);
     m_MaxBounces = std::clamp(m_MaxBounces, 1u, static_cast<Uint32>(kMaxBounceSliderValue));
@@ -1384,7 +1386,9 @@ void RTXPTSample::CreateSceneDependentPasses()
                                     static_cast<Uint32>(m_ReferenceUI.NEEMISType),
                                     static_cast<Uint32>(std::clamp(m_ReferenceUI.NEECandidateSamples, 1, kNEEMaxSampleCount)),
                                     static_cast<Uint32>(std::clamp(m_ReferenceUI.NEEFullSamples, 0, kNEEMaxSampleCount)),
-                                    UseFp16Types);
+                                    UseFp16Types,
+                                    m_EnableHitObject,
+                                    m_EnableThreadReorder);
 
     if (!RTReady)
     {

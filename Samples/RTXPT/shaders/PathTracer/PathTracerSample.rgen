@@ -87,6 +87,22 @@ void nextHit(inout PathState path, inout float2 tMinMax, const PathTracer::Worki
     ray.TMin    = tMinMax.x;
     ray.TMax    = tMinMax.y;
 
+#if USE_DX_HIT_OBJECT_EXTENSION
+    RayQuery<RAY_FLAG_NONE> rayQuery;
+    Bridge::traceScatterRay(ray, rayQuery);
+    if (rayQuery.CommittedStatus() != COMMITTED_TRIANGLE_HIT)
+    {
+        PathTracer::HandleMiss(path, ray.Origin, ray.Direction, kMaxRayTravel, workingContext);
+        return;
+    }
+    dx::HitObject hit = Bridge::makeScatterHit(rayQuery);
+#if USE_DX_MAYBE_REORDER_THREADS && PATH_TRACER_MODE != PATH_TRACER_MODE_BUILD_STABLE_PLANES
+    if (path.hasFlag(PathFlags::enableThreadReorder))
+        dx::MaybeReorderThread(hit, uint(path.isTerminatingAtNextBounce()), 1);
+#endif
+    PathPayload payload = PathPayload::pack(path);
+    dx::HitObject::Invoke(hit, payload);
+#else
     PathPayload payload = PathPayload::pack(path);
     TraceRay(t_SceneBVH,
              RAY_FLAG_NONE,
@@ -96,6 +112,7 @@ void nextHit(inout PathState path, inout float2 tMinMax, const PathTracer::Worki
              RTXPT_PRIMARY_RAY_INDEX,
              ray,
              payload);
+#endif
     path = PathPayload::unpack(payload);
 
     tMinMax = float2(0.0, kMaxRayTravel);

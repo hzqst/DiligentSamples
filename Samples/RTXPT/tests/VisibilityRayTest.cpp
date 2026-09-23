@@ -75,8 +75,11 @@ static_assert(sizeof(Vertex) == 32, "Production packed vertex stride");
 int main(int Argc, char** Argv)
 try
 {
-    Require(Argc == 3 || (Argc == 4 && std::strcmp(Argv[3], "uint16") == 0), "Usage: VisibilityRayTest <engine DLL> <shader root> [uint16]");
-    const bool       Use16Bit  = Argc == 4;
+    Require(Argc >= 3 && Argc <= 5, "Usage: VisibilityRayTest <engine DLL> <shader root> [uint16|uint32] [hitobject]");
+    Require(Argc < 4 || std::strcmp(Argv[3], "uint16") == 0 || std::strcmp(Argv[3], "uint32") == 0, "Invalid index type");
+    Require(Argc < 5 || std::strcmp(Argv[4], "hitobject") == 0, "Invalid scatter test mode");
+    const bool       Use16Bit     = Argc >= 4 && std::strcmp(Argv[3], "uint16") == 0;
+    const bool       UseHitObject = Argc == 5 && std::strcmp(Argv[4], "hitobject") == 0;
     const VALUE_TYPE IndexType = Use16Bit ? VT_UINT16 : VT_UINT32;
     const Uint32     IndexSize = Use16Bit ? sizeof(Uint16) : sizeof(Uint32);
     Require(128.0f / 255.0f == RTXPTQuantizeAlphaCutoff(0.5f), "Upstream midpoint cutoff");
@@ -122,6 +125,7 @@ try
         Vulkan()->CreateDeviceAndContextsVk(CI, &Device, &Context);
     }
     Require(Device && Context, "Cannot create device");
+    Require(!UseHitObject || (D3D12 && Device->GetDeviceInfo().MaxShaderVersion.HLSL >= ShaderVersion{6, 9}), "HitObject test requires D3D12 SM 6.9");
     RefCntAutoPtr<IShaderSourceInputStreamFactory> Source;
     std::string                                    Search = std::string{Argv[2]} + ";" + Argv[2] + "/PathTracer";
     Factory->CreateDefaultShaderSourceStreamFactory(Search.c_str(), &Source);
@@ -281,7 +285,7 @@ try
     ShaderCreateInfo SCI;
     SCI.SourceLanguage             = SHADER_SOURCE_LANGUAGE_HLSL;
     SCI.ShaderCompiler             = SHADER_COMPILER_DXC;
-    SCI.HLSLVersion                = {6, 5};
+    SCI.HLSLVersion                = UseHitObject ? ShaderVersion{6, 9} : ShaderVersion{6, 5};
     SCI.ShaderOptimizationLevel    = SHADER_OPTIMIZATION_LEVEL_3;
     SCI.CompileFlags               = SHADER_COMPILE_FLAG_PACK_MATRIX_ROW_MAJOR;
     SCI.pShaderSourceStreamFactory = Source;
@@ -306,13 +310,31 @@ RWStructuredBuffer<uint4> u_Results;
     PathPayload primary = (PathPayload)0;
     TraceRay(t_SceneBVH, RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, 0xFF, 0, 2, 0, ray, primary);
     u_Results[n] = uint4(visible, shadow.packed[0].x, primary.packed[0].x, 0);
+#if USE_DX_HIT_OBJECT_EXTENSION
+    RayQuery<RAY_FLAG_NONE> query;
+    Bridge::traceScatterRay(ray, query);
+    uint scatterMiss = 1;
+    if (query.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
+    {
+        dx::HitObject hit = Bridge::makeScatterHit(query);
+        dx::MaybeReorderThread(hit, n & 1, 1);
+        PathPayload scatter = (PathPayload)0;
+        dx::HitObject::Invoke(hit, scatter);
+        // The primary hit shader writes a distinct value; wrong SBT slots fail.
+        scatterMiss = scatter.packed[0].x == 42 ? 0 : 2;
+    }
+    u_Results[n].w = scatterMiss;
+#endif
 }
 #endif
 #ifdef TEST_MISS
 [shader("miss")] void Miss(inout PathPayload payload) { payload.packed[0].x = 1; }
 #endif
 #ifdef TEST_HIT
-[shader("closesthit")] void Hit(inout PathPayload payload, BuiltInTriangleIntersectionAttributes attributes) {}
+[shader("closesthit")] void Hit(inout PathPayload payload, BuiltInTriangleIntersectionAttributes attributes) { payload.packed[0].x = 42; }
+#endif
+#ifdef TEST_SHADOW_HIT
+[shader("closesthit")] void ShadowHit(inout PathPayload payload, BuiltInTriangleIntersectionAttributes attributes) { payload.packed[0].x = 99; }
 #endif
 )";
     auto        Compile            = [&](SHADER_TYPE Stage, const char* Entry, const char* File = nullptr) {
@@ -320,10 +342,11 @@ RWStructuredBuffer<uint4> u_Results;
         Macros.Add("ENABLE_MATERIAL_TEXTURES", 1);
         Macros.Add("MATERIAL_TEXTURE_COUNT", 1);
         Macros.Add("RTXPT_USE_INLINE_VISIBILITY", 1);
+        Macros.Add("USE_DX_HIT_OBJECT_EXTENSION", UseHitObject ? 1 : 0);
         Macros.Add("RTXPT_INDEX_BUFFER_UINT16", Use16Bit ? 1 : 0);
         if (Stage == SHADER_TYPE_RAY_GEN) Macros.Add("TEST_RAYGEN", 1);
         if (Stage == SHADER_TYPE_RAY_MISS) Macros.Add("TEST_MISS", 1);
-        if (Stage == SHADER_TYPE_RAY_CLOSEST_HIT) Macros.Add("TEST_HIT", 1);
+        if (Stage == SHADER_TYPE_RAY_CLOSEST_HIT) Macros.Add(std::strcmp(Entry, "ShadowHit") == 0 ? "TEST_SHADOW_HIT" : "TEST_HIT", 1);
         if (std::strcmp(Entry, "VisibilityMain") == 0) Macros.Add("RTXPT_VISIBILITY_ANY_HIT", 1);
         SCI.Macros     = Macros;
         SCI.Desc       = {Entry, Stage, false};
@@ -338,6 +361,7 @@ RWStructuredBuffer<uint4> u_Results;
     auto                               RayGen        = Compile(SHADER_TYPE_RAY_GEN, "RayGen");
     auto                               Miss          = Compile(SHADER_TYPE_RAY_MISS, "Miss");
     auto                               Hit           = Compile(SHADER_TYPE_RAY_CLOSEST_HIT, "Hit");
+    auto                               ShadowHit     = Compile(SHADER_TYPE_RAY_CLOSEST_HIT, "ShadowHit");
     auto                               PrimaryAnyHit = Compile(SHADER_TYPE_RAY_ANY_HIT, "main", "PathTracer/PathTracerAnyHit.rahit");
     auto                               ShadowAnyHit  = Compile(SHADER_TYPE_RAY_ANY_HIT, "VisibilityMain", "PathTracer/PathTracerAnyHit.rahit");
     RayTracingPipelineStateCreateInfoX PCI;
@@ -345,7 +369,7 @@ RWStructuredBuffer<uint4> u_Results;
     PCI.PSODesc.PipelineType                       = PIPELINE_TYPE_RAY_TRACING;
     PCI.PSODesc.ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE;
     PCI.AddGeneralShader("RayGen", RayGen).AddGeneralShader("Miss", Miss);
-    PCI.AddTriangleHitShader("Primary", Hit, PrimaryAnyHit).AddTriangleHitShader("Shadow", Hit, ShadowAnyHit);
+    PCI.AddTriangleHitShader("Primary", Hit, PrimaryAnyHit).AddTriangleHitShader("Shadow", ShadowHit, ShadowAnyHit);
     PCI.RayTracingPipeline.MaxRecursionDepth = 1;
     PCI.MaxPayloadSize                       = 80;
     PCI.MaxAttributeSize                     = 8;
@@ -397,9 +421,9 @@ RWStructuredBuffer<uint4> u_Results;
     for (Uint32 N = 0; N < 48; ++N)
     {
         Uint32 Expected = N < 8 ? FrontShadow[N] : N < 16 ? OtherShadow[N - 8] : N < 24 ? 0 : 1;
-        for (Uint32 Channel = 0; Channel < 3; ++Channel)
+        for (Uint32 Channel = 0; Channel < (UseHitObject ? 4u : 3u); ++Channel)
         {
-            const Uint32 ChannelExpected = Channel == 2 && (N == 6 || N == 7) ? 0 : Expected;
+            const Uint32 ChannelExpected = Channel >= 2 && (N == 6 || N == 7) ? 0 : Expected;
             if (ChannelExpected != Result[N * 4 + Channel])
             {
                 std::cerr << "Ray " << N << " channel " << Channel << ": expected " << ChannelExpected << ", got " << Result[N * 4 + Channel] << '\n';
@@ -408,7 +432,8 @@ RWStructuredBuffer<uint4> u_Results;
         }
     }
     Require(Errors == 0, "GPU validation errors");
-    std::cout << "PASS: material classification, 48 rays, inline / TraceRay visibility / primary any-hit, " << (Use16Bit ? "uint16" : "uint32") << " indices\n";
+    std::cout << "PASS: material classification, 48 rays, inline / TraceRay visibility / primary any-hit"
+              << (UseHitObject ? " / HitObject + reorder, " : ", ") << (Use16Bit ? "uint16" : "uint32") << " indices\n";
     return 0;
 }
 catch (const std::exception& Error)

@@ -141,7 +141,9 @@ public:
                     Uint32                NEEMISType,
                     Uint32                NEECandidateSamples,
                     Uint32                NEEFullSamples,
-                    bool                  UseFp16Types);
+                    bool                  UseFp16Types,
+                    bool                  EnableHitObject,
+                    bool                  EnableThreadReorder);
 
     bool Dispatch(IDeviceContext*                pContext,
                   RTXPTPathTraceVariant          Variant,

@@ -435,10 +435,8 @@ if(RTXPT_HAS_NRD)
     )
 endif()
 
-if (DILIGENT_DSR_SUPPORTED)
-    target_link_libraries(RTXPT PRIVATE DirectSR-AgilitySDK)
-    copy_directsr_dlls(RTXPT)
-    install_directsr_dlls(RTXPT)
+if (PLATFORM_WIN32 AND D3D12_SUPPORTED AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+    include(cmake/HitObjectRuntime.cmake)
 endif()
 
 if (DILIGENT_DLSS_SUPPORTED)

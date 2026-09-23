@@ -26,6 +26,29 @@ namespace Bridge
         return AlphaTestImpl(subInstance, triangleIndex, rayBarycentrics);
     }
 
+#if USE_DX_HIT_OBJECT_EXTENSION
+    void traceScatterRay(RayDesc ray, inout RayQuery<RAY_FLAG_NONE> rayQuery)
+    {
+        rayQuery.TraceRayInline(t_SceneBVH, RAY_FLAG_NONE, 0xFF, ray);
+        while (rayQuery.Proceed())
+        {
+            if (rayQuery.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE &&
+                AlphaTestImpl(t_SubInstanceData[rayQuery.CandidateInstanceID() + rayQuery.CandidateGeometryIndex()],
+                              rayQuery.CandidatePrimitiveIndex(), rayQuery.CandidateTriangleBarycentrics()))
+                rayQuery.CommitNonOpaqueTriangleHit();
+        }
+    }
+
+    dx::HitObject makeScatterHit(inout RayQuery<RAY_FLAG_NONE> rayQuery)
+    {
+        dx::HitObject hit = dx::HitObject::FromRayQuery(rayQuery);
+        // Diligent reserves primary and visibility records for every geometry.
+        hit.SetShaderTableIndex(rayQuery.CommittedInstanceContributionToHitGroupIndex() +
+                                rayQuery.CommittedGeometryIndex() * RTXPT_HIT_GROUP_STRIDE + RTXPT_PRIMARY_RAY_INDEX);
+        return hit;
+    }
+#endif
+
 #if RTXPT_USE_INLINE_VISIBILITY
     bool traceVisibilityRay(RayDesc ray)
     {

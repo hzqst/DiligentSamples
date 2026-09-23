@@ -8,10 +8,12 @@ set RTXPT_TEST_INCLUDES=/IDiligentCore\Platforms\interface /IDiligentCore\Platfo
 cl /nologo /c /std:c++17 /EHsc /MD /O2 /Gy /GL /DPLATFORM_WIN32=1 /DNOMINMAX %RTXPT_TEST_INCLUDES% ^
  DiligentSamples\Samples\RTXPT\src\RTXPTMaterials.cpp /Fo"%RTXPT_TEST_OUTPUT%\RTXPTMaterials.obj"
 if errorlevel 1 goto failed
+cl /nologo /c /std:c++17 /EHsc /MD /O2 DiligentSamples\Samples\RTXPT\src\RTXPTAgilitySDK.cpp /Fo"%RTXPT_TEST_OUTPUT%\RTXPTAgilitySDK.obj"
+if errorlevel 1 goto failed
 cl /nologo /std:c++17 /EHsc /MD /O2 /Gy /GL /DPLATFORM_WIN32=1 /DNOMINMAX %RTXPT_TEST_INCLUDES% ^
  DiligentSamples\Samples\RTXPT\tests\VisibilityRayTest.cpp ^
  /Fo"%RTXPT_TEST_OUTPUT%\VisibilityRayTest.obj" /Fe"%RTXPT_TEST_OUTPUT%\VisibilityRayTest.exe" ^
- /link /OPT:REF /LTCG "%RTXPT_TEST_OUTPUT%\RTXPTMaterials.obj" user32.lib comdlg32.lib ^
+ /link /OPT:REF /LTCG "%RTXPT_TEST_OUTPUT%\RTXPTMaterials.obj" "%RTXPT_TEST_OUTPUT%\RTXPTAgilitySDK.obj" user32.lib comdlg32.lib ^
  build\x64\Release\DiligentTools\TextureLoader\Release\Diligent-TextureLoader.lib ^
  build\x64\Release\DiligentTools\ThirdParty\libpng\Release\libpng16_static.lib ^
  build\x64\Release\DiligentTools\ThirdParty\libtiff\Release\LibTiff.lib ^
@@ -25,6 +27,14 @@ cl /nologo /std:c++17 /EHsc /MD /O2 /Gy /GL /DPLATFORM_WIN32=1 /DNOMINMAX %RTXPT
  build\x64\Release\DiligentCore\Common\Release\Diligent-Common.lib ^
  build\x64\Release\DiligentCore\Platforms\Basic\Release\Diligent-BasicPlatform.lib ^
  build\x64\Release\DiligentCore\Platforms\Win32\Release\Diligent-Win32Platform.lib
+if errorlevel 1 goto failed
+set RTXPT_RUNTIME=%CD%\build\x64\Release\DiligentSamples\Samples\RTXPT\Release
+if not exist "%RTXPT_TEST_OUTPUT%\D3D12" mkdir "%RTXPT_TEST_OUTPUT%\D3D12"
+copy /y "%RTXPT_RUNTIME%\D3D12\*.dll" "%RTXPT_TEST_OUTPUT%\D3D12\" >nul
+if errorlevel 1 goto failed
+copy /y "%RTXPT_RUNTIME%\dxcompiler.dll" "%RTXPT_TEST_OUTPUT%\" >nul
+if errorlevel 1 goto failed
+copy /y "%RTXPT_RUNTIME%\dxil.dll" "%RTXPT_TEST_OUTPUT%\" >nul
 if errorlevel 1 goto failed
 echo Built %RTXPT_TEST_OUTPUT%\VisibilityRayTest.exe
 popd

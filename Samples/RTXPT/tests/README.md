@@ -1,5 +1,8 @@
 # RR input and resource contract GPU regression
 
+For native scatter HitObject / reordering, the pinned SM 6.9 runtime, numerical
+ray tests and three-mode timings, see [HitObject performance](HITOBJECT_PERFORMANCE.md).
+
 For same-boundary upstream GPU timings and the measured NEE/FILL investigation,
 see [GPU performance comparison](GPU_PERFORMANCE_COMPARISON.md).
 
