@@ -92,15 +92,40 @@ namespace PathTracer
     }
 
 #if PATH_TRACER_MODE != PATH_TRACER_MODE_BUILD_STABLE_PLANES
-    float ComputeLightVsBSDFMISForLightSample(DirectLightSample sample, uint fullSamples, uint candidates, float thisPdf, float otherPdf)
+    float ComputeLightVsBSDFMISForLightSample(DirectLightSample sample, uint fullSamples, uint candidates, float thisPdf, float otherPdf, float bsdfPdf)
     {
-        if (!sample.sampleableByBSDF || sample.bsdfPdf <= 0.0 || sample.proposalPdf <= 0.0)
+        if (!sample.sampleableByBSDF || bsdfPdf <= 0.0)
             return 1.0;
 
         if (UseApproximateLightMIS())
-            return LightVsBSDFMISApprox(sample.bsdfPdf, candidates, fullSamples, true);
+            return LightVsBSDFMISApprox(bsdfPdf, candidates, fullSamples, true);
         const float lightPdf = (thisPdf + otherPdf) * float(fullSamples) * sample.solidAnglePdf;
-        return EvalLightSamplingMIS(1.0, lightPdf, 1.0, sample.bsdfPdf);
+        return EvalLightSamplingMIS(1.0, lightPdf, 1.0, bsdfPdf);
+    }
+
+    DirectLightSample GenerateDirectLightSample(StandardBSDFData bsdfData, float3 hitPos, float3 wo,
+                                                uint2 pixelPos, bool coherent, uint candidateSamples, inout SampleGenerator sg)
+    {
+        uint localCount, globalCount;
+        GetCandidateSampleCounts(Bridge::getLightingControl(), coherent && HasLocalLightSampling(Bridge::getLightingControl()),
+                                 candidateSamples, localCount, globalCount);
+
+        NEEWeightedReservoirSampler wrs = NEEWeightedReservoirSampler::make();
+        for (uint candidateIndex = 0u; candidateIndex < candidateSamples; ++candidateIndex)
+        {
+            DirectLightSample candidate = GenerateDirectLightCandidate(hitPos, pixelPos, candidateIndex >= globalCount, sg);
+            const float weight = EvalDirectLightCandidateWeight(candidate, bsdfData, wo);
+            wrs.Add(sampleNext1D(sg), candidate, weight);
+        }
+
+        const float candidateProbability = wrs.CandidateProbability();
+        if (candidateProbability <= 0.0)
+            return DirectLightSample_make_empty();
+
+        // Match RTXPT-fork GenerateLightSample: finish reservoir normalization here.
+        DirectLightSample picked = wrs.candidate;
+        picked.radianceOverPdf /= candidateProbability;
+        return picked;
     }
 
     float3 SampleDirectLightNEE(StandardBSDFData bsdfData, float3 hitPos, float3 faceNormal, float3 vertexNormal,
@@ -114,37 +139,31 @@ namespace PathTracer
             return float3(0.0, 0.0, 0.0);
 
         const uint candidateSamples = RTXPT_NEE_TOTAL_CANDIDATE_SAMPLE_COUNT;
-        uint localCount, globalCount;
-        GetCandidateSampleCounts(Bridge::getLightingControl(), coherent && HasLocalLightSampling(Bridge::getLightingControl()),
-                                 candidateSamples, localCount, globalCount);
-
         float3 result = float3(0.0, 0.0, 0.0);
         for (uint sampleIndex = 0u; sampleIndex < fullSamples; ++sampleIndex)
         {
-            NEEWeightedReservoirSampler wrs = NEEWeightedReservoirSampler::make();
-
-            for (uint candidateIndex = 0u; candidateIndex < candidateSamples; ++candidateIndex)
-            {
-                DirectLightSample candidate = GenerateDirectLightCandidate(bsdfData, hitPos, wo, pixelPos, candidateIndex >= globalCount, sg);
-                wrs.Add(sampleNext1D(sg), candidate, EvalDirectLightCandidateWeight(candidate));
-            }
-
-            DirectLightSample picked               = wrs.candidate;
-            const float       candidateProbability = wrs.CandidateProbability();
-            if (!picked.valid || candidateProbability <= 0.0)
+            DirectLightSample picked = GenerateDirectLightSample(bsdfData, hitPos, wo, pixelPos, coherent, candidateSamples, sg);
+            if (!picked.Valid())
                 continue;
 
+            const LightingControlData ctrl = Bridge::getLightingControl();
+            const bool isEmissiveTriangle = picked.index >= ctrl.EnvmapQuadNodeCount + ctrl.AnalyticLightCount;
             const float visibilityDistance =
-                picked.kind == kLightProxyKindEmissiveTriangle ? picked.distance * 0.9985 : picked.distance;
+                isEmissiveTriangle ? picked.distance * 0.9985 : picked.distance;
             const float3 visibilityOrigin = MakeVisibilityOrigin(hitPos, faceNormal, bsdfData.N, picked.dir);
             const bool visible = TraceVisibilityRay(visibilityOrigin, picked.dir, visibilityDistance);
             if (!visible)
                 continue;
 
+            uint localCount, globalCount;
+            GetCandidateSampleCounts(Bridge::getLightingControl(), coherent && HasLocalLightSampling(Bridge::getLightingControl()),
+                                     candidateSamples, localCount, globalCount);
             float thisPdf, otherPdf, thisCount;
             ComputeLightSelectionPdfs(picked, localCount, globalCount, pixelPos, thisPdf, otherPdf, thisCount);
-            const float wrsScale = EvalLightSamplingMIS(1.0, thisPdf, 1.0, otherPdf) / (candidateProbability * thisCount);
-            const float misWeight  = ComputeLightVsBSDFMISForLightSample(picked, fullSamples, candidateSamples, thisPdf, otherPdf);
+            const float wrsScale = EvalLightSamplingMIS(1.0, thisPdf, 1.0, otherPdf) / thisCount;
+            // Recompute the selected PDF after visibility, as in RTXPT-fork ProcessLightSample.
+            const float bsdfPdf = EvalBSDFPdf(bsdfData, wo, picked.dir);
+            const float misWeight  = ComputeLightVsBSDFMISForLightSample(picked, fullSamples, candidateSamples, thisPdf, otherPdf, bsdfPdf);
             const float fadeOut    = ComputeShadowNoLFadeout(picked.dir, vertexNormal, shadowNoLFadeout);
             const float4 bsdfValue = EvalBSDFValue(bsdfData, wo, picked.dir);
             const float3 incidentRadiance = picked.radianceOverPdf * (fadeOut * wrsScale * misWeight / float(fullSamples));
@@ -155,7 +174,8 @@ namespace PathTracer
             const float ffThreshold = g_Const.ptConsts.fireflyFilterThreshold;
             if (ffThreshold != 0.0)
             {
-                const float neeK = ComputeNewScatterFireflyFilterK(fireflyFilterK, picked.proposalPdf, 1.0);
+                const float proposalPdf = picked.selectionPdf * picked.solidAnglePdf;
+                const float neeK = ComputeNewScatterFireflyFilterK(fireflyFilterK, proposalPdf, 1.0);
                 const float filter = FireflyFilterShort(Average(contribution), ffThreshold, neeK);
                 contribution *= filter;
             }

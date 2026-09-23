@@ -212,3 +212,54 @@ Use an existing CSV output directory. Disable NEE using port `--nee false` or
 upstream `--useNEE 0`. For the diagnostic, apply only the two port substitutions
 or the one upstream substitution described above, verify active compilation,
 then restore the original source and run the normal baseline again.
+
+## DirectLightSample alignment follow-up — 2026-09-23
+
+The subsequent implementation aligns candidate storage and normalization with
+upstream `LightSample` / `GenerateLightSample` / `ProcessLightSample`:
+
+- Remove `proposalPdf`, `bsdfPdf`, `kind` and `valid` from `DirectLightSample`.
+  `Valid()` derives validity from positive incident radiance. Empty candidates
+  carry the invalid light index. Source-level scalar components decrease from
+  16 to 12; this is not a measured physical-register count.
+- Candidate BSDF PDF is a temporary input to reservoir weight evaluation.
+  Recompute the selected sample's real PDF after visibility for final MIS.
+- Finish reservoir probability normalization in `GenerateDirectLightSample`,
+  before visibility. Reconstruct proposal PDF from selection and solid-angle
+  PDFs only where firefly filtering needs it.
+- Retain the existing zero-probability reservoir guard, replacement comparison
+  and shadow-distance policy. Derive triangle classification from the unified
+  light-index ranges instead of retaining `kind`. This is candidate-data-flow
+  alignment, not a claim that every NEE behavior now matches upstream.
+
+**This change regresses measured performance.** Both versions used the same
+Release executable and the settings above, with isolated original shaders in
+`nee4-before` and current source shaders for the aligned version. No constant-PDF
+diagnostic is active: real BSDF PDFs are evaluated for all candidate weights.
+
+| Condition | FILL before | FILL aligned | Increase | Total before | Total aligned |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| NEE-AT / 5, first pair | 7.266 | 7.727 | 0.460 | 11.724 | 12.141 |
+| NEE-AT / 5, repeat | 7.348 | 7.676 | 0.328 | 11.850 | 12.164 |
+| Power / 5 | 7.151 | 7.430 | 0.278 | 11.648 | 11.861 |
+
+All values are GPU milliseconds, last-1000-frame means. The average NEE-AT FILL
+increase across the two pairs is approximately 0.394 ms (5.4%). Fewer stored
+fields do not establish a speedup: the new flow also recomputes a selected PDF
+and changes normalization placement. These measurements do not isolate which
+of those changes or compiler decisions caused the regression. The alignment is
+retained as requested and must not be described as a performance optimization.
+
+Validation: Release build succeeded; six performance captures passed numeric,
+settings, stderr and shader-hash checks (3341–3636 rows each). Before/after
+closest-hit shader hashes differ; each NEE-AT repeat matches its corresponding
+first capture. D3D12 and Vulkan completed the existing 19-stage RR validation
+sequence, each reporting `failures=0`, 448 RR executions, 6 creates and 13 history
+resets. Vulkan's existing NRD/TAA/SR cases were skipped for the RGB10A2 UAV
+limitation; they are not claimed as passed. No image comparison was performed.
+
+Artifacts use `nee4-{before|after}-t{1|2}` and optional `-repeat` names in the same
+temporary directory. `nee4-run.py`, `nee4-repeat.ps1` and `nee4-audit.py` run and
+audit the comparison; `nee4-final-summary.json` contains the six captures and
+statistics. `nee4-build.log` and `nee4-regression-{d3d12|vk}.{out|err}.log` retain
+build and regression evidence. Upstream source was not modified in this follow-up.

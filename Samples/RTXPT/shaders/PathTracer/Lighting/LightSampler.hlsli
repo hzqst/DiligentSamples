@@ -13,15 +13,16 @@ struct DirectLightSample
     float3 dir;
     float  distance;
     float3 radianceOverPdf;
-    float  proposalPdf;
     float  selectionPdf;
     float  solidAnglePdf;
-    float  bsdfPdf;
-    uint   kind;
     uint   index;
-    bool   valid;
     bool   sampleableByBSDF;
     bool   fromLocalDistribution;
+
+    bool Valid()
+    {
+        return any(radianceOverPdf > 0.0);
+    }
 };
 
 DirectLightSample DirectLightSample_make_empty()
@@ -30,13 +31,9 @@ DirectLightSample DirectLightSample_make_empty()
     sample.dir              = float3(0.0, 1.0, 0.0);
     sample.distance         = 0.0;
     sample.radianceOverPdf  = float3(0.0, 0.0, 0.0);
-    sample.proposalPdf      = 0.0;
     sample.selectionPdf    = 0.0;
     sample.solidAnglePdf   = 0.0;
-    sample.bsdfPdf          = 0.0;
-    sample.kind            = kLightProxyKindAnalytic;
-    sample.index           = 0u;
-    sample.valid           = false;
+    sample.index           = RTXPT_INVALID_LIGHT_INDEX;
     sample.sampleableByBSDF = false;
     sample.fromLocalDistribution = false;
     return sample;
@@ -220,7 +217,7 @@ float ComputeLightVsBSDFMISForBSDF(uint2 pixelPos, uint lightIndex, float bsdfPd
     return EvalLightSamplingMIS(1.0, bsdfPdf, 1.0, lightPdf);
 }
 
-DirectLightSample GenerateDirectLightCandidate(StandardBSDFData bsdfData, float3 hitPos, float3 wo,
+DirectLightSample GenerateDirectLightCandidate(float3 hitPos,
                                                uint2 pixelPos, bool fromLocalDistribution, inout SampleGenerator sg)
 {
     DirectLightSample sample = DirectLightSample_make_empty();
@@ -256,11 +253,8 @@ DirectLightSample GenerateDirectLightCandidate(StandardBSDFData bsdfData, float3
         sample.dir = env.ToWorld(RTXPTEnvOctToDirEqualArea(uv));
         sample.distance = 100000.0; // RTXPT-fork DISTANT_LIGHT_DISTANCE.
         sample.solidAnglePdf = EnvironmentQuadSolidAnglePdf(light);
-        sample.proposalPdf = selectionPdf * sample.solidAnglePdf;
-        sample.radianceOverPdf = light.Radiance / sample.proposalPdf;
-        sample.kind = kLightProxyKindEnvironmentQuad;
+        sample.radianceOverPdf = light.Radiance / (selectionPdf * sample.solidAnglePdf);
         sample.index = lightIndex;
-        sample.valid = true;
         sample.sampleableByBSDF = true;
     }
     else if (lightIndex < analyticEnd)
@@ -276,11 +270,8 @@ DirectLightSample GenerateDirectLightCandidate(StandardBSDFData bsdfData, float3
         sample.dir              = light.dir;
         sample.distance         = light.distance;
         sample.radianceOverPdf  = light.radiance * max(g_Const.ptConsts.lightIntensityScale, 0.0) / lightPdf;
-        sample.proposalPdf      = lightPdf;
         sample.solidAnglePdf    = light.solidAnglePdf;
-        sample.kind             = kLightProxyKindAnalytic;
         sample.index            = lightIndex;
-        sample.valid            = true;
         sample.sampleableByBSDF = false;
     }
     else if (Bridge::getEmissiveTriangleCount() > 0u)
@@ -323,20 +314,10 @@ DirectLightSample GenerateDirectLightCandidate(StandardBSDFData bsdfData, float3
         sample.dir              = wi;
         sample.distance         = dist;
         sample.radianceOverPdf  = tri.radiance.rgb / trianglePdf;
-        sample.proposalPdf      = trianglePdf;
         sample.solidAnglePdf    = solidAnglePdf;
-        sample.kind             = kLightProxyKindEmissiveTriangle;
         sample.index            = lightIndex; // unified light index (used for temporal feedback)
-        sample.valid            = true;
         sample.sampleableByBSDF = true;
     }
-
-    // Evaluate the candidate PDF after the light-type branches reconverge, as in RTXPT-fork.
-    if (sample.valid)
-        sample.bsdfPdf = EvalBSDFPdf(bsdfData, wo, sample.dir);
-
-    if (!sample.valid || sample.bsdfPdf <= 0.0)
-        return DirectLightSample_make_empty();
 
     return sample;
 }
@@ -359,13 +340,15 @@ void InsertFeedbackFromNEE(uint2 pixelPos, uint lightIndex, float3 contribution,
     reservoir.Add(randomValue, lightIndex, feedbackWeight, coherent);
 }
 
-float EvalDirectLightCandidateWeight(DirectLightSample sample)
+float EvalDirectLightCandidateWeight(DirectLightSample sample, StandardBSDFData bsdfData, float3 wo)
 {
-    if (!sample.valid || sample.proposalPdf <= 0.0 || sample.bsdfPdf <= 0.0)
+    if (!sample.Valid())
         return 0.0;
 
+    // The PDF is a temporary weight input, not part of the reservoir candidate.
+    const float bsdfPdf = EvalBSDFPdf(bsdfData, wo, sample.dir);
     return max(sample.radianceOverPdf.x, max(sample.radianceOverPdf.y, sample.radianceOverPdf.z)) *
-        sample.bsdfPdf;
+        bsdfPdf;
 }
 
 #endif // __LIGHT_SAMPLER_HLSLI__
