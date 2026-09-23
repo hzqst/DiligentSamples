@@ -15,11 +15,11 @@ ConstantBuffer<SampleConstants>        g_Const;
 ConstantBuffer<SampleMiniConstants>    g_MiniConst;
 StructuredBuffer<SubInstanceData>      t_SubInstanceData;
 StructuredBuffer<PolymorphicLightInfo> t_Lights;
+StructuredBuffer<PolymorphicLightInfoEx> t_LightsEx;
 StructuredBuffer<LightingControlData>  t_LightingControl;
 StructuredBuffer<uint>                 t_LightProxyCounters;
 StructuredBuffer<uint>                 t_LightSamplingProxies;
 StructuredBuffer<uint>                 t_LocalSamplingBuffer;
-StructuredBuffer<EnvironmentQuadLight> t_EnvironmentLights;
 Texture2D<uint>                        t_EnvironmentLightLookup;
 RWTexture2D<float>                     u_FeedbackTotalWeight;
 RWTexture2D<uint>                      u_FeedbackCandidates;
@@ -28,7 +28,6 @@ Texture2D<float>                       t_EnvironmentImportanceMap;
 Texture2D<float4>                      t_EnvironmentRadianceMap;
 SamplerState                           s_EnvironmentMapSampler;
 SamplerState                           s_EnvironmentImportanceSampler;
-StructuredBuffer<EmissiveTriangle>     t_EmissiveTriangles;
 StructuredBuffer<PackedGeometryVertexData> t_VertexBuffer;
 StructuredBuffer<PackedGeometryVertexData> t_SkinnedVertexBuffer;
 #if RTXPT_INDEX_BUFFER_UINT16
@@ -217,9 +216,24 @@ namespace Bridge
         return t_LightingControl[0].AnalyticLightCount;
     }
 
-    PolymorphicLightInfo getLight(uint index)
+    PolymorphicLightInfoFull LoadLight(uint index)
     {
-        return t_Lights[index];
+        PolymorphicLightInfoFull light;
+        light.Base = t_Lights[index];
+        light.Extended = (PolymorphicLightInfoEx)0;
+        if (light.Base.HasLightShaping())
+            light.Extended = t_LightsEx[index];
+        return light;
+    }
+
+    AnalyticLightData getLight(uint index)
+    {
+        return UnpackAnalyticLight(LoadLight(t_LightingControl[0].EnvmapQuadNodeCount + index));
+    }
+
+    EnvironmentQuadLight getEnvironmentLight(uint index)
+    {
+        return UnpackEnvironmentLight(t_Lights[index]);
     }
 
     uint getEmissiveTriangleCount()
@@ -234,7 +248,8 @@ namespace Bridge
 
     EmissiveTriangle getEmissiveTriangle(uint index)
     {
-        return t_EmissiveTriangles[index];
+        const LightingControlData ctrl = t_LightingControl[0];
+        return UnpackTriangleLight(t_Lights[ctrl.EnvmapQuadNodeCount + ctrl.AnalyticLightCount + index]);
     }
 
     Ray computeCameraRay(const uint2 pixelPos)

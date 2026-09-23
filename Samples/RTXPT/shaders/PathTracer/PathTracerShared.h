@@ -291,8 +291,8 @@ static const uint kMaterialPathDecompositionFlagIgnoreMeshTangentSpace          
 static const uint kMaterialPathDecompositionFlagPSDDominantDeltaLobeP1Mask          = 0xF0u;
 static const uint kMaterialPathDecompositionFlagPSDDominantDeltaLobeP1Shift         = 4u;
 
-// Mirrors Diligent::PolymorphicLightInfo in RTXPTLights.hpp.
-struct PolymorphicLightInfo
+// Decoded analytic parameters; GPU storage uses Lighting/PolymorphicLight.h.
+struct AnalyticLightData
 {
     float4 colorType;
     float4 positionRadius;
@@ -308,9 +308,7 @@ static const uint kLightProxyKindAnalytic         = 0u;
 static const uint kLightProxyKindEmissiveTriangle = 1u;
 static const uint kLightProxyKindEnvironmentQuad = 2u;
 
-// Mirrors Diligent::EmissiveTriangle in RTXPTLights.hpp (total size 64 bytes). One world-space,
-// NEE-eligible emissive triangle (constant emitter). Stores base + two edges + radiance like
-// RTXPT-fork TriangleLight; the surface normal and area are recomputed on the fly.
+// Decoded triangle parameters, never a structured-buffer element.
 struct EmissiveTriangle
 {
     float4 base;     // xyz: world-space vertex 0 (.w unused)

@@ -40,9 +40,8 @@ struct LightProxyBuildConstants
 ConstantBuffer<LightProxyBuildConstants> g_LightProxyBuildConstants;
 
 RWStructuredBuffer<LightingControlData> u_LightingControl;     // GPU writes WeightsSumUINT/SamplingProxyCount/ProxyBuildTaskCount
-StructuredBuffer<PolymorphicLightInfo>  t_Lights;              // analytic lights
-StructuredBuffer<EmissiveTriangle>      t_EmissiveTriangles;   // emissive triangles (world-space, baked radiance)
-StructuredBuffer<EnvironmentQuadLight> t_EnvironmentLights;
+StructuredBuffer<PolymorphicLightInfo> t_Lights;
+StructuredBuffer<PolymorphicLightInfoEx> t_LightsEx;
 StructuredBuffer<uint> t_FeedbackCounts;
 StructuredBuffer<uint> t_HistoryRemapCurrentToPast;
 StructuredBuffer<float> t_HistoricLightWeights;
@@ -60,9 +59,9 @@ float ProxyLuminance(float3 c)
 }
 
 // RTXPT-fork sphere / point power, including the shaping flux factor.
-float ComputeAnalyticWeight(uint lightIndex)
+float ComputeAnalyticWeight(PolymorphicLightInfoFull packed)
 {
-    const PolymorphicLightInfo light = t_Lights[lightIndex];
+    const AnalyticLightData light = UnpackAnalyticLight(packed);
     const float luma             = ProxyLuminance(light.colorType.xyz);
     const float radius           = max(light.positionRadius.w, 0.0);
     const float shapingFlux = light.shaping.x < -0.5 ? 1.0 : (1.0 - light.shaping.x) * lerp(1.0, 0.5, light.shaping.y) * 0.5;
@@ -78,9 +77,9 @@ float ComputeAnalyticWeight(uint lightIndex)
 
 // Mirrors RTXPT-fork TriangleLight::GetPower (PolymorphicLight.hlsli) + ComputeWeight: power = area*PI*Luminance,
 // shaped by pow(.,0.8). radiance already includes the baked emissive texture (EmissiveTriangleBuild.hlsl).
-float ComputeEmissiveTriangleWeight(uint triIndex)
+float ComputeEmissiveTriangleWeight(PolymorphicLightInfo packed)
 {
-    const EmissiveTriangle tri = t_EmissiveTriangles[triIndex];
+    const EmissiveTriangle tri = UnpackTriangleLight(packed);
     const float3 ng    = cross(tri.edge1.xyz, tri.edge2.xyz);
     const float  area  = 0.5 * length(ng);
     const float  power = area * kLightProxyPi * ProxyLuminance(tri.radiance.rgb);
@@ -92,16 +91,20 @@ float ComputeEmissiveTriangleWeight(uint triIndex)
 
 float ComputeLightWeight(uint lightIndex)
 {
-    const uint envCount = u_LightingControl[0].EnvmapQuadNodeCount;
-    if (lightIndex < envCount)
+    PolymorphicLightInfoFull packed;
+    packed.Base = t_Lights[lightIndex];
+    packed.Extended = (PolymorphicLightInfoEx)0;
+    const uint type = DecodeLightType(packed.Base);
+    if (type == kPolymorphicLightTypeEnvironment)
     {
-        const float weight = pow(max(0.0, t_EnvironmentLights[lightIndex].Weight), 0.8);
+        const float weight = pow(max(0.0, asfloat(packed.Base.Scalars)), 0.8);
         return weight >= RTXPT_LIGHTING_MIN_WEIGHT_THRESHOLD ? weight : 0.0;
     }
-    lightIndex -= envCount;
-    if (lightIndex < g_LightProxyBuildConstants.AnalyticLightCount)
-        return ComputeAnalyticWeight(lightIndex);
-    return ComputeEmissiveTriangleWeight(lightIndex - g_LightProxyBuildConstants.AnalyticLightCount);
+    if (type == kPolymorphicLightTypeTriangle)
+        return ComputeEmissiveTriangleWeight(packed.Base);
+    if (packed.Base.HasLightShaping())
+        packed.Extended = t_LightsEx[lightIndex];
+    return ComputeAnalyticWeight(packed);
 }
 
 float ImportanceBooster(uint lightIndex, float weight)
@@ -111,19 +114,12 @@ float ImportanceBooster(uint lightIndex, float weight)
     if (constants.ImportanceBoostFrustumMul > 0.0)
     {
         float boostK = 0.5;
-        const uint localIndex = lightIndex - ctrl.EnvmapQuadNodeCount;
-        const bool analytic = localIndex < ctrl.AnalyticLightCount;
-        bool distant = lightIndex < ctrl.EnvmapQuadNodeCount;
-        if (!distant && analytic) distant = t_Lights[localIndex].colorType.w == kPolymorphicLightTypeDirectional;
+        const PolymorphicLightInfo light = t_Lights[lightIndex];
+        const uint type = DecodeLightType(light);
+        const bool distant = type == kPolymorphicLightTypeEnvironment || type == kPolymorphicLightTypeDirectional;
         if (!distant)
         {
-            float3 center;
-            if (analytic) center = t_Lights[localIndex].positionRadius.xyz;
-            else
-            {
-                const EmissiveTriangle tri = t_EmissiveTriangles[localIndex - ctrl.AnalyticLightCount];
-                center = tri.base.xyz + (tri.edge1.xyz + tri.edge2.xyz) / 3.0;
-            }
+            const float3 center = light.Center;
             float distanceMin = 0.0;
             [unroll] for (uint i = 0u; i < 5u; ++i)
             {

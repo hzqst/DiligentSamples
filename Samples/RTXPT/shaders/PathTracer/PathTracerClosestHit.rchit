@@ -306,5 +306,5 @@ void main(inout ActiveRayPayload Payload,
 // and are importance-sampled per-triangle proportional to power via the GPU proxy build (LightProxyBuild.hlsl).
 // Deviations from RTXPT-fork: the per-triangle proxy scatter uses a single atomic running offset instead of
 // upstream's prefix-sum + task system (identical proxy distribution); emissive triangles live in a separate
-// buffer rather than the unified PolymorphicLightInfo light buffer; and the proxy build runs on scene/lights
+// buffer rather than the unified AnalyticLightData light buffer; and the proxy build runs on scene/lights
 // change rather than every frame, so animated emissive radiance is not re-weighted per frame.

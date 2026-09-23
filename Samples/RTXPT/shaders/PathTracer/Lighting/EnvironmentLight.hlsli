@@ -2,9 +2,9 @@
 #define __ENVIRONMENT_LIGHT_HLSLI__
 
 #include "EnvironmentLightConfig.h"
+#include "LightPacking.hlsli"
 
-// Same node/radiance/power semantics as RTXPT-fork EnvironmentQuadLight;
-// the Diligent buffer retains full precision instead of polymorphic light packing.
+// Decoded environment node. GPU records use PolymorphicLightInfo.
 struct EnvironmentQuadLight
 {
     uint NodeX;
@@ -14,6 +14,28 @@ struct EnvironmentQuadLight
     float3 Radiance;
     float Weight;
 };
+
+PolymorphicLightInfo PackEnvironmentLight(EnvironmentQuadLight light)
+{
+    PolymorphicLightInfo packed = (PolymorphicLightInfo)0;
+    packed.Direction1 = (light.NodeX << 16u) | light.NodeY;
+    packed.Direction2 = light.NodeDim << 16u;
+    packed.Scalars = asuint(light.Weight);
+    packed.ColorTypeAndFlags = kPolymorphicLightTypeEnvironment << kPolymorphicLightTypeShift;
+    PackLightColor(light.Radiance, packed);
+    return packed;
+}
+
+EnvironmentQuadLight UnpackEnvironmentLight(PolymorphicLightInfo packed)
+{
+    EnvironmentQuadLight light = (EnvironmentQuadLight)0;
+    light.NodeX = packed.Direction1 >> 16u;
+    light.NodeY = packed.Direction1 & 0xffffu;
+    light.NodeDim = packed.Direction2 >> 16u;
+    light.Weight = asfloat(packed.Scalars);
+    light.Radiance = UnpackLightColor(packed);
+    return light;
+}
 
 uint EQTNodePack(uint dim, uint x, uint y)
 {

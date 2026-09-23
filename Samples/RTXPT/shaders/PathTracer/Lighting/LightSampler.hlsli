@@ -242,12 +242,14 @@ DirectLightSample GenerateDirectLightCandidate(float3 hitPos,
     sample.selectionPdf = selectionPdf;
     sample.fromLocalDistribution = fromLocalDistribution;
 
+    const PolymorphicLightInfoFull packedLight = Bridge::LoadLight(lightIndex);
+    const uint lightType = DecodeLightType(packedLight.Base);
     const uint analyticEnd = ctrl.EnvmapQuadNodeCount + ctrl.AnalyticLightCount;
-    if (lightIndex < ctrl.EnvmapQuadNodeCount)
+    if (lightType == kPolymorphicLightTypeEnvironment)
     {
         if ((g_Const.ptConsts.environmentNEEEnabled & 1u) == 0u)
             return DirectLightSample_make_empty();
-        const EnvironmentQuadLight light = t_EnvironmentLights[lightIndex];
+        const EnvironmentQuadLight light = UnpackEnvironmentLight(packedLight.Base);
         const float2 uv = (float2(light.NodeX, light.NodeY) + sampleNext2D(sg)) / float(light.NodeDim);
         EnvMapSampler env = RTXPTCreateEnvMapSampler(Bridge::getEnvMapConstants());
         sample.dir = env.ToWorld(RTXPTEnvOctToDirEqualArea(uv));
@@ -257,9 +259,9 @@ DirectLightSample GenerateDirectLightCandidate(float3 hitPos,
         sample.index = lightIndex;
         sample.sampleableByBSDF = true;
     }
-    else if (lightIndex < analyticEnd)
+    else if (lightType != kPolymorphicLightTypeTriangle)
     {
-        const LightSample light = SampleAnalyticLight(Bridge::getLight(lightIndex - ctrl.EnvmapQuadNodeCount), sampleNext2D(sg), hitPos);
+        const LightSample light = SampleAnalyticLight(UnpackAnalyticLight(packedLight), sampleNext2D(sg), hitPos);
         if (!light.valid || light.solidAnglePdf <= 0.0)
             return sample;
 
@@ -284,7 +286,7 @@ DirectLightSample GenerateDirectLightCandidate(float3 hitPos,
         const uint triIndex = lightIndex - analyticEnd;
         if (triIndex >= triCount)
             return sample;
-        const EmissiveTriangle tri = Bridge::getEmissiveTriangle(triIndex);
+        const EmissiveTriangle tri = UnpackTriangleLight(packedLight.Base);
 
         const float3 ng    = cross(tri.edge1.xyz, tri.edge2.xyz);
         const float  ngLen = length(ng);

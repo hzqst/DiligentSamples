@@ -672,7 +672,7 @@ namespace PathTracer
                 t_EnvironmentLightLookup.GetDimensions(width, height);
                 const uint2 texel = min(uint2(RTXPTDirToOctEqualArea(envSampler.ToLocal(rayDir)) * float2(width, height)), uint2(width, height) - 1u);
                 lightIndex = t_EnvironmentLightLookup.Load(int3(texel, 0));
-                solidAnglePdf = EnvironmentQuadSolidAnglePdf(t_EnvironmentLights[lightIndex]);
+                solidAnglePdf = EnvironmentQuadSolidAnglePdf(Bridge::getEnvironmentLight(lightIndex));
             }
             environmentEmission *= ComputeLightVsBSDFMISForBSDF(path.GetPixelPos(), lightIndex, path.GetBsdfScatterPdf(),
                 solidAnglePdf, prevMISInfo.CandidateSamples, prevMISInfo.FullSamples, prevMISInfo.LightSamplingIsSSC);

@@ -58,9 +58,8 @@ public:
     // pControl must be a DEFAULT (UAV) buffer; the pass writes WeightsSumUINT/SamplingProxyCount/ProxyBuildTaskCount.
     bool Build(IDeviceContext* pContext,
                IBuffer*        pControl,
-               IBuffer*        pAnalyticLights,
-               IBuffer*        pEmissiveTriangles,
-               IBuffer*        pEnvironmentLights,
+               IBuffer*        pLights,
+               IBuffer*        pLightsEx,
                IBuffer*        pFeedbackCounts,
                IBuffer*        pLightWeights,
                IBuffer*        pLightProxyCounters,
@@ -76,9 +75,8 @@ private:
     bool CreatePSO(IRenderStateCache* pStateCache, IShader* pCS, const char* Name, RefCntAutoPtr<IPipelineState>& PSO, RefCntAutoPtr<IShaderResourceBinding>& SRB);
     bool BindResources(IShaderResourceBinding* pSRB,
                        IBuffer*                pControl,
-                       IBuffer*                pAnalyticLights,
-                       IBuffer*                pEmissiveTriangles,
-                       IBuffer*                pEnvironmentLights,
+                       IBuffer*                pLights,
+                       IBuffer*                pLightsEx,
                        IBuffer*                pFeedbackCounts,
                        IBuffer*                pLightWeights,
                        IBuffer*                pLightProxyCounters,

@@ -2,6 +2,7 @@
 #define __EMISSIVE_TRIANGLE_BUILD_HLSL__
 
 #include "PathTracerShared.h"
+#include "Lighting/LightPacking.hlsli"
 
 struct EmissiveTriangleBuildConstants
 {
@@ -17,7 +18,7 @@ StructuredBuffer<float4x4>           t_SubInstanceTransforms;
 StructuredBuffer<PackedGeometryVertexData> t_VertexBuffer;
 StructuredBuffer<PackedGeometryVertexData> t_SkinnedVertexBuffer;
 Buffer<uint>                         t_IndexBuffer;
-RWStructuredBuffer<EmissiveTriangle> u_EmissiveTriangles;
+RWStructuredBuffer<PolymorphicLightInfo> u_EmissiveTriangles;
 
 #ifdef ENABLE_MATERIAL_TEXTURES
 // One Texture2DArray per loaded GLTF texture, mirroring Rendering/Materials/MaterialBridge.hlsli.
@@ -166,7 +167,7 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
         tri.edge1    = float4(edge1, 0.0);
         tri.edge2    = float4(edge2, 0.0);
         tri.radiance = float4(radiance, 0.0);
-        u_EmissiveTriangles[subInstance.emissiveTriangleOffset + localPrimitiveIndex] = tri;
+        u_EmissiveTriangles[subInstance.emissiveTriangleOffset + localPrimitiveIndex] = PackTriangleLight(tri);
     }
 }
 

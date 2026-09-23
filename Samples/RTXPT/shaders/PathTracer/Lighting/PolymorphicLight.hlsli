@@ -78,7 +78,7 @@ float3 SampleConeUniform(float2 random, float3 axis, float cosThetaMax, out floa
     return normalize(tangent * (cosPhi * sinTheta) + bitangent * (sinPhi * sinTheta) + axis * cosTheta);
 }
 
-float EvalSpotFalloff(PolymorphicLightInfo light, float3 dirToLight)
+float EvalSpotFalloff(AnalyticLightData light, float3 dirToLight)
 {
     if (light.shaping.x < -0.5)
         return 1.0;
@@ -92,7 +92,7 @@ float EvalSpotFalloff(PolymorphicLightInfo light, float3 dirToLight)
                                   (cosTheta >= light.shaping.x ? 1.0 : 0.0);
 }
 
-LightSample SampleSphereLight(PolymorphicLightInfo light, float2 random, float3 surfacePos)
+LightSample SampleSphereLight(AnalyticLightData light, float2 random, float3 surfacePos)
 {
     const float3 radiance  = max(light.colorType.rgb, float3(0.0, 0.0, 0.0));
     const float  maxEnergy = max(radiance.x, max(radiance.y, radiance.z));
@@ -139,7 +139,7 @@ LightSample SampleSphereLight(PolymorphicLightInfo light, float2 random, float3 
     return ls;
 }
 
-LightSample SampleDirectionalLight(PolymorphicLightInfo light, float2 random)
+LightSample SampleDirectionalLight(AnalyticLightData light, float2 random)
 {
     const float3 radiance  = max(light.colorType.rgb, float3(0.0, 0.0, 0.0));
     const float  maxEnergy = max(radiance.x, max(radiance.y, radiance.z));
@@ -163,7 +163,7 @@ LightSample SampleDirectionalLight(PolymorphicLightInfo light, float2 random)
     return ls;
 }
 
-LightSample SamplePointLight(PolymorphicLightInfo light, float3 surfacePos)
+LightSample SamplePointLight(AnalyticLightData light, float3 surfacePos)
 {
     const float3 toLight = light.positionRadius.xyz - surfacePos;
     const float  distSq  = dot(toLight, toLight);
@@ -189,7 +189,7 @@ LightSample SamplePointLight(PolymorphicLightInfo light, float3 surfacePos)
     return ls;
 }
 
-LightSample SampleAnalyticLight(PolymorphicLightInfo light, float2 random, float3 surfacePos)
+LightSample SampleAnalyticLight(AnalyticLightData light, float2 random, float3 surfacePos)
 {
     if (light.colorType.w < 0.0)
         return LightSample_make_empty();

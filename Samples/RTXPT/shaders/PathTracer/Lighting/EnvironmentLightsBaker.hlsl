@@ -6,7 +6,7 @@
 StructuredBuffer<LightingControlData> t_LightingControl;
 Texture2D<float4> t_EnvironmentRadianceMap;
 RWStructuredBuffer<uint> u_EnvironmentBaseNodes;
-RWStructuredBuffer<EnvironmentQuadLight> u_EnvironmentLights;
+RWStructuredBuffer<PolymorphicLightInfo> u_EnvironmentLights;
 VK_IMAGE_FORMAT("r32ui") RWTexture2D<uint> u_EnvironmentLightLookup;
 
 #define ENV_LIGHTS_BAKE_THREADS 128
@@ -92,14 +92,14 @@ void EnvLightsSubdivideBoost(uint threadIndex : SV_GroupIndex, uint3 group : SV_
         light.Radiance = value.rgb * constants.EnvMapParams.ColorMultiplier * constants.EnvMapParams.Enabled;
         const float avgColor = dot(constants.EnvMapParams.ColorMultiplier, float3(1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0));
         light.Weight = float(1u << (mip * 2u)) * max(0.0, value.a * avgColor * constants.DistantVsLocalRelativeImportance) * constants.EnvMapParams.Enabled;
-        u_EnvironmentLights[group.x * RTXPT_NEEAT_ENVMAP_QT_BOOST_NODES_MULT + threadIndex] = light;
+        u_EnvironmentLights[group.x * RTXPT_NEEAT_ENVMAP_QT_BOOST_NODES_MULT + threadIndex] = PackEnvironmentLight(light);
     }
 }
 
 [numthreads(8, 8, 1)]
 void EnvLightsFillLookupMap(uint3 group : SV_GroupID, uint3 threadIndex : SV_GroupThreadID)
 {
-    const EnvironmentQuadLight light = u_EnvironmentLights[group.x];
+    const EnvironmentQuadLight light = UnpackEnvironmentLight(u_EnvironmentLights[group.x]);
     const uint scale = t_LightingControl[0].BakerConstants.EnvMapImportanceMapResolution / light.NodeDim;
     for (uint y = threadIndex.y; y < scale; y += 8u)
         for (uint x = threadIndex.x; x < scale; x += 8u)

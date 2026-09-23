@@ -13,6 +13,7 @@
 #include "../src/RTXPTLightFeedback.hpp"
 #include "../src/RTXPTLightProxyBuildPass.hpp"
 #include "../src/RTXPTLightHistory.hpp"
+#include "../src/RTXPTLightPacking.hpp"
 using namespace Diligent;
 using uint     = Uint32;
 using float3x4 = std::array<float4, 3>;
@@ -207,17 +208,8 @@ try
     {
         const Uint32 LightCount = Case == 4 ? 70000u : 8u;
         const Uint32 Budget     = Case == 4 ? LightCount : 400000u;
-        struct Quad
-        {
-            Uint32 X, Y, Dim, Padding;
-            float4 RadianceAndWeight;
-        };
-        std::vector<Quad> Quads(LightCount);
-        struct AnalyticLight
-        {
-            float4 ColorType, PositionRadius, DirectionRange, Shaping;
-        };
-        std::vector<AnalyticLight> AnalyticLights(LightCount);
+        std::vector<PolymorphicLightInfo>   Lights(LightCount);
+        std::vector<PolymorphicLightInfoEx> Extensions(LightCount);
         float                      WeightSum = 0.0f;
         std::vector<float>         BaseWeights(LightCount);
         for (Uint32 I = 0; I < LightCount; ++I)
@@ -226,13 +218,21 @@ try
             if (Case >= 5)
             {
                 const float Radiance = float(I + 1);
-                AnalyticLights[I]    = {float4{Radiance, Radiance, Radiance, Case == 5 ? 0.0f : 4.0f},
-                                     float4{0, 0, 0, 0.5f}, float4{0, 0, 1, 0},
-                                     Case == 7 ? float4{0.5f, 0.25f, 0, 0} : float4{-1, 0, 0, 0}};
+                const AnalyticLightData Source   = {float4{Radiance, Radiance, Radiance, Case == 5 ? 0.0f : 4.0f},
+                                                  float4{0, 0, 0, 0.5f}, float4{0, 0, 1, 0},
+                                                  Case == 7 ? float4{0.5f, 0.25f, 0, 0} : float4{-1, 0, 0, 0}};
+                const auto              Packed   = PackAnalyticLight(Source);
+                Lights[I]                        = Packed.Base;
+                Extensions[I]                    = Packed.Extended;
+                const float     DecodedRadiance  = std::exp2(float((Packed.Base.LogRadiance & 0xffffu) - 1u) / 65534.0f * 48.0f - 8.0f) * float(Packed.Base.ColorTypeAndFlags & 255u) / 255.0f;
                 constexpr float Pi   = 3.14159265358979323846f;
-                Power                = (Case == 5 ? Pi * Pi : 4.0f * Pi) * Radiance * (Case == 7 ? 0.21875f : 1.0f);
+                Power                            = (Case == 5 ? Pi * Pi : 4.0f * Pi) * DecodedRadiance * (Case == 7 ? 0.21875f : 1.0f);
             }
-            Quads[I].RadianceAndWeight.w = Power;
+            else
+            {
+                Lights[I].ColorTypeAndFlags = 5u << 24u;
+                std::memcpy(&Lights[I].Scalars, &Power, sizeof(Power));
+            }
             BaseWeights[I]               = std::pow(Power, 0.8f);
             WeightSum += BaseWeights[I];
         }
@@ -244,16 +244,15 @@ try
         Control.LastFrameTemporalFeedbackAvailable = Case == 3;
         Control.GlobalFeedbackUseWeight            = 0.9f;
         auto                ControlBuffer          = Buffer(sizeof(Control), sizeof(Control), &Control);
-        auto                Env                    = Buffer(LightCount * sizeof(Quad), sizeof(Quad), Quads.data());
-        auto                Dummy                  = Buffer(64, 64, nullptr);
-        auto                Analytic               = Buffer(LightCount * sizeof(AnalyticLight), sizeof(AnalyticLight), AnalyticLights.data());
+        auto                LightBuffer            = Buffer(LightCount * sizeof(PolymorphicLightInfo), sizeof(PolymorphicLightInfo), Lights.data());
+        auto                ExtensionBuffer        = Buffer(LightCount * sizeof(PolymorphicLightInfoEx), sizeof(PolymorphicLightInfoEx), Extensions.data());
         auto                LightWeights           = Buffer(LightCount * 4, 4, nullptr);
         auto                Counts                 = Buffer(LightCount * 4, 4, nullptr);
         auto                Table                  = Buffer(Budget * 4, 4, nullptr);
         std::vector<Uint32> FeedbackCounts(LightCount + 1u);
         FeedbackCounts[7]  = Pixels;
         auto HistoryCounts = Buffer(static_cast<Uint32>(FeedbackCounts.size()) * 4, 4, FeedbackCounts.data());
-        Require(ProxyBuild.Build(Context, ControlBuffer, Analytic, Dummy, Env, HistoryCounts, LightWeights, Counts, Table,
+        Require(ProxyBuild.Build(Context, ControlBuffer, LightBuffer, ExtensionBuffer, HistoryCounts, LightWeights, Counts, Table,
                                  LightCount, Control.AnalyticLightCount, Budget, Case == 4 ? 0 : 2),
                 "Proxy build failed");
         const auto   ActualControl = Read(ControlBuffer);
@@ -281,25 +280,30 @@ try
     {
         RTXPTLightProxyBuildPass Boost;
         Require(Boost.Initialize(Device, Factory, nullptr), "Cannot initialize importance boost");
-        struct Quad
-        {
-            Uint32 X, Y, Dim, Pad;
-            float4 RadianceAndWeight;
-        };
-        Quad Node{0, 0, 1, 0, float4{1, 1, 1, 1}};
-        struct Light
-        {
-            float4 Color, Position, Direction, Shaping;
-        };
         constexpr float     Pi               = 3.14159265358979323846f;
         const float         Radiance         = 1.0f / (4.0f * Pi);
-        Light               Lights[]         = {{float4{Radiance, Radiance, Radiance, 4}, {}, {}, float4{-1, 0, 0, 0}},
-                          {float4{Radiance, Radiance, Radiance, 4}, float4{-2.5f, 0, 0, 0}, {}, float4{-1, 0, 0, 0}}};
+        AnalyticLightData      Sources[]        = {{float4{Radiance, Radiance, Radiance, 4}, {}, {}, float4{-1, 0, 0, 0}},
+                                       {float4{Radiance, Radiance, Radiance, 4}, float4{-2.5f, 0, 0, 0}, {}, float4{-1, 0, 0, 0}}};
         const float         TriangleRadiance = 2.0f / Pi;
-        const float4        Triangle[]       = {{0, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {TriangleRadiance, TriangleRadiance, TriangleRadiance, 0}};
-        auto                Env              = Buffer(sizeof(Node), sizeof(Node), &Node);
-        auto                Analytic         = Buffer(sizeof(Lights), sizeof(Light), Lights);
-        auto                Triangles        = Buffer(sizeof(Triangle), sizeof(Triangle), Triangle);
+        PolymorphicLightInfo   Lights[4]        = {};
+        PolymorphicLightInfoEx Extensions[4]    = {};
+        Lights[0].ColorTypeAndFlags             = 5u << 24u;
+        const float EnvPower                    = 1.0f;
+        std::memcpy(&Lights[0].Scalars, &EnvPower, 4);
+        Lights[1]                   = PackAnalyticLight(Sources[0]).Base;
+        Lights[2]                   = PackAnalyticLight(Sources[1]).Base;
+        Lights[3].ColorTypeAndFlags = 1u << 24u;
+        Lights[3].Center            = float3{0, 1.0f / 3.0f, 1.0f / 3.0f};
+        Lights[3].Direction2        = 0x3c00u;     // edge1.y = 1
+        Lights[3].Scalars           = 0x3c000000u; // edge2.z = 1
+        PackLightColor(float3{TriangleRadiance, TriangleRadiance, TriangleRadiance}, Lights[3]);
+        auto DecodeRadiance = [](const PolymorphicLightInfo& Light) {
+            return std::exp2(float((Light.LogRadiance & 0xffffu) - 1u) / 65534.0f * 48.0f - 8.0f) * float(Light.ColorTypeAndFlags & 255u) / 255.0f;
+        };
+        const float         PointWeight     = std::pow(DecodeRadiance(Lights[1]) * 4.0f * Pi, 0.8f);
+        const float         TriangleWeight  = std::pow(DecodeRadiance(Lights[3]) * 0.5f * Pi, 0.8f);
+        auto                LightBuffer     = Buffer(sizeof(Lights), sizeof(PolymorphicLightInfo), Lights);
+        auto                ExtensionBuffer = Buffer(sizeof(Extensions), sizeof(PolymorphicLightInfoEx), Extensions);
         auto                WeightsBuffer = Buffer(16, 4, nullptr), Counts = Buffer(16, 4, nullptr), Table = Buffer(40000, 4, nullptr);
         const Uint32        Zeros[5]       = {};
         auto                FeedbackCounts = Buffer(sizeof(Zeros), 4, Zeros);
@@ -320,20 +324,22 @@ try
         {
             if (Frame == 1)
             {
-                Node.RadianceAndWeight.w = std::pow(2.0f, 1.0f / 0.8f);
-                Lights[0].Position.x     = -10.0f;
-                Lights[1].Position.x     = 0.0f;
-                Context->UpdateBuffer(Env, 0, sizeof(Node), &Node, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-                Context->UpdateBuffer(Analytic, 0, sizeof(Lights), Lights, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+                const float Power = std::pow(2.0f, 1.0f / 0.8f);
+                std::memcpy(&Lights[0].Scalars, &Power, 4);
+                Lights[1].Center.x = -10.0f;
+                Lights[2].Center.x = 0.0f;
+                Context->UpdateBuffer(LightBuffer, 0, sizeof(Lights), Lights, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
                 Control.LastFrameTemporalFeedbackAvailable = 1;
             }
             Control.BakerConstants.FrustumPlanes[0] = Frame == 1 ? float4{} : FramePlanes[0];
             Context->UpdateBuffer(ControlBuffer, 0, sizeof(Control), &Control, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-            Require(Boost.Build(Context, ControlBuffer, Analytic, Triangles, Env, FeedbackCounts, WeightsBuffer, Counts, Table, 4, 2, 10000, 2, Frame == 1 ? Remap.RawPtr() : nullptr, Frame == 1 ? FramePlanes : nullptr), "Importance boost build");
+            Require(Boost.Build(Context, ControlBuffer, LightBuffer, ExtensionBuffer, FeedbackCounts, WeightsBuffer, Counts, Table, 4, 2, 10000, 2, Frame == 1 ? Remap.RawPtr() : nullptr, Frame == 1 ? FramePlanes : nullptr), "Importance boost build");
             const auto Bits = Read(WeightsBuffer);
             float      Actual[4];
             std::memcpy(Actual, Bits.data(), sizeof(Actual));
-            const float Expected[3][4] = {{5, 9, 5, 9}, {298, 1, 585, 9}, {10, 1, 9, 9}};
+            const float Expected[3][4] = {{5, 9 * PointWeight, 5 * PointWeight, 9 * TriangleWeight},
+                                          {298, PointWeight, 585 * PointWeight, 9 * TriangleWeight},
+                                          {10, PointWeight, 9 * PointWeight, 9 * TriangleWeight}};
             for (Uint32 I = 0; I < 4; ++I)
                 Require(std::abs(Expected[Frame][I] - Actual[I]) < 0.002f, "Frustum / intensity delta / historical boosted weight mismatch");
         }
@@ -352,15 +358,16 @@ try
         ChangedTopology[1].Count = 1;
         BuildLightHistoryMaps(ChangedTopology, Old, 6, 6, Forward, Reverse);
         Require(Forward[3] == ~0u && Reverse[2] == ~0u && Reverse[3] == ~0u, "Changed topology must invalidate the old triangle range");
-        struct Quad
+        PolymorphicLightInfo Nodes[2] = {};
+        for (Uint32 I = 0; I < 2; ++I)
         {
-            Uint32 X, Y, Dim, Pad;
-            float4 Radiance;
-        };
-        const Quad                 Nodes[]   = {{0, 0, 2, 0, {}}, {1, 0, 2, 0, {}}};
-        const Quad                 Swapped[] = {Nodes[1], Nodes[0]};
-        auto                       Env       = Buffer(sizeof(Nodes), sizeof(Quad), Nodes);
-        auto                       NewEnv    = Buffer(sizeof(Swapped), sizeof(Quad), Swapped);
+            Nodes[I].ColorTypeAndFlags = 5u << 24u;
+            Nodes[I].Direction1        = I << 16u;
+            Nodes[I].Direction2        = 2u << 16u;
+        }
+        const PolymorphicLightInfo Swapped[] = {Nodes[1], Nodes[0]};
+        auto                       Env       = Buffer(sizeof(Nodes), sizeof(PolymorphicLightInfo), Nodes);
+        auto                       NewEnv    = Buffer(sizeof(Swapped), sizeof(PolymorphicLightInfo), Swapped);
         std::array<Uint32, Pixels> Lookup{}, NewLookup{};
         for (Uint32 I = 0; I < Pixels; ++I)
         {

@@ -107,7 +107,7 @@ bool RTXPTLightProxyBuildPass::CreatePSO(IRenderStateCache*                     
         .AddVariable(SHADER_TYPE_COMPUTE, "g_LightProxyBuildConstants", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_LightingControl", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "t_Lights", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
-        .AddVariable(SHADER_TYPE_COMPUTE, "t_EmissiveTriangles", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
+        .AddVariable(SHADER_TYPE_COMPUTE, "t_LightsEx", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_LightWeights", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_LightProxyCounters", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_LightSamplingProxies", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC);
@@ -197,9 +197,8 @@ bool RTXPTLightProxyBuildPass::Initialize(IRenderDevice* pDevice, IEngineFactory
 
 bool RTXPTLightProxyBuildPass::BindResources(IShaderResourceBinding* pSRB,
                                              IBuffer*                pControl,
-                                             IBuffer*                pAnalyticLights,
-                                             IBuffer*                pEmissiveTriangles,
-                                             IBuffer*                pEnvironmentLights,
+                                             IBuffer*                pLights,
+                                             IBuffer*                pLightsEx,
                                              IBuffer*                pFeedbackCounts,
                                              IBuffer*                pLightWeights,
                                              IBuffer*                pLightProxyCounters,
@@ -221,9 +220,8 @@ bool RTXPTLightProxyBuildPass::BindResources(IShaderResourceBinding* pSRB,
 
     return SetVar("g_LightProxyBuildConstants", m_Constants) &&
         SetVar("u_LightingControl", pControl->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS)) &&
-        SetVar("t_Lights", pAnalyticLights->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE)) &&
-        SetVar("t_EmissiveTriangles", pEmissiveTriangles->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE)) &&
-        SetVar("t_EnvironmentLights", pEnvironmentLights->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE)) &&
+        SetVar("t_Lights", pLights->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE)) &&
+        SetVar("t_LightsEx", pLightsEx->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE)) &&
         SetVar("u_ProxyJobs", m_ProxyJobs->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS)) &&
         SetVar("u_ProxyDispatchArgs", m_ProxyDispatchArgs->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS)) &&
         SetVar("t_FeedbackCounts", pFeedbackCounts->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE)) &&
@@ -236,9 +234,8 @@ bool RTXPTLightProxyBuildPass::BindResources(IShaderResourceBinding* pSRB,
 
 bool RTXPTLightProxyBuildPass::Build(IDeviceContext* pContext,
                                      IBuffer*        pControl,
-                                     IBuffer*        pAnalyticLights,
-                                     IBuffer*        pEmissiveTriangles,
-                                     IBuffer*        pEnvironmentLights,
+                                     IBuffer*        pLights,
+                                     IBuffer*        pLightsEx,
                                      IBuffer*        pFeedbackCounts,
                                      IBuffer*        pLightWeights,
                                      IBuffer*        pLightProxyCounters,
@@ -252,8 +249,8 @@ bool RTXPTLightProxyBuildPass::Build(IDeviceContext* pContext,
 {
     if (!m_Ready || pContext == nullptr || TotalLightCount == 0u)
         return false;
-    if (pControl == nullptr || pAnalyticLights == nullptr || pEmissiveTriangles == nullptr ||
-        pEnvironmentLights == nullptr || pLightWeights == nullptr || pLightProxyCounters == nullptr || pLightSamplingProxies == nullptr)
+    if (pControl == nullptr || pLights == nullptr || pLightsEx == nullptr ||
+        pLightWeights == nullptr || pLightProxyCounters == nullptr || pLightSamplingProxies == nullptr)
         return false;
 
     m_HistoryRemap = pHistoryRemapCurrentToPast;
@@ -306,11 +303,11 @@ bool RTXPTLightProxyBuildPass::Build(IDeviceContext* pContext,
     }
     if (!m_ProxyJobs || !m_ProxyDispatchArgs) return false;
 
-    if (!BindResources(m_FinalizeSRB, pControl, pAnalyticLights, pEmissiveTriangles, pEnvironmentLights, pFeedbackCounts, pLightWeights, pLightProxyCounters, pLightSamplingProxies) ||
-        !BindResources(m_ResetSRB, pControl, pAnalyticLights, pEmissiveTriangles, pEnvironmentLights, pFeedbackCounts, pLightWeights, pLightProxyCounters, pLightSamplingProxies) ||
-        !BindResources(m_WeightsSRB, pControl, pAnalyticLights, pEmissiveTriangles, pEnvironmentLights, pFeedbackCounts, pLightWeights, pLightProxyCounters, pLightSamplingProxies) ||
-        !BindResources(m_CountsSRB, pControl, pAnalyticLights, pEmissiveTriangles, pEnvironmentLights, pFeedbackCounts, pLightWeights, pLightProxyCounters, pLightSamplingProxies) ||
-        !BindResources(m_ScatterSRB, pControl, pAnalyticLights, pEmissiveTriangles, pEnvironmentLights, pFeedbackCounts, pLightWeights, pLightProxyCounters, pLightSamplingProxies))
+    if (!BindResources(m_FinalizeSRB, pControl, pLights, pLightsEx, pFeedbackCounts, pLightWeights, pLightProxyCounters, pLightSamplingProxies) ||
+        !BindResources(m_ResetSRB, pControl, pLights, pLightsEx, pFeedbackCounts, pLightWeights, pLightProxyCounters, pLightSamplingProxies) ||
+        !BindResources(m_WeightsSRB, pControl, pLights, pLightsEx, pFeedbackCounts, pLightWeights, pLightProxyCounters, pLightSamplingProxies) ||
+        !BindResources(m_CountsSRB, pControl, pLights, pLightsEx, pFeedbackCounts, pLightWeights, pLightProxyCounters, pLightSamplingProxies) ||
+        !BindResources(m_ScatterSRB, pControl, pLights, pLightsEx, pFeedbackCounts, pLightWeights, pLightProxyCounters, pLightSamplingProxies))
     {
         UNEXPECTED("Failed to bind RTXPT light proxy build resources");
         return false;

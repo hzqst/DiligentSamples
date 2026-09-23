@@ -139,6 +139,11 @@ Hard constraints:
 
 ### T-D. Lighting Layer (`Lighting/PolymorphicLight.hlsli`, `Lighting/EnvMap.hlsli`)
 
+The packed-storage migration supersedes the historical unpacked-light field
+rename tables below. GPU storage now follows upstream's 32-byte
+`PolymorphicLightInfo` plus separate 16-byte `PolymorphicLightInfoEx`; see
+[storage, validation and performance notes](tests/PACKED_LIGHT_STORAGE_PERFORMANCE.md).
+
 | Current | New | Notes |
 |---|---|---|
 | `struct RTXPTLightSample` | `struct LightSample` = RTXPT-fork | |
@@ -147,9 +152,9 @@ Hard constraints:
 | `RTXPTNormalizeDirection` | `tryNormalize` (style) | |
 | `RTXPTEvalAnalyticLight(Light, SurfacePos)` | `SampleAnalyticLight(light, random, surfacePos)` (style) | |
 | `RTXPTEvalSky(RayDir)` | `EnvMapSampler::Eval(worldDir, lod)` | R4 routes miss and env NEE through baked env-map resources; procedural sky is a source/fallback path |
-| `TriangleLight` (struct) | `EmissiveTriangle` (R2/G4 backing layout) | base+edge1+edge2+radiance; normal/area recomputed; radiance baked from `emissiveFactor * emissiveTexture` (textured emitters supported) |
+| `TriangleLight` (struct) | `Lighting/LightPacking.hlsli` + decoded `EmissiveTriangle` | Packed GPU record: FP32 centroid, three FP16 edge pairs, RGB8/log16 radiance. `EmissiveTriangle` is now a local decoded value, not a storage layout. |
 | `PathTracer/Lighting/LightSampler.hlsli` `NEEWeightedReservoirSampler` / `GenerateLightSample` | `PathTracer/Lighting/LightSampler.hlsli` `NEEWeightedReservoirSampler` / `GenerateDirectLightCandidate` / `SampleDirectLightNEE` | R3/G5 ports the RIS/WRS math as part of the full `LightsBaker` parity target |
-| `LightSampler::SampleGlobal` proxy table | `RTXPTLightsBaker` `t_LightProxyCounters` + `t_LightSamplingProxies` | per-triangle power-proportional proxies; unified light index space `[analytic | emissive triangles]` |
+| `LightSampler::SampleGlobal` proxy table | `RTXPTLightsBaker` `t_LightProxyCounters` + `t_LightSamplingProxies` | Unified light index space and packed storage `[environment | analytic | emissive triangles]`. |
 | `LightSampler::SampleLocal` local proxy table | `RTXPTLightsBaker` `t_LocalSamplingBuffer` | populated by baker-owned local sampling passes |
 | `PrepareLights.hlsl` / `LightsBaker.hlsl` `BakeEmissiveTriangles` emissive-texture sampling | `EmissiveTriangleBuild.hlsl` `computeTriangleRadiance` | centroid + anisotropic `SampleGrad`; identical short/long-edge gradient logic |
 | `TriangleLight::CalcSample` (one-sided) | `GenerateDirectLightCandidate` emissive branch + `PathTracerClosestHit.rchit` frontFacing emission/pdf gates | R2-done: one-sided (front-face only) NEE/MIS/emission; winding fix on mirrored instances |
@@ -250,7 +255,7 @@ Raygen locals become camelCase:
 | (Realtime G4/G5 new, reference-unified) | `PathPayload` / `PathState` = RTXPT-fork | Shared path-state payload for reference, build, and fill variants |
 | `RTXPTPrimaryPayload` | `PrimaryPayload` (style) | compatibility-only |
 | `RTXPTMaterialData` | `MaterialPTData` = RTXPT-fork (name) | `Materials/MaterialPT.h` (fields differ - divergent) |
-| `RTXPTLightData` | `PolymorphicLightInfo` = RTXPT-fork (name) | `Lighting/PolymorphicLight.h` (ours is unpacked - divergent) |
+| `RTXPTLightData` | `Lighting/PolymorphicLight.h` `PolymorphicLightInfo` / `PolymorphicLightInfoEx` | Upstream 32-byte base + separate 16-byte extension; CPU authoring values use `AnalyticLightData`. |
 | `RTXPTVertex` | `GeometryVertexData` (style) | RTXPT-fork uses separate attribute buffers - divergent |
 
 ### T-H. Shared Struct Field Names

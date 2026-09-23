@@ -92,7 +92,7 @@ public:
             pDevice->CreateBuffer(Desc, nullptr, &Buffer);
             return Buffer != nullptr;
         };
-        // EnvironmentQuadLight is uint4 + float4 in both backends.
+        // Upstream PolymorphicLightInfo: two packed uint4 blocks in both backends.
         if (!CreateBuffer("RTXPT environment quads", RTXPT_NEEAT_ENVMAP_QT_TOTAL_NODE_COUNT, 8 * sizeof(Uint32), m_Lights) ||
             !CreateBuffer("RTXPT environment base nodes", RTXPT_NEEAT_ENVMAP_QT_UNBOOSTED_NODE_COUNT, sizeof(Uint32), m_BaseNodes))
             return false;

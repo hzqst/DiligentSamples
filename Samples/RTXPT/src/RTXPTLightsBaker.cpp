@@ -135,11 +135,15 @@ void RTXPTLightsBaker::Reset()
     m_EnvironmentRadianceMap.Release();
     m_EnvironmentBuildPending = false;
     m_ControlBuffer.Release();
+    m_LightsBuffer.Release();
+    m_LightsExBuffer.Release();
+    m_LightBuffersDirty = false;
     m_LightWeights.Release();
     m_LightProxyCounters.Release();
     m_LightSamplingProxies.Release();
     m_LocalSamplingBuffer.Release();
     m_AnalyticLightBuffer    = nullptr;
+    m_AnalyticLightExBuffer  = nullptr;
     m_EmissiveTriangleBuffer = nullptr;
     m_FeedbackTotalWeight.Release();
     m_FeedbackCandidates.Release();
@@ -250,13 +254,9 @@ bool RTXPTLightsBaker::UpdateBegin(IRenderDevice* pDevice, const RTXPTLights& Li
     return true;
 }
 
-bool RTXPTLightsBaker::UpdateEnd(IDeviceContext* pContext,
-                                 ITextureView*   pDepthSRV,
-                                 ITextureView*   pMotionVectorsSRV)
+bool RTXPTLightsBaker::PrepareLightBuffers(IDeviceContext* pContext)
 {
-    if (!m_Stats.Ready)
-        return false;
-
+    if (!m_Stats.Ready || !pContext) return false;
     if (m_EnvironmentBuildPending)
     {
         if (!m_EnvironmentLights.Build(pContext, m_ControlBuffer, m_EnvironmentRadianceMap))
@@ -266,6 +266,30 @@ bool RTXPTLightsBaker::UpdateEnd(IDeviceContext* pContext,
         }
         m_EnvironmentBuildPending = false;
     }
+
+    if (m_LightBuffersDirty)
+    {
+        const auto Copy = [&](IBuffer* Source, IBuffer* Destination, Uint32 Offset, Uint32 Count, Uint32 Stride) {
+            if (Count != 0u)
+                pContext->CopyBuffer(Source, 0, RESOURCE_STATE_TRANSITION_MODE_TRANSITION, Destination,
+                                     Uint64{Offset} * Stride, Uint64{Count} * Stride, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+        };
+        const Uint32 AnalyticBase = m_Stats.EnvironmentLightCount;
+        const Uint32 TriangleBase = AnalyticBase + m_Stats.AnalyticLightCount;
+        Copy(m_EnvironmentLights.GetLights(), m_LightsBuffer, 0, m_Stats.EnvironmentLightCount, sizeof(PolymorphicLightInfo));
+        Copy(m_AnalyticLightBuffer, m_LightsBuffer, AnalyticBase, m_Stats.AnalyticLightCount, sizeof(PolymorphicLightInfo));
+        Copy(m_AnalyticLightExBuffer, m_LightsExBuffer, AnalyticBase, m_Stats.AnalyticLightCount, sizeof(PolymorphicLightInfoEx));
+        Copy(m_EmissiveTriangleBuffer, m_LightsBuffer, TriangleBase, m_Stats.TriangleLightCount, sizeof(PolymorphicLightInfo));
+        m_LightBuffersDirty = false;
+    }
+    return true;
+}
+
+bool RTXPTLightsBaker::UpdateEnd(IDeviceContext* pContext,
+                                 ITextureView*   pDepthSRV,
+                                 ITextureView*   pMotionVectorsSRV)
+{
+    if (!PrepareLightBuffers(pContext)) return false;
 
     if (!m_LightHistory.Prepare(pContext, m_ControlBuffer, m_EnvironmentLights.GetLights(), m_EnvironmentLights.GetLookupSRV()))
     {
@@ -452,7 +476,9 @@ bool RTXPTLightsBaker::CreateProxyBuffers(IRenderDevice* pDevice, const RTXPTLig
 
     // Capture the source light buffers for the GPU weight computation (owned by RTXPTLights for the scene's lifetime).
     m_AnalyticLightBuffer    = Lights.GetLightBuffer();
+    m_AnalyticLightExBuffer  = Lights.GetLightExBuffer();
     m_EmissiveTriangleBuffer = Lights.GetEmissiveTriangleBuffer();
+    m_LightBuffersDirty      = true;
 
     auto CreateRWStructured = [&](const char* Name, Uint32 ElementCount, Uint32 Stride, RefCntAutoPtr<IBuffer>& Out) {
         BufferDesc Desc;
@@ -468,6 +494,7 @@ bool RTXPTLightsBaker::CreateProxyBuffers(IRenderDevice* pDevice, const RTXPTLig
     };
 
     const bool BuffersOk =
+        CreateRWStructured("RTXPT packed lights", TotalLightCount, sizeof(PolymorphicLightInfo), m_LightsBuffer) &&
         CreateRWStructured("RTXPT LightsBaker light weights", TotalLightCount, sizeof(float), m_LightWeights) &&
         CreateRWStructured("RTXPT LightsBaker proxy counters", TotalLightCount, sizeof(Uint32), m_LightProxyCounters) &&
         CreateRWStructured("RTXPT LightsBaker sampling proxies", m_ProxyBudget, sizeof(Uint32), m_LightSamplingProxies);
@@ -477,6 +504,26 @@ bool RTXPTLightsBaker::CreateProxyBuffers(IRenderDevice* pDevice, const RTXPTLig
         LOG_ERROR_MESSAGE(m_Stats.LastError.c_str());
         return false;
     }
+
+    // Extensions are a separate stream. Unshaped lights never fetch this buffer.
+    std::vector<PolymorphicLightInfoEx> Extensions(std::max(TotalLightCount, 1u));
+    for (Uint32 I = 0; I < m_Stats.EnvironmentLightCount; ++I)
+        Extensions[I].UniqueID = GetLightDebugID({{3u, I, 0u, 0u}, 0, 1});
+    const Uint32 TriangleBase = m_Stats.EnvironmentLightCount + m_Stats.AnalyticLightCount;
+    for (const auto& Source : Lights.GetTriangleSources())
+        for (Uint32 I = 0; I < Source.Count; ++I)
+            Extensions[TriangleBase + Source.Base + I].UniqueID = GetLightDebugID(Source, I);
+    BufferDesc ExDesc;
+    ExDesc.Name              = "RTXPT packed light extensions";
+    ExDesc.Usage             = USAGE_DEFAULT;
+    ExDesc.BindFlags         = BIND_SHADER_RESOURCE;
+    ExDesc.Mode              = BUFFER_MODE_STRUCTURED;
+    ExDesc.ElementByteStride = sizeof(PolymorphicLightInfoEx);
+    ExDesc.Size              = Extensions.size() * sizeof(PolymorphicLightInfoEx);
+    BufferData ExData{Extensions.data(), ExDesc.Size};
+    m_LightsExBuffer.Release();
+    pDevice->CreateBuffer(ExDesc, &ExData, &m_LightsExBuffer);
+    if (!m_LightsExBuffer) return false;
     return true;
 }
 
@@ -485,16 +532,15 @@ bool RTXPTLightsBaker::RunProxyBuild(IDeviceContext* pContext)
     if (m_Stats.TotalLightCount == 0u)
         return true; // no lights: control.SamplingProxyCount stays 0 and NEE light sampling is skipped
 
-    if (!m_ProxyBuildPass.IsReady() || m_ControlBuffer == nullptr || m_AnalyticLightBuffer == nullptr ||
-        m_EmissiveTriangleBuffer == nullptr || m_LightWeights == nullptr || m_LightProxyCounters == nullptr ||
+    if (!m_ProxyBuildPass.IsReady() || m_ControlBuffer == nullptr || m_LightsBuffer == nullptr ||
+        m_LightsExBuffer == nullptr || m_LightWeights == nullptr || m_LightProxyCounters == nullptr ||
         m_LightSamplingProxies == nullptr)
         return false;
 
     return m_ProxyBuildPass.Build(pContext,
                                   m_ControlBuffer,
-                                  m_AnalyticLightBuffer,
-                                  m_EmissiveTriangleBuffer,
-                                  m_EnvironmentLights.GetLights(),
+                                  m_LightsBuffer,
+                                  m_LightsExBuffer,
                                   m_LightFeedback.GetCounts(),
                                   m_LightWeights,
                                   m_LightProxyCounters,
@@ -509,6 +555,7 @@ bool RTXPTLightsBaker::RunProxyBuild(IDeviceContext* pContext)
 
 void RTXPTLightsBaker::RequestProxyRebuild()
 {
+    m_LightBuffersDirty = true;
     // The proxy buffers already exist (allocated in UpdateBegin); a dynamic/skinned update only rewrites the
     // emissive-triangle buffer contents in place. Flag the GPU build to re-run on the next UpdateEnd so the
     // per-triangle power weights, proxy counters, and proxy table are recomputed from the current geometry.

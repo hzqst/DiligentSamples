@@ -815,6 +815,10 @@ bool RTXPTSample::RebuildSceneDependentResources()
         m_Scene.ClearGeometryDirty();
         CreateSceneDependentPasses();
         ResourcesReady &= BuildEmissiveTriangles();
+        // Submit the initial bake before the first resize/settings update can recreate
+        // its pass resources. In particular, Vulkan must not retire resources still
+        // referenced by an unsubmitted initialization command buffer.
+        m_pImmediateContext->Flush();
     }
     else
     {
@@ -1350,12 +1354,12 @@ void RTXPTSample::CreateSceneDependentPasses()
                                     m_FrameConstantsCB,
                                     m_Materials.GetMaterialBuffer(),
                                     m_AccelerationStructures.GetSubInstanceBuffer(),
-                                    m_Lights.GetLightBuffer(),
+                                    m_LightsBaker.GetLightBuffer(),
+                                    m_LightsBaker.GetLightExBuffer(),
                                     m_LightsBaker.GetControlBuffer(),
                                     m_LightsBaker.GetLightProxyCounters(),
                                     m_LightsBaker.GetLightSamplingProxies(),
                                     m_LightsBaker.GetLocalSamplingBuffer(),
-                                    m_LightsBaker.GetEnvironmentLights(),
                                     m_LightsBaker.GetEnvironmentLightLookup(),
                                     m_LightsBaker.GetFeedbackTotalWeightUAV(),
                                     m_LightsBaker.GetFeedbackCandidatesUAV(),
@@ -1364,7 +1368,6 @@ void RTXPTSample::CreateSceneDependentPasses()
                                     m_EnvMapBaker.GetRadianceMapSRV(),
                                     m_EnvMapBaker.GetEnvironmentSampler(),
                                     m_EnvMapBaker.GetImportanceSampler(),
-                                    m_Lights.GetEmissiveTriangleBuffer(),
                                     m_Scene.GetVertexBuffer0(m_pDevice, m_pImmediateContext),
                                     m_SkinnedGeometry.GetSkinnedVertexBuffer(),
                                     m_Scene.GetIndexBuffer(m_pDevice, m_pImmediateContext),
@@ -1504,6 +1507,10 @@ bool RTXPTSample::PathTrace()
     SampleMiniConstants           MiniConstants   = {};
     const RTXPTRayTracingDispatch BaseDispatch    = MakePathTraceDispatch(m_RenderTargets, MiniConstants);
     const bool                    UseStablePlanes = m_RealtimeUI.RealtimeMode;
+
+    // BUILD can shade analytic proxies too; expose current packed light data before either RT pass.
+    if (!m_LightsBaker.PrepareLightBuffers(m_pImmediateContext))
+        return false;
 
     // PathTracePrePass dispatches BuildStablePlanes and synchronizes exported realtime state.
     if (UseStablePlanes && !DispatchPathTracePrePass(BaseDispatch))

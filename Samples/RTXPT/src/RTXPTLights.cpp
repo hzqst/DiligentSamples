@@ -67,12 +67,12 @@ float ReadRTXPTSpotAngleRadians(const nlohmann::json& Json, const char* DegreesK
     return DegreesToRadians(DefaultDegrees);
 }
 
-PolymorphicLightInfo MakeSphereLightData(const float3& Color, float Intensity, const float4x4& Transform, float Range, float Radius, float InnerCone, float OuterCone)
+PolymorphicLightInfoFull MakeSphereLightData(const float3& Color, float Intensity, const float4x4& Transform, float Range, float Radius, float InnerCone, float OuterCone)
 {
     const float  ClampedRadius = std::max(Radius, 1.0e-4f);
     const float3 Radiance      = Color * std::max(Intensity, 0.0f) / (PI_F * ClampedRadius * ClampedRadius);
 
-    PolymorphicLightInfo Data;
+    AnalyticLightData Data;
     Data.colorType      = float4{Radiance.x, Radiance.y, Radiance.z, kPolymorphicLightTypeSphere};
     Data.positionRadius = float4{Transform._41, Transform._42, Transform._43, ClampedRadius};
     Data.directionRange = float4{-Transform._31, -Transform._32, -Transform._33, Range};
@@ -82,23 +82,23 @@ PolymorphicLightInfo MakeSphereLightData(const float3& Color, float Intensity, c
         const float InnerCos = std::cos(InnerCone);
         Data.shaping         = float4{OuterCos, std::max(0.0f, InnerCos - OuterCos), 0.0f, 0.0f};
     }
-    return Data;
+    return PackAnalyticLight(Data);
 }
 
-PolymorphicLightInfo MakeDirectionalLightData(const float3& Color, float Intensity, const float4x4& Transform, float AngularSizeRadians)
+PolymorphicLightInfoFull MakeDirectionalLightData(const float3& Color, float Intensity, const float4x4& Transform, float AngularSizeRadians)
 {
     const float  HalfAngle  = std::max(AngularSizeRadians * 0.5f, 0.00001f);
     const float  SolidAngle = std::max(2.0f * PI_F * (1.0f - std::cos(HalfAngle)), 1.0e-8f);
     const float3 Radiance   = Color * std::max(Intensity, 0.0f) / SolidAngle;
 
-    PolymorphicLightInfo Data;
+    AnalyticLightData Data;
     Data.colorType      = float4{Radiance.x, Radiance.y, Radiance.z, kPolymorphicLightTypeDirectional};
     Data.directionRange = float4{-Transform._31, -Transform._32, -Transform._33, 0.0f};
     Data.shaping        = float4{-1.0f, 0.0f, 0.0f, SolidAngle};
-    return Data;
+    return PackAnalyticLight(Data);
 }
 
-PolymorphicLightInfo MakeLightData(const GLTF::Light& Light, const float4x4& NodeTransform)
+PolymorphicLightInfoFull MakeLightData(const GLTF::Light& Light, const float4x4& NodeTransform)
 {
     switch (Light.Type)
     {
@@ -153,6 +153,7 @@ float GetMaterialEmissionMagnitude(const GLTF::Material& Material, const RTXPTMa
 void RTXPTLights::Reset()
 {
     m_LightBuffer.Release();
+    m_LightExBuffer.Release();
     m_EmissiveTriangleBuffer.Release();
     m_AnalyticLights.clear();
     m_AnalyticSources.clear();
@@ -161,15 +162,25 @@ void RTXPTLights::Reset()
     m_Stats               = {};
 }
 
-bool RTXPTLights::UploadLightBuffer(IRenderDevice* pDevice, std::vector<PolymorphicLightInfo>& Lights)
+bool RTXPTLights::UploadLightBuffer(IRenderDevice* pDevice, std::vector<PolymorphicLightInfoFull>& Lights)
 {
+    for (const auto& Source : m_AnalyticSources)
+        Lights[Source.Base].Extended.UniqueID = GetLightDebugID(Source);
     m_AnalyticLights   = Lights;
     m_Stats.LightCount = static_cast<Uint32>(m_AnalyticLights.size());
     if (Lights.empty())
     {
         // Always upload at least one default (disabled) light so the shader-side bridge SRV is never null.
-        PolymorphicLightInfo Default;
+        PolymorphicLightInfoFull Default = {};
         Lights.emplace_back(Default);
+    }
+
+    std::vector<PolymorphicLightInfo>   Base(Lights.size());
+    std::vector<PolymorphicLightInfoEx> Extended(Lights.size());
+    for (size_t I = 0; I < Lights.size(); ++I)
+    {
+        Base[I]     = Lights[I].Base;
+        Extended[I] = Lights[I].Extended;
     }
 
     BufferDesc Desc;
@@ -178,13 +189,19 @@ bool RTXPTLights::UploadLightBuffer(IRenderDevice* pDevice, std::vector<Polymorp
     Desc.BindFlags         = BIND_SHADER_RESOURCE;
     Desc.Mode              = BUFFER_MODE_STRUCTURED;
     Desc.ElementByteStride = sizeof(PolymorphicLightInfo);
-    Desc.Size              = sizeof(PolymorphicLightInfo) * Lights.size();
+    Desc.Size              = sizeof(PolymorphicLightInfo) * Base.size();
 
-    BufferData Data{Lights.data(), Desc.Size};
+    BufferData Data{Base.data(), Desc.Size};
     pDevice->CreateBuffer(Desc, &Data, &m_LightBuffer);
 
+    Desc.Name              = "RTXPT light extensions";
+    Desc.ElementByteStride = sizeof(PolymorphicLightInfoEx);
+    Desc.Size              = sizeof(PolymorphicLightInfoEx) * Extended.size();
+    Data                   = BufferData{Extended.data(), Desc.Size};
+    pDevice->CreateBuffer(Desc, &Data, &m_LightExBuffer);
+
     VERIFY(m_LightBuffer, "Failed to create RTXPT light buffer");
-    return m_LightBuffer != nullptr;
+    return m_LightBuffer != nullptr && m_LightExBuffer != nullptr;
 }
 
 bool RTXPTLights::UploadEmissiveTriangleBuffer(IRenderDevice* pDevice, Uint32 EmissiveTriangleCount)
@@ -205,8 +222,8 @@ bool RTXPTLights::UploadEmissiveTriangleBuffer(IRenderDevice* pDevice, Uint32 Em
     Desc.Usage             = USAGE_DEFAULT;
     Desc.BindFlags         = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
     Desc.Mode              = BUFFER_MODE_STRUCTURED;
-    Desc.ElementByteStride = sizeof(EmissiveTriangle);
-    Desc.Size              = Uint64{ElementCount} * sizeof(EmissiveTriangle);
+    Desc.ElementByteStride = sizeof(PolymorphicLightInfo);
+    Desc.Size              = Uint64{ElementCount} * sizeof(PolymorphicLightInfo);
 
     pDevice->CreateBuffer(Desc, nullptr, &m_EmissiveTriangleBuffer);
 
@@ -224,7 +241,7 @@ bool RTXPTLights::Upload(IRenderDevice* pDevice, const GLTF::Scene& Scene, const
 {
     Reset();
 
-    std::vector<PolymorphicLightInfo> Lights;
+    std::vector<PolymorphicLightInfoFull> Lights;
     for (const GLTF::Node* pNode : Scene.LinearNodes)
     {
         if (pNode == nullptr || pNode->pLight == nullptr)
@@ -244,7 +261,7 @@ bool RTXPTLights::Upload(IRenderDevice* pDevice, const RTXPTSceneGraphData& Scen
 {
     Reset();
 
-    std::vector<PolymorphicLightInfo> Lights;
+    std::vector<PolymorphicLightInfoFull> Lights;
     for (const RTXPTSceneLightMetadata& LightMeta : SceneData.Lights)
     {
         if (LightMeta.Type == "EnvironmentLight")

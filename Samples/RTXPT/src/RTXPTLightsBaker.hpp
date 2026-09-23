@@ -120,6 +120,7 @@ public:
 
     bool CreateResources(IRenderDevice* pDevice, IEngineFactory* pEngineFactory, IRenderStateCache* pStateCache, Uint32 Width, Uint32 Height, bool ComputeSupported);
     bool UpdateBegin(IRenderDevice* pDevice, const RTXPTLights& Lights, const RTXPTLightsBakerSettings& Settings);
+    bool PrepareLightBuffers(IDeviceContext* pContext);
     void UpdateFrame(const float4x4& ViewProj);
     // Process feedback after BUILD exported current depth and pixel-space motion.
     bool UpdateEnd(IDeviceContext* pContext, ITextureView* pDepthSRV, ITextureView* pMotionVectorsSRV);
@@ -130,6 +131,8 @@ public:
     const RTXPTLightsBakerStats& GetStats() const { return m_Stats; }
     Uint32                       GetFeedbackHistoryFrameCount() const { return m_LightFeedback.GetHistoryFrameCount(); }
     IBuffer*                     GetControlBuffer() const { return m_ControlBuffer; }
+    IBuffer*                     GetLightBuffer() const { return m_LightsBuffer; }
+    IBuffer*                     GetLightExBuffer() const { return m_LightsExBuffer; }
     IBuffer*                     GetLightProxyCounters() const { return m_LightProxyCounters; }
     IBuffer*                     GetLightSamplingProxies() const { return m_LightSamplingProxies; }
     IBuffer*                     GetLocalSamplingBuffer() const { return m_LocalSamplingBuffer; }
@@ -151,11 +154,13 @@ private:
     bool CreateLocalSamplingBuffer(IRenderDevice* pDevice, Uint32 Width, Uint32 Height);
 
     RefCntAutoPtr<IBuffer>      m_ControlBuffer;
+    RefCntAutoPtr<IBuffer>      m_LightsBuffer, m_LightsExBuffer;
     RefCntAutoPtr<IBuffer>      m_LightWeights;
     RefCntAutoPtr<IBuffer>      m_LightProxyCounters;
     RefCntAutoPtr<IBuffer>      m_LightSamplingProxies;
     RefCntAutoPtr<IBuffer>      m_LocalSamplingBuffer;
     IBuffer*                    m_AnalyticLightBuffer    = nullptr; // borrowed from RTXPTLights (analytic-light weights)
+    IBuffer*                    m_AnalyticLightExBuffer  = nullptr;
     IBuffer*                    m_EmissiveTriangleBuffer = nullptr; // borrowed from RTXPTLights (emissive-triangle power)
     RefCntAutoPtr<ITexture>     m_FeedbackTotalWeight;
     RefCntAutoPtr<ITexture>     m_FeedbackCandidates;
@@ -171,6 +176,7 @@ private:
     std::array<float4, 5>       m_FrustumPlanes = {};
     RefCntAutoPtr<ITextureView> m_EnvironmentRadianceMap;
     bool                        m_EnvironmentBuildPending = false;
+    bool                        m_LightBuffersDirty       = false;
 
     Uint32                m_ProxyBudget          = 0;     // capacity of m_LightSamplingProxies
     Uint32                m_ProxyImportanceType  = 1;     // 0 = uniform, otherwise power-proportional

@@ -19,6 +19,27 @@ struct RTXPTLightSourceRange
     Uint32                Count = 0;
 };
 
+// Like upstream UniqueID, this hash is for debug coloring/validation only.
+// History matching must continue to compare the complete source key.
+inline Uint32 GetLightDebugID(const RTXPTLightSourceRange& Source, Uint32 PrimitiveIndex = 0)
+{
+    auto Combine = [](Uint32 Seed, Uint32 Value) {
+        Value ^= Value >> 16u;
+        Value *= 0x21f0aaadu;
+        Value ^= Value >> 15u;
+        Value *= 0xf35a2d97u;
+        Value ^= Value >> 15u;
+        return Seed ^ (Value + 0x9e3779b9u + (Seed << 6u) + (Seed >> 2u));
+    };
+    Uint32 Hash = 0;
+    for (Uint64 Part : Source.Key)
+    {
+        Hash = Combine(Hash, static_cast<Uint32>(Part >> 32u));
+        Hash = Combine(Hash, static_cast<Uint32>(Part));
+    }
+    return Combine(Hash, PrimitiveIndex);
+}
+
 inline void BuildLightHistoryMaps(const std::vector<RTXPTLightSourceRange>& Current,
                                   const std::vector<RTXPTLightSourceRange>& Previous,
                                   Uint32                                    CurrentCount,

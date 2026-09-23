@@ -12,6 +12,7 @@
 #include "../../../../DiligentCore/Graphics/GraphicsEngineD3D12/interface/EngineFactoryD3D12.h"
 #include "../../../../DiligentCore/Graphics/GraphicsEngineVulkan/interface/EngineFactoryVk.h"
 #include "../src/RTXPTFrameConstants.hpp"
+#include "../src/RTXPTLightPacking.hpp"
 #include "../src/RTXPTEnvironmentLights.hpp"
 #include "../src/RTXPTLightHistory.hpp"
 using namespace Diligent;
@@ -36,7 +37,6 @@ struct Quad
     Uint32 X, Y, Dim, Padding;
     float4 RadianceAndWeight;
 };
-static_assert(sizeof(Quad) == 32, "EnvironmentQuadLight buffer layout");
 } // namespace
 
 int main(int Argc, char** Argv)
@@ -161,7 +161,20 @@ try
         Context->MapBuffer(ReadBuffer, MAP_READ, MAP_FLAG_DO_NOT_WAIT, QuadData);
         Require(QuadData != nullptr, "Quad readback unavailable");
         std::vector<Quad> Actual(RTXPT_NEEAT_ENVMAP_QT_TOTAL_NODE_COUNT);
-        std::memcpy(Actual.data(), QuadData, static_cast<size_t>(ReadDesc.Size));
+        const auto*       Packed = static_cast<const PolymorphicLightInfo*>(QuadData);
+        Require(Baker.GetLights()->GetDesc().ElementByteStride == sizeof(PolymorphicLightInfo), "Packed environment stride");
+        for (size_t I = 0; I < Actual.size(); ++I)
+        {
+            Require((Packed[I].ColorTypeAndFlags >> 24u & 15u) == 5u, "Environment light tag");
+            const Uint32 Log   = Packed[I].LogRadiance & 0xffffu;
+            const float  Scale = Log == 0 ? 0.0f : std::exp2(float(Log - 1u) / 65534.0f * 48.0f - 8.0f);
+            float        Weight;
+            std::memcpy(&Weight, &Packed[I].Scalars, sizeof(Weight));
+            Actual[I] = Quad{Packed[I].Direction1 >> 16u, Packed[I].Direction1 & 0xffffu, Packed[I].Direction2 >> 16u, 0,
+                             float4{float(Packed[I].ColorTypeAndFlags & 255u) / 255.0f * Scale,
+                                    float(Packed[I].ColorTypeAndFlags >> 8u & 255u) / 255.0f * Scale,
+                                    float(Packed[I].ColorTypeAndFlags >> 16u & 255u) / 255.0f * Scale, Weight}};
+        }
         Context->UnmapBuffer(ReadBuffer, MAP_READ);
         MappedTextureSubresource LookupData;
         Context->MapTextureSubresource(ReadTexture, 0, 0, MAP_READ, MAP_FLAG_DO_NOT_WAIT, nullptr, LookupData);
@@ -226,7 +239,9 @@ try
             const Uint32 Mip            = MipFor(Q.Dim);
             const float4 V              = Mips[Mip][Q.Y * Q.Dim + Q.X];
             const float  ExpectedWeight = float(1u << (Mip * 2)) * V.w * (3.5f / 3.0f) * 0.0002f;
-            Require(std::abs(V.x - Q.RadianceAndWeight.x) < 1e-5f && std::abs(V.y * 0.5f - Q.RadianceAndWeight.y) < 1e-5f && std::abs(V.z * 2 - Q.RadianceAndWeight.z) < 1e-5f, "Environment radiance/color multiplier");
+            // RGB8 rounding plus the upward-quantized logarithmic scale.
+            const float ColorTolerance = std::max({V.x, V.y * 0.5f, V.z * 2, 1.0f / 256.0f}) * 1.001f / 510.0f + 1e-6f;
+            Require(std::abs(V.x - Q.RadianceAndWeight.x) <= ColorTolerance && std::abs(V.y * 0.5f - Q.RadianceAndWeight.y) <= ColorTolerance && std::abs(V.z * 2 - Q.RadianceAndWeight.z) <= ColorTolerance, "Packed environment radiance/color multiplier");
             Require(std::abs(ExpectedWeight - Q.RadianceAndWeight.w) <= 1e-5f * std::max(1.0f, ExpectedWeight), "Environment power weight");
             Area += 1.0 / double(Q.Dim * Q.Dim);
             const Uint32 Scale = Resolution / Q.Dim;

@@ -15,8 +15,8 @@ cbuffer g_HistoryConstants
 RWStructuredBuffer<LightingControlData> u_LightingControl;
 RWStructuredBuffer<uint> u_CurrentToPast;
 RWStructuredBuffer<uint> u_PastToCurrent;
-StructuredBuffer<EnvironmentQuadLight> t_CurrentEnvironment;
-StructuredBuffer<EnvironmentQuadLight> t_PreviousEnvironment;
+StructuredBuffer<PolymorphicLightInfo> t_CurrentEnvironment;
+StructuredBuffer<PolymorphicLightInfo> t_PreviousEnvironment;
 Texture2D<uint> t_CurrentLookup;
 Texture2D<uint> t_PreviousLookup;
 
@@ -39,7 +39,7 @@ void MapLightHistory(uint index : SV_DispatchThreadID)
         if (PreviousEnvCount != 0u)
         {
             uint w, h; t_PreviousLookup.GetDimensions(w, h);
-            const EnvironmentQuadLight node = t_CurrentEnvironment[index];
+            const EnvironmentQuadLight node = UnpackEnvironmentLight(t_CurrentEnvironment[index]);
             mapped = t_PreviousLookup[uint2(node.NodeX, node.NodeY) * w / node.NodeDim];
         }
         u_CurrentToPast[index] = mapped;
@@ -50,7 +50,7 @@ void MapLightHistory(uint index : SV_DispatchThreadID)
         if (CurrentEnvCount != 0u)
         {
             uint w, h; t_CurrentLookup.GetDimensions(w, h);
-            const EnvironmentQuadLight node = t_PreviousEnvironment[index];
+            const EnvironmentQuadLight node = UnpackEnvironmentLight(t_PreviousEnvironment[index]);
             mapped = t_CurrentLookup[uint2(node.NodeX, node.NodeY) * w / node.NodeDim];
         }
         u_PastToCurrent[index] = mapped;

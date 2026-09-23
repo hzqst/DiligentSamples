@@ -94,11 +94,11 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
                                      IBuffer*              pMaterialBuffer,
                                      IBuffer*              pSubInstanceBuffer,
                                      IBuffer*              pLightBuffer,
+                                     IBuffer*              pLightExBuffer,
                                      IBuffer*              pLightingControlBuffer,
                                      IBuffer*              pLightProxyCounters,
                                      IBuffer*              pLightSamplingProxies,
                                      IBuffer*              pLocalSamplingBuffer,
-                                     IBuffer*              pEnvironmentLights,
                                      ITextureView*         pEnvironmentLightLookup,
                                      ITextureView*         pFeedbackTotalWeightUAV,
                                      ITextureView*         pFeedbackCandidatesUAV,
@@ -107,7 +107,6 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
                                      ITextureView*         pEnvironmentRadianceMapSRV,
                                      ISampler*             pEnvironmentSampler,
                                      ISampler*             pEnvironmentImportanceSampler,
-                                     IBuffer*              pEmissiveTriangleBuffer,
                                      IBuffer*              pVertexBuffer,
                                      IBuffer*              pSkinnedVertexBuffer,
                                      IBuffer*              pIndexBuffer,
@@ -215,6 +214,7 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
     IDeviceObject* pSubInstanceView =
         pSubInstanceBuffer != nullptr ? pSubInstanceBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
     IDeviceObject* pLightsView = pLightBuffer != nullptr ? pLightBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
+    IDeviceObject* pLightsExView = pLightExBuffer != nullptr ? pLightExBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
     IDeviceObject* pLightingControlView =
         pLightingControlBuffer != nullptr ? pLightingControlBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
     IDeviceObject* pLightProxyCountersView =
@@ -228,8 +228,6 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
     IDeviceObject* pEnvironmentRadianceMapView       = pEnvironmentRadianceMapSRV;
     IDeviceObject* pEnvironmentSamplerView           = pEnvironmentSampler;
     IDeviceObject* pEnvironmentImportanceSamplerView = pEnvironmentImportanceSampler;
-    IDeviceObject* pEmissiveView =
-        pEmissiveTriangleBuffer != nullptr ? pEmissiveTriangleBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
     IDeviceObject* pVertexView =
         pVertexBuffer != nullptr ? pVertexBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
     IDeviceObject* pSkinnedVertexView =
@@ -391,11 +389,11 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
             .AddVariable(HitStages, "t_SkinnedVertexBuffer", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
             .AddVariable(HitStages, "t_IndexBuffer", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
             .AddVariable(DirectLightStages, "t_Lights", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
+            .AddVariable(DirectLightStages, "t_LightsEx", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
             .AddVariable(DirectLightStages, "t_LightingControl", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
             .AddVariable(DirectLightStages, "t_LightProxyCounters", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
             .AddVariable(DirectLightStages, "t_LightSamplingProxies", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
             .AddVariable(DirectLightStages, "t_LocalSamplingBuffer", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
-            .AddVariable(EnvStages, "t_EnvironmentLights", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
             .AddVariable(EnvStages, "t_EnvironmentLightLookup", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
             .AddVariable(DirectLightStages, "u_FeedbackTotalWeight", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
             .AddVariable(DirectLightStages, "u_FeedbackCandidates", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
@@ -403,8 +401,7 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
             .AddVariable(EnvStages, "t_EnvironmentImportanceMap", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
             .AddVariable(EnvStages, "t_EnvironmentRadianceMap", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
             .AddVariable(EnvStages, "s_EnvironmentMapSampler", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
-            .AddVariable(EnvStages, "s_EnvironmentImportanceSampler", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
-            .AddVariable(DirectLightStages, "t_EmissiveTriangles", SHADER_RESOURCE_VARIABLE_TYPE_STATIC);
+            .AddVariable(EnvStages, "s_EnvironmentImportanceSampler", SHADER_RESOURCE_VARIABLE_TYPE_STATIC);
 
         if (UseTextures)
         {
@@ -477,7 +474,8 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
 
         bool       LightBridgeReflected = false;
         const bool LightBridgeBound =
-            SetStaticForStages(DirectLightStages, "t_Lights", pLightsView, "light buffer", false, &LightBridgeReflected);
+            SetStaticForStages(DirectLightStages, "t_Lights", pLightsView, "packed light buffer", false, &LightBridgeReflected) &&
+            SetStaticForStages(DirectLightStages, "t_LightsEx", pLightsExView, "packed light extensions", false);
 
         bool       LightingControlFound      = false;
         bool       LightProxyCountersFound   = false;
@@ -501,7 +499,6 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
         bool       EnvironmentSamplerFound           = false;
         bool       EnvironmentImportanceSamplerFound = false;
         const bool EnvironmentBridgeOk =
-            SetStaticForStages(EnvStages, "t_EnvironmentLights", pEnvironmentLights ? pEnvironmentLights->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr, "environment quads", false) &&
             SetStaticForStages(EnvStages, "t_EnvironmentLightLookup", pEnvironmentLightLookup, "environment light lookup", false) &&
             SetStaticForStages(EnvStages, "t_EnvironmentMap", pEnvironmentMapView, "environment map", false, &EnvironmentMapFound) &&
             SetStaticForStages(EnvStages, "t_EnvironmentImportanceMap", pEnvironmentImportanceMapView, "environment importance map", false, &EnvironmentImportanceMapFound) &&
@@ -512,9 +509,8 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
             EnvironmentMapFound || EnvironmentImportanceMapFound || EnvironmentRadianceMapFound ||
             EnvironmentSamplerFound || EnvironmentImportanceSamplerFound;
         EnvironmentBridgeReflectedAny           = EnvironmentBridgeReflectedAny || EnvironmentBridgeReflected;
-        bool       EmissiveLightBridgeReflected = false;
-        const bool EmissiveLightBridgeBound =
-            SetStaticForStages(DirectLightStages, "t_EmissiveTriangles", pEmissiveView, "emissive triangle buffer", false, &EmissiveLightBridgeReflected);
+        const bool EmissiveLightBridgeReflected = LightBridgeReflected;
+        const bool EmissiveLightBridgeBound     = LightBridgeBound;
         const bool VertexBufferBound = SetStaticForStages(HitStages, "t_VertexBuffer", pVertexView, "vertex buffer");
         const bool SkinnedVertexBufferBound =
             SetStaticForStages(HitStages, "t_SkinnedVertexBuffer", pSkinnedVertexView, "skinned vertex buffer");

@@ -16,6 +16,7 @@
 #include "../../../../DiligentCore/Graphics/GraphicsEngineVulkan/interface/EngineFactoryVk.h"
 #include "../../../../DiligentCore/Common/interface/RefCntAutoPtr.hpp"
 #include "../src/RTXPTFrameConstants.hpp"
+#include "../src/RTXPTLightPacking.hpp"
 
 using namespace Diligent;
 using uint     = Uint32;
@@ -284,17 +285,56 @@ void main(uint3 tid : SV_DispatchThreadID)
             }
         std::cout << "Local light producer case " << Case << " passed\n";
     }
+    std::vector<AnalyticLightData>      PackingSources(128);
+    std::vector<PolymorphicLightInfo>   PackedLights(128);
+    std::vector<PolymorphicLightInfoEx> PackedExtensions(128);
+    for (Uint32 N = 0; N < 128; ++N)
+    {
+        auto&       Source           = PackingSources[N];
+        const float Intensity        = N % 7 == 0 ? 0.0f : std::exp2(float(N % 25) - 8.0f);
+        Source.colorType             = float4{Intensity, Intensity * 0.3f, Intensity * 0.7f, N % 3 == 0 ? 2.0f : 0.0f};
+        Source.positionRadius        = float4{float(N), -float(N), 0.25f, float(N + 1) / 16.0f};
+        const float3 Axis            = normalize(float3{N & 1 ? -1.0f : 1.0f, N & 2 ? -2.0f : 2.0f, N & 4 ? -3.0f : 3.0f});
+        Source.directionRange        = float4{Axis, 0.0f};
+        Source.shaping               = float4{N & 1 ? 0.5f : -1.0f, 0.25f, 0.0f, 0.125f};
+        const auto Packed            = PackAnalyticLight(Source);
+        PackedLights[N]              = Packed.Base;
+        PackedExtensions[N]          = Packed.Extended;
+        PackedExtensions[N].UniqueID = 1000u + N;
+    }
     // PDF-only evaluation must match the original combined BSDF/PDF function for
     // diffuse, metallic, rough/delta dielectric and transmission configurations.
     SCI.Source = R"(
 #include "PathTracer/Lighting/LightSampler.hlsli"
 #include "PathTracer/Lighting/LightSamplingMIS.hlsli"
 RWStructuredBuffer<uint4> u_Contract;
+StructuredBuffer<PolymorphicLightInfo> t_PackedContract;
+StructuredBuffer<PolymorphicLightInfoEx> t_PackedContractEx;
+RWStructuredBuffer<PolymorphicLightInfo> u_PackedContract;
 [numthreads(64, 1, 1)]
 void main(uint3 tid : SV_DispatchThreadID)
 {
     uint n = tid.x;
     if (n >= 128) return;
+    PolymorphicLightInfoFull packed;
+    packed.Base = t_PackedContract[n];
+    packed.Extended = t_PackedContractEx[n];
+    AnalyticLightData decoded = UnpackAnalyticLight(packed);
+    u_Contract[384 + n] = asuint(decoded.positionRadius);
+    u_Contract[512 + n] = asuint(decoded.colorType);
+    u_Contract[640 + n] = asuint(float4(decoded.directionRange.xyz, decoded.shaping.w));
+    u_Contract[768 + n] = uint4(asuint(decoded.shaping.xy), packed.Extended.UniqueID, DecodeLightType(packed.Base));
+    EmissiveTriangle tri = (EmissiveTriangle)0;
+    tri.base = float4(float(n), -float(n), 0.25, 0);
+    tri.edge1 = float4(-(packed.Base.Center.x + 1.0) / 16.0, 0.25, 2.0, 0);
+    tri.edge2 = float4(0.125, -4.0, 0.5, 0);
+    tri.radiance = float4(16.0, 8.0, 4.0, 0);
+    PolymorphicLightInfo packedTri = PackTriangleLight(tri);
+    u_PackedContract[n] = packedTri;
+    EmissiveTriangle decodedTri = UnpackTriangleLight(packedTri);
+    float3 baseError = abs(decodedTri.base.xyz - tri.base.xyz);
+    float edgeError = dot(abs(decodedTri.edge1.xyz - tri.edge1.xyz) + abs(decodedTri.edge2.xyz - tri.edge2.xyz), 1.0);
+    u_Contract[896 + n] = uint4(asuint(max(baseError.x, max(baseError.y, baseError.z))), asuint(edgeError), packedTri.Direction1, packedTri.Scalars);
     LightingControlData ctrl = (LightingControlData)0;
     ctrl.ImportanceSamplingType = 2;
     ctrl.LocalToGlobalSampleRatio = float(n % 5) * 0.25;
@@ -359,7 +399,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     float expectedBSDF = 2.0 * EvalLightSamplingMIS(1, 0.5, 1, pGlobal + pLocal) +
                          4.0 * EvalLightSamplingMIS(1, 0.5, 1, 2.0 - pGlobal - pLocal);
     const float4 value = EvalBSDFValue(d, wo, wi);
-    PolymorphicLightInfo spot = (PolymorphicLightInfo)0;
+    AnalyticLightData spot = (AnalyticLightData)0;
     spot.shaping = float4(0.5, 0.25, 0, 0);
     spot.directionRange = float4(0, 0, 1, 0);
     u_Contract[256 + n] = uint4(asuint(max(abs(value.x-f.x), max(abs(value.y-f.y), abs(value.z-f.z)))),
@@ -373,16 +413,23 @@ void main(uint3 tid : SV_DispatchThreadID)
     RefCntAutoPtr<IPipelineState> ContractPSO;
     Device->CreateComputePipelineState(PCI, &ContractPSO);
     Require(ContractPSO != nullptr, "Light sampling contract PSO failed");
-    auto                                  ContractOutput = Buffer(Device, "Light sampling contract", 384 * sizeof(uint4), BIND_UNORDERED_ACCESS, nullptr, sizeof(uint4));
+    auto                                  ContractOutput = Buffer(Device, "Light sampling contract", 1024 * sizeof(uint4), BIND_UNORDERED_ACCESS, nullptr, sizeof(uint4));
+    auto                                  PackedInput    = Buffer(Device, "Packed light ABI", PackedLights.size() * sizeof(PolymorphicLightInfo), BIND_SHADER_RESOURCE, PackedLights.data(), sizeof(PolymorphicLightInfo));
+    auto                                  PackedExInput  = Buffer(Device, "Packed light extension ABI", PackedExtensions.size() * sizeof(PolymorphicLightInfoEx), BIND_SHADER_RESOURCE, PackedExtensions.data(), sizeof(PolymorphicLightInfoEx));
+    auto                                  PackedOutput   = Buffer(Device, "GPU packed triangle ABI", 128 * sizeof(PolymorphicLightInfo), BIND_UNORDERED_ACCESS, nullptr, sizeof(PolymorphicLightInfo));
     RefCntAutoPtr<IShaderResourceBinding> ContractSRB;
     ContractPSO->CreateShaderResourceBinding(&ContractSRB, true);
     ContractSRB->GetVariableByName(SHADER_TYPE_COMPUTE, "u_Contract")->Set(ContractOutput->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS));
+    ContractSRB->GetVariableByName(SHADER_TYPE_COMPUTE, "u_PackedContract")->Set(PackedOutput->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS));
+    ContractSRB->GetVariableByName(SHADER_TYPE_COMPUTE, "t_PackedContract")->Set(PackedInput->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE));
+    ContractSRB->GetVariableByName(SHADER_TYPE_COMPUTE, "t_PackedContractEx")->Set(PackedExInput->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE));
     Context->SetPipelineState(ContractPSO);
     Context->CommitShaderResources(ContractSRB, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
     DispatchComputeAttribs ContractDispatch;
     ContractDispatch.ThreadGroupCountX = 2;
     Context->DispatchCompute(ContractDispatch);
     const auto ContractResults = Read(Context, Device, ContractOutput);
+    const auto PackedResults   = Read(Context, Device, PackedOutput);
     auto       FloatAt         = [&](size_t Index) {
         float Value;
         std::memcpy(&Value, &ContractResults[Index], sizeof(Value));
@@ -405,6 +452,30 @@ void main(uint3 tid : SV_DispatchThreadID)
         Require(std::abs(6.0f - FloatAt(ValueBase + 1)) < 1e-4f, "Stratified WRS / forward and reverse MIS changed the integral");
         Require(FloatAt(ValueBase + 2) >= 0.0f, "Invalid specular radiance average");
         Require(std::abs(0.5f - FloatAt(ValueBase + 3)) < 1e-6f, "Spotlight falloff differs from upstream smoothstep");
+        const auto& Source      = PackingSources[N];
+        const bool  Directional = Source.colorType.w == 2.0f;
+        for (Uint32 C = 0; C < 3; ++C)
+        {
+            Require(Source.positionRadius[C] == FloatAt((384 + N) * 4 + C), "Packed light FP32 center");
+            const float ColorTolerance = std::max(Source.colorType.x, 1.0f / 256.0f) * 1.001f / 510.0f + 1e-6f;
+            Require(std::abs(Source.colorType[C] - FloatAt((512 + N) * 4 + C)) <= ColorTolerance, "CPU-to-GPU HDR color packing");
+            if (Directional || (N & 1))
+                Require(std::abs(Source.directionRange[C] - FloatAt((640 + N) * 4 + C)) < 0.0003f, "Packed signed octahedral direction");
+        }
+        if (!Directional)
+            Require(Source.positionRadius.w == FloatAt((384 + N) * 4 + 3), "Packed sphere FP16 radius");
+        else
+            Require(Source.shaping.w == FloatAt((640 + N) * 4 + 3), "Packed distant solid angle");
+        if (!Directional && (N & 1))
+            Require(Source.shaping.x == FloatAt((768 + N) * 4) && Source.shaping.y == FloatAt((768 + N) * 4 + 1), "Packed light shaping extension");
+        Require(1000u + N == ContractResults[(768 + N) * 4 + 2] && Uint32(Source.colorType.w) == ContractResults[(768 + N) * 4 + 3], "Packed type and extension stride");
+        Require(FloatAt((896 + N) * 4) < 1e-5f && FloatAt((896 + N) * 4 + 1) == 0.0f, "GPU triangle center and signed half edges");
+        const Uint32 EdgePair = 0x30000000u | PackLightFloat16(-float(N + 1) / 16.0f);
+        Require(EdgePair == ContractResults[(896 + N) * 4 + 2] && 0x38004000u == ContractResults[(896 + N) * 4 + 3], "Upstream triangle half-pair ABI");
+        PolymorphicLightInfo StoredTriangle;
+        std::memcpy(&StoredTriangle, PackedResults.data() + N * 8, sizeof(StoredTriangle));
+        const float ExpectedCenterX = float(N) + (-float(N + 1) / 16.0f + 0.125f) / 3.0f;
+        Require(std::abs(ExpectedCenterX - StoredTriangle.Center.x) < 1e-5f && StoredTriangle.Direction1 == EdgePair && (StoredTriangle.ColorTypeAndFlags >> 24u & 15u) == 1u, "GPU triangle writer stride / centroid / type");
     }
     Require(Errors == 0, "Graphics validation errors");
     std::cout << "Local light sampling regression passed\n";
