@@ -90,7 +90,7 @@ struct LightingControlData
     uint2 LocalSamplingTileJitterPrev;
 
     uint ValidFeedbackCount;
-    uint _padding1;
+    uint LightClusterCount;
     uint _padding2;
     uint _padding3;
 

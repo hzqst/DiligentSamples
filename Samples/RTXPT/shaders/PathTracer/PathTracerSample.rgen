@@ -7,7 +7,7 @@
 #include "Utils/StatelessSampleGenerators.hlsli"
 #include "PathTracer.hlsli"
 
-#if PATH_TRACER_MODE == PATH_TRACER_MODE_FILL_STABLE_PLANES || defined(__INTELLISENSE__)
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_FILL_DENOISING_LAYERS || defined(__INTELLISENSE__)
 float2 FirstHitFromVBuffer(inout PathState path,
                            const uint basePlaneIndex,
                            const PathTracer::WorkingContext workingContext)
@@ -15,8 +15,8 @@ float2 FirstHitFromVBuffer(inout PathState path,
     const uint2 pixelPos = path.GetPixelPos();
     float2      tMinMax  = float2(0.0, kMaxRayTravel);
 
-    StablePlane sp             = workingContext.StablePlanes.LoadStablePlane(pixelPos, basePlaneIndex);
-    uint        stableBranchID = workingContext.StablePlanes.GetBranchID(pixelPos, basePlaneIndex);
+    DenoisingLayer sp             = workingContext.DenoisingLayers.LoadDenoisingLayer(pixelPos, basePlaneIndex);
+    uint        stableBranchID = workingContext.DenoisingLayers.GetBranchID(pixelPos, basePlaneIndex);
 
     float sceneLength     = sp.SceneLength;
     float lastRayTCurrent = sp.LastRayTCurrent;
@@ -42,16 +42,16 @@ float2 FirstHitFromVBuffer(inout PathState path,
     path.setVertexIndex(vertexIndex - 1);
     path.SetDir(sp.RayDir);
     path.SetOrigin(sp.RayOrigin);
-    path.setFlag(PathFlags::stablePlaneOnPlane, true);
-    path.setFlag(PathFlags::stablePlaneOnBranch, true);
-    path.setStablePlaneIndex(basePlaneIndex);
+    path.setFlag(PathFlags::denoisingLayerOnPlane, true);
+    path.setFlag(PathFlags::denoisingLayerOnBranch, true);
+    path.setDenoisingLayerIndex(basePlaneIndex);
     path.stableBranchID = stableBranchID;
     path.SetThp(thp);
     path.SetL(float4(0.0, 0.0, 0.0, 0.0));
 
-    const uint dominantSPIndex = workingContext.StablePlanes.LoadDominantIndex(pixelPos);
-    path.setFlag(PathFlags::stablePlaneOnDominantBranch, dominantSPIndex == basePlaneIndex);
-    path.setCounter(PackedCounters::BouncesFromStablePlane, 0);
+    const uint dominantSPIndex = workingContext.DenoisingLayers.LoadDominantIndex(pixelPos);
+    path.setFlag(PathFlags::denoisingLayerOnDominantBranch, dominantSPIndex == basePlaneIndex);
+    path.setCounter(PackedCounters::BouncesFromDenoisingLayer, 0);
 
     if (PathTracer::HasFinishedSurfaceBounces(path.getVertexIndex() + 1,
                                               path.getCounter(PackedCounters::DiffuseBounces)))
@@ -68,14 +68,14 @@ float2 FirstHitFromVBuffer(inout PathState path,
 
 void postProcessHit(inout PathState path, const PathTracer::WorkingContext workingContext)
 {
-#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_STABLE_PLANES
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
     int         nextPlaneToExplore;
     const uint2 pixelPos = path.GetPixelPos();
     if (!path.isActive() &&
-        (nextPlaneToExplore = workingContext.StablePlanes.FindNextToExplore(pixelPos, path.getStablePlaneIndex() + 1)) != -1)
+        (nextPlaneToExplore = workingContext.DenoisingLayers.FindNextToExplore(pixelPos, path.getDenoisingLayerIndex() + 1)) != -1)
     {
         PathPayload payload;
-        workingContext.StablePlanes.ExplorationStart(pixelPos, nextPlaneToExplore, payload.packed);
+        workingContext.DenoisingLayers.ExplorationStart(pixelPos, nextPlaneToExplore, payload.packed);
         path = PathPayload::unpack(payload);
     }
 #endif
@@ -96,7 +96,7 @@ void nextHit(inout PathState path, inout float2 tMinMax, const PathTracer::Worki
         return;
     }
     dx::HitObject hit = Bridge::makeScatterHit(rayQuery);
-#if USE_DX_MAYBE_REORDER_THREADS && PATH_TRACER_MODE != PATH_TRACER_MODE_BUILD_STABLE_PLANES
+#if USE_DX_MAYBE_REORDER_THREADS && PATH_TRACER_MODE != PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
     if (path.hasFlag(PathFlags::enableThreadReorder))
         dx::MaybeReorderThread(hit, uint(path.isTerminatingAtNextBounce()), 1);
 #endif
@@ -121,14 +121,14 @@ void nextHit(inout PathState path, inout float2 tMinMax, const PathTracer::Worki
 void ValidateNaNs(inout PathState path, PathTracer::WorkingContext workingContext)
 {
     bool somethingWrong = false;
-#if PATH_TRACER_MODE != PATH_TRACER_MODE_BUILD_STABLE_PLANES
+#if PATH_TRACER_MODE != PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
     float4 L = path.GetL();
     somethingWrong |= any(isnan(L)) || !all(isfinite(L));
 #endif
     somethingWrong |= any(isnan(path.GetThp())) || !all(isfinite(path.GetThp()));
     if (somethingWrong)
     {
-#if PATH_TRACER_MODE != PATH_TRACER_MODE_BUILD_STABLE_PLANES
+#if PATH_TRACER_MODE != PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
         path.SetL(float4(0.0, 0.0, 0.0, 0.0));
 #endif
         path.SetThp(float3(0.0, 0.0, 0.0));
@@ -138,17 +138,25 @@ void ValidateNaNs(inout PathState path, PathTracer::WorkingContext workingContex
 [shader("raygeneration")]
 void main()
 {
-    const uint2 pixelPos = DispatchRaysIndex().xy;
-
+    uint2 pixelPos = DispatchRaysIndex().xy;
+#if RTXPT_SHARC_TRAIN
+    uint scale = g_Sharc.DownscaleFactor;
+    uint random = Hash32Combine(Hash32(pixelPos.x + pixelPos.y * DispatchRaysDimensions().x), Bridge::getSampleIndex());
+    pixelPos = pixelPos * scale + uint2(random % scale, (random / scale) % scale);
+    if (any(pixelPos >= g_Const.ptConsts.camera.ViewportSize)) return;
+    u_SharcPathState.Store(PathTracer::SharcPathStateOffset(), 0);
+#endif
     const Ray primaryRay = Bridge::computeCameraRay(pixelPos);
     PathState path = PathTracer::EmptyPathInitialize(pixelPos,
                                                      g_Const.ptConsts.camera.PixelConeSpreadAngle);
     PathTracer::SetupPathPrimaryRay(path, primaryRay);
 
     PathTracer::WorkingContext workingContext = GetWorkingContext();
+#if !RTXPT_SHARC_TRAIN
     PathTracer::StartPixel(path, workingContext);
+#endif
 
-#if PATH_TRACER_MODE == PATH_TRACER_MODE_FILL_STABLE_PLANES
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_FILL_DENOISING_LAYERS
     float2 tMinMax = FirstHitFromVBuffer(path, 0u, workingContext);
 #elif PATH_TRACER_MODE == PATH_TRACER_MODE_REFERENCE
     float2 tMinMax = float2(primaryRay.tMin, primaryRay.tMax);
@@ -180,5 +188,7 @@ void main()
     }
 
     ValidateNaNs(path, workingContext);
+#if !RTXPT_SHARC_TRAIN
     PathTracer::CommitPixel(path, workingContext);
+#endif
 }

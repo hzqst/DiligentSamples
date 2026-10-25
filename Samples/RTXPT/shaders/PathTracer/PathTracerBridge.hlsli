@@ -44,8 +44,8 @@ VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4>       u_MotionVectors;
 VK_IMAGE_FORMAT("r32ui")   RWTexture2D<uint>         u_Throughput;
 VK_IMAGE_FORMAT("r32f")    RWTexture2D<float>        u_SpecularHitT;
 VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4>       u_StableRadiance;
-VK_IMAGE_FORMAT("r32ui")   RWTexture2DArray<uint>    u_StablePlanesHeader;
-RWStructuredBuffer<StablePlane>                      u_StablePlanesBuffer;
+VK_IMAGE_FORMAT("r32ui")   RWTexture2DArray<uint>    u_DenoisingLayersHeader;
+RWStructuredBuffer<DenoisingLayer>                      u_DenoisingLayersBuffer;
 #endif
 
 namespace Bridge
@@ -329,8 +329,8 @@ PathTracer::WorkingContext GetWorkingContext()
     ret.MotionVectors = u_MotionVectors;
 
 #if PATH_TRACER_MODE != PATH_TRACER_MODE_REFERENCE || defined(__INTELLISENSE__)
-    ret.StablePlanes  = StablePlanesContext::make(u_StablePlanesHeader,
-                                                  u_StablePlanesBuffer,
+    ret.DenoisingLayers  = DenoisingLayersContext::make(u_DenoisingLayersHeader,
+                                                  u_DenoisingLayersBuffer,
                                                   u_StableRadiance,
                                                   g_Const.ptConsts);
 #endif

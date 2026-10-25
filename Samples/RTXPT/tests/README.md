@@ -1,5 +1,128 @@
 # RR input and resource contract GPU regression
 
+## SHaRC validation (issue #23)
+
+All path-tracing and SHaRC shaders explicitly request DXC O3, including Debug.
+Do not use O0/Od for path tracing: that DXC path has a previously diagnosed
+correctness bug. Engine DEFAULT maps to Od in Debug, so it is not suitable here.
+
+Build `RTXPT` Debug/Release, then run `tests/build_sharc_test.bat` from a VS 2022
+x64 Native Tools prompt. Run `%TEMP%/RTXPTSharcTest/SharcCacheTest.exe` with the
+D3D12 engine DLL and the deployed `shaders` directory as arguments.
+The test uses the production SHaRC bindings, clear and resolve shaders. Its
+independent expectation is `(2,3,4) + (.5,.25,.125)*(4,8,16) = (4,5,6)`.
+It also checks production RT training/query resource reflection, empty-cache
+misses, stale eviction, explicit invalidation and the last entry of a second
+dispatch row. `sharc-cache-test-final.log` and `sharc-cache-test-debug.log`
+record passes with no graphics validation errors.
+
+Scene-linear captures: `--hdr_capture_path <absolute.pfm>` averages 64 raw
+RGBA16F output frames starting at frame 256, before display tone mapping.
+`--hdr_capture_start` and `--hdr_capture_count` override that window. The PFM
+contains bottom-up, little-endian RGB float32. Capture intentionally waits for
+GPU readback; do not use these runs as timing evidence. For timings use separate
+`--gpu_profile true --gpu_profile_csv <absolute.csv>` runs; SHaRC update and
+resolve have separate asynchronous timestamp columns.
+
+Fixed comparison: `--scene convergence-test.scene.json --width 640 --height 360
+--realtime true --aa off --nrd false`, once with `--sharc false`, once with
+`--sharc true`. Keep camera, resolution, sample window and all other settings
+fixed. Compare linear HDR energy and spatial error, not UI-containing PNGs.
+`--rr_validation true --sharc true` exercises the existing camera, resize,
+mode/history/reload sequence. Dynamic skinning uses
+`--scene ../tests/sharc-dynamic.scene.json --scene_animations true --sharc true`.
+
+Vulkan SHaRC runtime is explicitly unsupported: the engine does not enable
+64-bit shader integers/atomics. `--sharc true` must log that limitation and render
+without cache; use the existing supported RR route to avoid the separately
+documented RGB10A2 non-RR limitation. Offline SHaRC resolve SPIR-V compilation
+passes, but is not evidence that Vulkan can execute it.
+
+Workstation results (RTX 5060, 2026-10-26):
+
+| Check | Result / local evidence |
+| --- | --- |
+| Debug / Release builds | Exit 0, `sharc-build-{debug,release}-final.log`. Both include the Vulkan backend; Vulkan SHaRC execution remains unsupported as described above. |
+| Shader compilation | 24 train/query, FP16/FP32, raygen/hit/miss DXIL/SPIR-V variants pass (`sharc-shader-matrix.log`); Clear/Resolve pass both targets (`sharc-resolve-matrix.log`). All use O3. |
+| GPU contracts | Both Debug and Release pass the independent radiance and lifetime expectations above. Production training must expose actual cache writes; compiling an unused SHaRC include alone is insufficient. |
+| Capacity and switches | Capacity log2 16/downscale 2 and log2 24/downscale 5 exit 0 without graphics errors; disabled update/resolve also exits 0 (`sharc-capacity-{min,max}.log`, `sharc-frozen.log`). |
+| Scene transitions | 19-stage D3D12 sequence reports failures=0, RR executions=448, creates=6, history resets=13 (`sharc-transitions.log`). Covers camera, resize, Reference/realtime, NRD/TAA/SR/RR, reload and lighting changes. |
+| Animated geometry | BrainStem skinning/BLAS path executes and produces finite HDR (`sharc-dynamic.log`, `.pfm`). Cache invalidation is conservative every animated frame. |
+| Specializations / debug | HitObject/SER, main FP32 with TraceRay shadows, and cache-radiance debug runs exit 0 without graphics errors (`sharc-hitobject.log`, `sharc-fp32.log`, `sharc-cache-debug.log`). |
+| Vulkan fallback | Requested SHaRC reports unsupported and the uncached Vulkan RR route exits 0 (`sharc-vulkan.log`). This is not a SHaRC GPU pass. |
+| Linear HDR | Matched TraceRay runs average frames 256..319 at 640x360. All values finite; mean luminance off/on = 0.447110 / 0.447287 (+0.0395%); RGB MAE 0.044012, RMSE 0.079965 (`sharc-hdr-metrics.json`, paired PFM/PNG). These stochastic-image differences are not a ground-truth bias bound. |
+| Frame averaging | Against the uncached 64-frame estimate, RGB RMSE for 1 vs 8 frames falls from 0.6710 to 0.2389 without cache and from 0.6610 to 0.2467 with cache. All four runs exit 0 and produce finite HDR (`sharc-convergence-metrics.json`). This checks noise reduction from averaging, not asymptotic convergence against ground truth. |
+| GPU time | Separate 2048-frame runs, excluding frames <=240: 1805 valid samples each. Off/on total = 4.134 / 4.330 ms (+4.75%); update 0.126 ms, resolve 0.030 ms. This scene is slower with SHaRC; no speedup is claimed (`sharc-profile-metrics.json`, paired CSV). |
+| Formatting | clang-format 10 reports no replacements for the changed integration C++ files; `git diff --check` passes. |
+
+The room, mirror/transmission paths and populated cache debug output were also
+visually inspected. These tests do not establish absence of light leaks or
+temporal artifacts across arbitrary scenes; long camera trajectories and a
+converged ground-truth image-quality study remain unvalidated. Evidence is under
+the ignored superproject `build/rtxpt-v190/sharc-*` files, not checked-in fixtures.
+
+## v1.9.0 synchronization validation (2026-10-26)
+
+Source target `RTXPT-fork/9503910`, local starting point `DiligentSamples/50774cdc`.
+Current mapping and intentional feature gaps are in [RTXPT_FORK_MAPPING.md](../RTXPT_FORK_MAPPING.md).
+Evidence from this workstation is under the superproject's ignored
+`build/rtxpt-v190/` directory; these paths are local artifacts, not checked-in fixtures.
+
+| Check | Result / evidence |
+| --- | --- |
+| RTXPT Debug and Release | Both builds exit 0; `build-final-debug.log`, `build-final-release.log`. |
+| Formatting | Repository clang-format 10.0.0 reports no replacements for changed C++ files; `git diff --check` passes. |
+| BSDF/layer/lighting contracts | D3D12 and Vulkan exit 0: `local-final-*.log`. New independent expectations cover A8 roughness, the delta threshold, sRGB8, signed world motion, position-error offset and index 2,097,151. The pre-port shader failed the new A8 expectation (`lighting-red.log`). |
+| Cluster proposals | Both backends pass active/inactive LOD local+global leaf PDF tests, including a local table that contains both cluster and leaf entries. |
+| Cluster production / feedback | Both backends pass far/near LOD, stale flag clearing, trimmed dark ends, all-black and small-cluster cases through production `ProcessClustersCS`; proxy counts and histograms are read back. Existing feedback/history tests also pass. |
+| 2M capacity | `feedback-final-*.log`: both backends allocate 2,097,152 light descriptors and produce/read back the uniform proxy table; every light count agrees with its histogram, including the last index. |
+| Environment hierarchy | Both backends pass the independent CPU oracle with 2,812 nodes and its GPU sampling/normalization checks. |
+| RR / vertex ABI | `rr-final-D3D12.log`, `rr-final-Vk.log`: resource lifetime/resize/alias checks, 32-byte vertex skinning, and 15 numerical input cases pass. The production guide-baker entry reads back seven outputs, including distinct specular motion and invalid-roughness fallback. |
+| Visibility | `visibility-{D3D12,Vk}-{uint32,uint16}.log`: all four runs exit 0, 48 expected rays per configuration. |
+| Real-scene sequence | `integration-d3d12.log`, `integration-vk.log`: both report 19 stages, failures=0, RR executions=448, creates=6, history resets=13. Stages exercise camera motion, resize, Reference, mode/history changes and NEE/visibility specializations. |
+| Vulkan skipped stages | NRD/TAA/SR are still skipped by the harness due to the existing RGB10A2 UAV limitation. A zero sequence-failure count does not make these stages passing. |
+| Vulkan Reference startup | Retested with `--realtime false --aa off --vk_rr false`; `reference-vk.log` contains no graphics error and `reference-vk001.png` shows accumulated scene output. The previously recorded device loss did not reproduce in this run; this does not establish a root-cause fix. |
+| FP32 and TraceRay visibility | D3D12 Debug without denoising produces scene captures (`fp32-d3d12*`). Vulkan Release with RR Native/E produces scene captures (`fp32-rr-vk*`). Both use `--fp16 false --inline_shadows false`; Vulkan also uses TraceRay scatter. |
+| Vulkan realtime without denoising | `fp32-release-vk.log` reports unsupported RGB10A2 UAV and incomplete targets; capture shows the failure background. The non-RR allocation branch requires NRD resources even with `--nrd false`; this condition also exists in baseline `50774cdc`. This configuration is a known failure, not a passing FP32 render test. |
+| Vulkan Debug FP32 | The standalone launch did not reach a captured frame within 90 seconds; initialization was stopped by the test driver. Release subsequently compiled/rendered FP32 with RR. Debug runtime for this combination remains unverified. |
+
+RR tests now use `DenoisingGuidesBaker.hlsl::PrepareDLSSRRGuides`, rather than
+the legacy mode-9 entry. The new smooth-reflector case has world displacement
+1 on X, producing specular motion -0.5 pixels while ordinary motion is -0.75.
+The NaN-roughness case first exposed an incorrect specular branch after albedo
+sanitization; the branch now checks the original layer data before use.
+
+Performance comparison: RTX 5060, Release/D3D12, convergence-test, 640x360,
+RR Quality/F, same default camera, 1 spp, same validation/profiling settings.
+The CSV means exclude frames 1-240; no scene-validation mode switches occur in
+these two runs. This small-scene test is not a 2M-light scalability benchmark.
+
+| GPU milliseconds | Before (16,800 frames) | After (15,720 frames) |
+| --- | ---: | ---: |
+| Total | 1.9153 | 1.9554 |
+| BUILD | 0.0817 | 0.0878 |
+| LightsBaker | 0.1275 | 0.1098 |
+| FILL | 0.9823 | 1.0339 |
+| Guides | 0.0421 | 0.0406 |
+| RR prepare | 0.0188 | 0.0213 |
+| RR | 0.6083 | 0.6125 |
+| Post-process | 0.0272 | 0.0248 |
+
+Inputs: `baseline-d3d12.csv` and `final-d3d12.csv`. Total increased about 2.1%;
+there is no measured speedup claim. Baseline/final first-frame PNGs have mean
+absolute RGB differences 4.55/4.77/5.15 on an 8-bit scale, including the UI.
+Later D3D12 and Vulkan captures show the room, transmission and reflections;
+this is a visual smoke check, not an HDR energy or temporal-artifact metric.
+The initial baseline Vulkan capture was nearly black and is unsuitable for an
+image-equivalence comparison.
+
+Remaining acceptance limits: no matched before/after scene-linear HDR capture,
+no automated temporal ghosting/leak/firefly metric, no full 2M-light scene
+render/performance run, and no dedicated animated emissive scene capture.
+Skinning ABI and cluster rebuild paths have GPU coverage, but that does not
+replace the animated-scene test. These items remain unverified, not passed.
+No source/dependency changes were made outside the RTXPT sample.
+
 For native scatter HitObject / reordering, the pinned SM 6.9 runtime, numerical
 ray tests and three-mode timings, see [HitObject performance](HITOBJECT_PERFORMANCE.md).
 
@@ -7,7 +130,7 @@ For same-boundary upstream GPU timings and the measured NEE/FILL investigation,
 see [GPU performance comparison](GPU_PERFORMANCE_COMPARISON.md).
 
 `RRPrepareInputsTest.cpp` exercises the production resource owner, frame adapter,
-C++ prepare wrapper and mode 9 shader on D3D12 or Vulkan. It reads all six outputs.
+C++ prepare wrapper and guide-baker RR shader on D3D12 or Vulkan. It reads all seven outputs.
 It requires an NGX-capable device for real Native/Quality source-size queries,
 but does not evaluate RR or require a swapchain or external scene assets.
 
@@ -62,7 +185,7 @@ Expected motion is checked in render pixels with positive X right/positive Y dow
 Every case checks finite outputs, unit normal length within fp16 tolerance,
 bounded albedo and linear roughness. One-pixel inputs use an 8x8 dispatch to
 exercise the production bounds guard. The fixtures use the existing 80-byte
-StablePlane packing; they do not reimplement the RR preparation algorithm.
+DenoisingLayer packing; they do not reimplement the RR preparation algorithm.
 
 `RRResourceContractTest.hpp` additionally checks:
 
@@ -76,7 +199,7 @@ StablePlane packing; they do not reimplement the RR preparation algorithm.
   transitions, rebinding after cleanup, and rejection of aliased outputs.
 
 Validation on RTX 5060: both backends pass the resource checks, production wrapper
-and 14 readback cases. D3D12 also checks RR -> NRD -> RR allocation with NRD's
+and 15 readback cases. D3D12 also checks RR -> NRD -> RR allocation with NRD's
 RGB10A2 encoding preserved. The tested Vulkan backend does not support the existing
 RGB10A2 UAV, so it reports that NRD switch as skipped and tests RR -> reference -> RR
 instead. This existing NRD limit does not block RR resources. The existing DXC
@@ -118,10 +241,11 @@ unavailable. F is the default on both backends: selecting Vulkan E is explicit.
 The known Vulkan F SDK layout failure is not a passing configuration.
 
 `--rr_validation true` opts into `RRSceneValidation.hpp`, which drives the real
-sample for eleven 32-frame stages: Quality, smooth camera motion, explicit history
+sample for nineteen 32-frame stages: Quality, smooth camera motion, explicit history
 reset, Native, native-window resize to 768x432, reference accumulation, TAA,
-ordinary SR, standalone NRD, return to Quality RR, and a lighting/preset change.
-D3D12 starts at F and explicitly changes to E in the final stage. Vulkan should
+ordinary SR, standalone NRD, return to Quality RR, lighting/preset/environment
+changes, and NEE/MIS/visibility permutations before restoring defaults.
+D3D12 starts at F and explicitly changes to E during the sequence. Vulkan should
 be launched with E; its existing NRD RGB10A2 UAV limitation means the three
 NRD/TAA/SR stages are reported as skipped and remain reference-mode stages.
 Automatic window resize is implemented for Windows; other platforms require a

@@ -5,16 +5,19 @@
 // Diffuse and GGX lobes are evaluated here so raygen only needs base color,
 // metallic, roughness, and shading normal from the payload.
 
-#include "../../Utils/SampleGenerators.hlsli"
-#include "../../PathTracerHelpers.hlsli"
-#include "../../Scene/Material/MaterialData.hlsli"
+#include "../Utils/SampleGenerators.hlsli"
+#include "../PathTracerHelpers.hlsli"
+#include "../Scene/Material/MaterialData.hlsli"
 #include "LobeType.hlsli"
+#include "../Utils/Packing.hlsli"
+#include "StandardBSDFData.hlsli"
 
 static const float K_PI   = 3.14159265358979323846;
 static const float K_1_PI = 0.31830988618379067154;
 
 static const float kMinCosTheta = 1e-6;
-static const float kMinGGXAlpha = 0.0064;
+static const float kMinRoughness = 0.04;
+static const float kMinGGXAlpha = kMinRoughness * kMinRoughness;
 
 static const uint kBSDFLobeDiffuseReflection    = kLobeTypeDiffuseReflection;
 static const uint kBSDFLobeSpecularReflection   = kLobeTypeSpecularReflection;
@@ -26,34 +29,28 @@ static const uint kBSDFLobeDelta                = kLobeTypeDelta;
 static const uint kBSDFLobeTransmission         = kLobeTypeTransmission;
 
 // Shading inputs resolved into the form the lobes consume.
-// Match upstream StandardBSDFData's low-precision material storage. Directions,
+// The adapter keeps Diligent surface metadata outside the packed material. Directions,
 // lobe evaluation, GGX alpha and PDFs retain their full-precision types.
-struct StandardBSDFData
+struct SurfaceBSDFData
 {
     float3 N;
-    lpfloat3 diffuse;
-    lpfloat3 specular;
-    lpfloat3 transmission;
-    lpfloat  roughness;
+    StandardBSDFData material;
     float  alpha;
     lpfloat  eta;
-    lpfloat  metallic;
-    lpfloat  diffuseTransmission;
-    lpfloat  specularTransmission;
     bool   thinSurface;
     uint   activeLobes;
     uint   psdExclude;
     uint   psdBlockMotionVectorsAtSurface;
     uint   psdDominantDeltaLobeP1;
 
-    lpfloat3 Diffuse() { return diffuse; }
-    lpfloat3 Specular() { return specular; }
-    lpfloat3 Transmission() { return transmission; }
-    lpfloat  Roughness() { return roughness; }
-    lpfloat  Metallic() { return metallic; }
+    lpfloat3 Diffuse() { return material.Diffuse(); }
+    lpfloat3 Specular() { return material.Specular(); }
+    lpfloat3 Transmission() { return material.Transmission(); }
+    lpfloat  Roughness() { return material.Roughness(); }
+    lpfloat  Metallic() { return material.Metallic(); }
     lpfloat  Eta() { return eta; }
-    lpfloat  DiffuseTransmission() { return diffuseTransmission; }
-    lpfloat  SpecularTransmission() { return specularTransmission; }
+    lpfloat  DiffuseTransmission() { return material.DiffuseTransmission(); }
+    lpfloat  SpecularTransmission() { return material.SpecularTransmission(); }
 
     void SetEta(float value)
     {
@@ -62,14 +59,14 @@ struct StandardBSDFData
 
     void SetRoughness(float value)
     {
-        roughness            = lpfloat(saturate(value));
-        const float dataRoughness = roughness;
+        material.SetRoughness(lpfloat(value));
+        const float dataRoughness = Roughness();
         const float newAlpha = dataRoughness * dataRoughness;
         alpha                = (newAlpha < kMinGGXAlpha) ? 0.0 : max(newAlpha, kMinGGXAlpha);
     }
 };
 
-MaterialHeader MakeMaterialHeader(StandardBSDFData bsdfData)
+MaterialHeader MakeMaterialHeader(SurfaceBSDFData bsdfData)
 {
     MaterialHeader header = MaterialHeader::make();
     header.setActiveLobes(bsdfData.activeLobes == 0u ? kLobeTypeAll : bsdfData.activeLobes);
@@ -80,7 +77,7 @@ MaterialHeader MakeMaterialHeader(StandardBSDFData bsdfData)
     return header;
 }
 
-StandardBSDFData MakeStandardBSDFData(float3 N,
+SurfaceBSDFData MakeStandardBSDFData(float3 N,
                                       float3 baseColor,
                                       float  metallic,
                                       float  roughness,
@@ -103,17 +100,13 @@ StandardBSDFData MakeStandardBSDFData(float3 N,
     const float dielectric      = f0Sqrt * f0Sqrt;
     const float alpha           = r * r;
 
-    StandardBSDFData bsdfData;
+    SurfaceBSDFData bsdfData;
     bsdfData.N                              = N;
-    bsdfData.diffuse                        = lpfloat3(baseColor * (1.0 - m));
-    bsdfData.specular                       = lpfloat3(lerp(float3(dielectric, dielectric, dielectric), baseColor, m));
-    bsdfData.transmission                   = lpfloat3(baseColor);
-    bsdfData.roughness                      = lpfloat(r);
-    bsdfData.alpha                          = (alpha < kMinGGXAlpha) ? 0.0 : max(alpha, kMinGGXAlpha);
+    bsdfData.material = StandardBSDFData::make(lpfloat3(baseColor * (1.0 - m)),
+        lpfloat3(lerp(float3(dielectric, dielectric, dielectric), baseColor, m)), lpfloat(r), lpfloat(m), lpfloat3(baseColor),
+        lpfloat(saturate(diffuseTransmissionFactor) * (1.0 - m)), lpfloat(saturate(transmissionFactor) * (1.0 - m)));
+    bsdfData.SetRoughness(lpfloat(r));
     bsdfData.eta                            = lpfloat(frontFacing ? safeOutsideIoR / safeMaterialIoR : safeMaterialIoR / safeOutsideIoR);
-    bsdfData.metallic                       = lpfloat(m);
-    bsdfData.diffuseTransmission            = lpfloat(saturate(diffuseTransmissionFactor) * (1.0 - m));
-    bsdfData.specularTransmission           = lpfloat(saturate(transmissionFactor) * (1.0 - m));
     bsdfData.thinSurface                    = thinSurface;
     bsdfData.activeLobes                    = activeLobes == 0u ? kLobeTypeAll : activeLobes;
     bsdfData.psdExclude                     = psdExclude ? 1u : 0u;
@@ -122,7 +115,7 @@ StandardBSDFData MakeStandardBSDFData(float3 N,
     return bsdfData;
 }
 
-StandardBSDFData MakeStandardBSDFData(float3 N,
+SurfaceBSDFData MakeStandardBSDFData(float3 N,
                                       float3 baseColor,
                                       float  metallic,
                                       float  roughness,
@@ -149,7 +142,7 @@ StandardBSDFData MakeStandardBSDFData(float3 N,
                                 0u);
 }
 
-StandardBSDFData MakeStandardBSDFData(float3 N, float3 baseColor, float metallic, float roughness)
+SurfaceBSDFData MakeStandardBSDFData(float3 N, float3 baseColor, float metallic, float roughness)
 {
     return MakeStandardBSDFData(N, baseColor, metallic, roughness, 1.5, 1.0, 0.0, 0.0, true, true);
 }
@@ -311,9 +304,9 @@ float3 sampleCosineHemisphereLocal(float2 rand, out float pdf)
     return float3(x, y, z);
 }
 
-float3 GetTransmissionAlbedo(StandardBSDFData bsdfData)
+float3 GetTransmissionAlbedo(SurfaceBSDFData bsdfData)
 {
-    return bsdfData.thinSurface ? bsdfData.transmission : sqrt(max(bsdfData.transmission, float3(0.0, 0.0, 0.0)));
+    return bsdfData.thinSurface ? bsdfData.Transmission() : sqrt(max(bsdfData.Transmission(), float3(0.0, 0.0, 0.0)));
 }
 
 struct DiffuseReflectionFrostbite
@@ -727,7 +720,7 @@ struct FalcorBSDF
     float pSpecularReflectionTransmission;
     bool  psdExclude;
 
-    void __init(const MaterialHeader mtl, float3 N, float3 V, const StandardBSDFData data)
+    void __init(const MaterialHeader mtl, float3 N, float3 V, const SurfaceBSDFData data)
     {
         const bool isThinSurface = mtl.isThinSurface();
         const float3 dataTransmission = data.Transmission();
@@ -786,14 +779,14 @@ struct FalcorBSDF
         }
     }
 
-    static FalcorBSDF make(const MaterialHeader mtl, float3 N, float3 V, const StandardBSDFData data)
+    static FalcorBSDF make(const MaterialHeader mtl, float3 N, float3 V, const SurfaceBSDFData data)
     {
         FalcorBSDF ret;
         ret.__init(mtl, N, V, data);
         return ret;
     }
 
-    static uint getLobes(const StandardBSDFData data)
+    static uint getLobes(const SurfaceBSDFData data)
     {
         const float alpha = data.Roughness() * data.Roughness();
         const bool  isDelta = alpha < kMinGGXAlpha;
@@ -982,7 +975,7 @@ struct FalcorBSDF
     }
 };
 
-float getSpecularProbability(StandardBSDFData bsdfData, float3 wo)
+float getSpecularProbability(SurfaceBSDFData bsdfData, float3 wo)
 {
     const MaterialHeader mtl = MakeMaterialHeader(bsdfData);
     FalcorBSDF bsdf = FalcorBSDF::make(mtl, bsdfData.N, wo, bsdfData);
@@ -991,7 +984,7 @@ float getSpecularProbability(StandardBSDFData bsdfData, float3 wo)
 
 // Evaluate f(Wo,Wi) * NoL and the single-sample MIS pdf for the given unit directions.
 // specProb is kept for compatibility and does not affect FalcorBSDF evaluation.
-void EvalBSDF(StandardBSDFData bsdfData, float3 wo, float3 wi, float specProb, out float3 f, out float pdf)
+void EvalBSDF(SurfaceBSDFData bsdfData, float3 wo, float3 wi, float specProb, out float3 f, out float pdf)
 {
     f   = float3(0.0, 0.0, 0.0);
     pdf = 0.0;
@@ -1012,7 +1005,7 @@ void EvalBSDF(StandardBSDFData bsdfData, float3 wo, float3 wi, float specProb, o
     pdf = bsdf.evalPdf(viewLocal, scatterLocal);
 }
 
-float4 EvalBSDFValue(StandardBSDFData bsdfData, float3 wo, float3 wi)
+float4 EvalBSDFValue(SurfaceBSDFData bsdfData, float3 wo, float3 wi)
 {
     float3 tangent, bitangent;
     BranchlessONB(bsdfData.N, tangent, bitangent);
@@ -1026,7 +1019,7 @@ float4 EvalBSDFValue(StandardBSDFData bsdfData, float3 wo, float3 wi)
 
 // Candidate selection needs only the PDF. Keep full BSDF evaluation after visibility,
 // matching RTXPT-fork PathTracerNEE::EvalSampleWeight / ProcessLightSample.
-float EvalBSDFPdf(StandardBSDFData bsdfData, float3 wo, float3 wi)
+float EvalBSDFPdf(SurfaceBSDFData bsdfData, float3 wo, float3 wi)
 {
     float3 tangent, bitangent;
     BranchlessONB(bsdfData.N, tangent, bitangent);
@@ -1041,7 +1034,7 @@ float EvalBSDFPdf(StandardBSDFData bsdfData, float3 wo, float3 wi)
 
 // Importance-sample an incident direction Wi. preGeneratedSample.xy samples the chosen lobe,
 // and preGeneratedSample.z selects between BSDF lobe families.
-bool SampleBSDF(StandardBSDFData bsdfData, float3 wo, float3 preGeneratedSample,
+bool SampleBSDF(SurfaceBSDFData bsdfData, float3 wo, float3 preGeneratedSample,
                 out float3 wi, out float3 weight, out float pdf, out uint lobe, out float lobeP)
 {
     wi     = float3(0.0, 0.0, 0.0);

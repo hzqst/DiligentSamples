@@ -231,6 +231,12 @@ void main(uint3 tid : SV_DispatchThreadID)
         QueryPSO->CreateShaderResourceBinding(&QuerySRB, true);
         QuerySRB->GetVariableByName(SHADER_TYPE_COMPUTE, "t_LightingControl")->Set(ControlBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE));
         QuerySRB->GetVariableByName(SHADER_TYPE_COMPUTE, "t_LightProxyCounters")->Set(Counters->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE));
+        std::vector<PolymorphicLightInfo>   QueryLights(Control.TotalLightCount);
+        std::vector<PolymorphicLightInfoEx> QueryExtensions(Control.TotalLightCount);
+        auto                                QueryLightsBuffer     = Buffer(Device, "Query lights", QueryLights.size() * sizeof(PolymorphicLightInfo), BIND_SHADER_RESOURCE, QueryLights.data(), sizeof(PolymorphicLightInfo));
+        auto                                QueryExtensionsBuffer = Buffer(Device, "Query extensions", QueryExtensions.size() * sizeof(PolymorphicLightInfoEx), BIND_SHADER_RESOURCE, QueryExtensions.data(), sizeof(PolymorphicLightInfoEx));
+        QuerySRB->GetVariableByName(SHADER_TYPE_COMPUTE, "t_Lights")->Set(QueryLightsBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE));
+        QuerySRB->GetVariableByName(SHADER_TYPE_COMPUTE, "t_LightsEx")->Set(QueryExtensionsBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE));
         QuerySRB->GetVariableByName(SHADER_TYPE_COMPUTE, "t_LocalSamplingBuffer")->Set(Output->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE));
         QuerySRB->GetVariableByName(SHADER_TYPE_COMPUTE, "u_Results")->Set(Results->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS));
         Context->SetPipelineState(QueryPSO);
@@ -285,28 +291,81 @@ void main(uint3 tid : SV_DispatchThreadID)
             }
         std::cout << "Local light producer case " << Case << " passed\n";
     }
+    // A retained local table may contain both a cluster and a direct leaf.
+    // The density is the sum of those proposals, even after the cluster's global
+    // LOD switches off. Check exact probabilities, independently of sampling code.
+    for (bool Active : {false, true})
+    {
+        LightingControlData Control{};
+        Control.TotalLightCount         = 9;
+        Control.TriangleLightCount      = 8;
+        Control.LightClusterCount       = 1;
+        Control.ImportanceSamplingType  = 2;
+        Control.SamplingProxyCount      = 128;
+        Control.LocalSamplingResolution = uint2{1, 1};
+        std::array<PolymorphicLightInfo, 9>   Lights{};
+        std::array<PolymorphicLightInfoEx, 9> Extensions{};
+        std::array<Uint32, 9>                 Counters{};
+        for (Uint32 I = 0; I < 8; ++I)
+        {
+            Lights[I].ColorTypeAndFlags        = (kPolymorphicLightTypeTriangle << 24) | (Active ? kPolymorphicLightIsInCluster : 0u);
+            Extensions[I].ClusterIndexAndCount = PolymorphicLightInfoEx::PackClusterIndexAndCount(8, 8);
+            Counters[I]                        = Active ? 0 : 16;
+        }
+        Counters[8] = Active ? 128 : 0;
+        std::array<Uint32, 128> Table{};
+        for (Uint32 I = 0; I < 128; ++I) Table[I] = ((I < 64 ? 0u : 8u) << 9) | 63u;
+        auto                                  ControlBuffer    = Buffer(Device, "Cluster PDF control", sizeof(Control), BIND_SHADER_RESOURCE, &Control, sizeof(Control));
+        auto                                  LightsBuffer     = Buffer(Device, "Cluster PDF lights", sizeof(Lights), BIND_SHADER_RESOURCE, Lights.data(), sizeof(PolymorphicLightInfo));
+        auto                                  ExtensionsBuffer = Buffer(Device, "Cluster PDF extensions", sizeof(Extensions), BIND_SHADER_RESOURCE, Extensions.data(), sizeof(PolymorphicLightInfoEx));
+        auto                                  CountsBuffer     = Buffer(Device, "Cluster PDF counters", sizeof(Counters), BIND_SHADER_RESOURCE, Counters.data());
+        auto                                  TableBuffer      = Buffer(Device, "Mixed cluster table", sizeof(Table), BIND_SHADER_RESOURCE, Table.data());
+        auto                                  Output           = Buffer(Device, "Cluster PDF output", 4 * 257 * sizeof(uint4), BIND_UNORDERED_ACCESS, nullptr, sizeof(uint4));
+        RefCntAutoPtr<IShaderResourceBinding> SRB;
+        QueryPSO->CreateShaderResourceBinding(&SRB, true);
+        SRB->GetVariableByName(SHADER_TYPE_COMPUTE, "t_LightingControl")->Set(ControlBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE));
+        SRB->GetVariableByName(SHADER_TYPE_COMPUTE, "t_Lights")->Set(LightsBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE));
+        SRB->GetVariableByName(SHADER_TYPE_COMPUTE, "t_LightsEx")->Set(ExtensionsBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE));
+        SRB->GetVariableByName(SHADER_TYPE_COMPUTE, "t_LightProxyCounters")->Set(CountsBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE));
+        SRB->GetVariableByName(SHADER_TYPE_COMPUTE, "t_LocalSamplingBuffer")->Set(TableBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE));
+        SRB->GetVariableByName(SHADER_TYPE_COMPUTE, "u_Results")->Set(Output->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS));
+        Context->SetPipelineState(QueryPSO);
+        Context->CommitShaderResources(SRB, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+        DispatchComputeAttribs Dispatch;
+        Context->DispatchCompute(Dispatch);
+        const auto Results = Read(Context, Device, Output);
+        for (Uint32 I = 0; I < 8; ++I)
+        {
+            float Local, Global;
+            std::memcpy(&Local, &Results[I * 4], sizeof(float));
+            std::memcpy(&Global, &Results[I * 4 + 1], sizeof(float));
+            Require((I == 0 ? 0.5625f : 0.0625f) == Local, "Mixed cluster and leaf local PDF");
+            Require(0.125f == Global, "Cluster global PDF must include uniform member probability");
+        }
+    }
     std::vector<AnalyticLightData>      PackingSources(128);
     std::vector<PolymorphicLightInfo>   PackedLights(128);
     std::vector<PolymorphicLightInfoEx> PackedExtensions(128);
     for (Uint32 N = 0; N < 128; ++N)
     {
-        auto&       Source           = PackingSources[N];
-        const float Intensity        = N % 7 == 0 ? 0.0f : std::exp2(float(N % 25) - 8.0f);
-        Source.colorType             = float4{Intensity, Intensity * 0.3f, Intensity * 0.7f, N % 3 == 0 ? 2.0f : 0.0f};
-        Source.positionRadius        = float4{float(N), -float(N), 0.25f, float(N + 1) / 16.0f};
-        const float3 Axis            = normalize(float3{N & 1 ? -1.0f : 1.0f, N & 2 ? -2.0f : 2.0f, N & 4 ? -3.0f : 3.0f});
-        Source.directionRange        = float4{Axis, 0.0f};
-        Source.shaping               = float4{N & 1 ? 0.5f : -1.0f, 0.25f, 0.0f, 0.125f};
-        const auto Packed            = PackAnalyticLight(Source);
-        PackedLights[N]              = Packed.Base;
-        PackedExtensions[N]          = Packed.Extended;
-        PackedExtensions[N].UniqueID = 1000u + N;
+        auto&       Source                       = PackingSources[N];
+        const float Intensity                    = N % 7 == 0 ? 0.0f : std::exp2(float(N % 25) - 8.0f);
+        Source.colorType                         = float4{Intensity, Intensity * 0.3f, Intensity * 0.7f, N % 3 == 0 ? 2.0f : 0.0f};
+        Source.positionRadius                    = float4{float(N), -float(N), 0.25f, float(N + 1) / 16.0f};
+        const float3 Axis                        = normalize(float3{N & 1 ? -1.0f : 1.0f, N & 2 ? -2.0f : 2.0f, N & 4 ? -3.0f : 3.0f});
+        Source.directionRange                    = float4{Axis, 0.0f};
+        Source.shaping                           = float4{N & 1 ? 0.5f : -1.0f, 0.25f, 0.0f, 0.125f};
+        const auto Packed                        = PackAnalyticLight(Source);
+        PackedLights[N]                          = Packed.Base;
+        PackedExtensions[N]                      = Packed.Extended;
+        PackedExtensions[N].ClusterIndexAndCount = 1000u + N;
     }
     // PDF-only evaluation must match the original combined BSDF/PDF function for
     // diffuse, metallic, rough/delta dielectric and transmission configurations.
     SCI.Source = R"(
 #include "PathTracer/Lighting/LightSampler.hlsli"
 #include "PathTracer/Lighting/LightSamplingMIS.hlsli"
+#include "PathTracer/DenoisingLayers.hlsli"
 RWStructuredBuffer<uint4> u_Contract;
 StructuredBuffer<PolymorphicLightInfo> t_PackedContract;
 StructuredBuffer<PolymorphicLightInfoEx> t_PackedContractEx;
@@ -316,6 +375,15 @@ void main(uint3 tid : SV_DispatchThreadID)
 {
     uint n = tid.x;
     if (n >= 128) return;
+    SurfaceBSDFData boundary = MakeStandardBSDFData(float3(0,0,1), 0.5.xxx, 0.0, n == 0 ? 0.03 : 0.05);
+    u_Contract[1024 + n] = asuint(float4(boundary.alpha, boundary.Roughness(), boundary.Diffuse().x, boundary.Specular().x));
+    DenoisingLayer layer = (DenoisingLayer)0;
+    layer.PackedThpAndMVs = uint3(0x3c004000, 0x3800c200, 0x34003e00);
+    u_Contract[1152 + n] = asuint(float4(layer.GetWorldMotionVector(),
+        ComputeRayOrigin(float3(0,0,0), float3(0,0,1), 1024.0).z));
+    uint cluster = PolymorphicLightInfoEx::PackClusterIndexAndCount(2097151u, n + 1);
+    u_Contract[1280 + n] = uint4(PolymorphicLightInfoEx::UnpackClusterIndex(cluster),
+        PolymorphicLightInfoEx::UnpackClusterLightCount(cluster), cluster, 0);
     PolymorphicLightInfoFull packed;
     packed.Base = t_PackedContract[n];
     packed.Extended = t_PackedContractEx[n];
@@ -323,7 +391,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     u_Contract[384 + n] = asuint(decoded.positionRadius);
     u_Contract[512 + n] = asuint(decoded.colorType);
     u_Contract[640 + n] = asuint(float4(decoded.directionRange.xyz, decoded.shaping.w));
-    u_Contract[768 + n] = uint4(asuint(decoded.shaping.xy), packed.Extended.UniqueID, DecodeLightType(packed.Base));
+    u_Contract[768 + n] = uint4(asuint(decoded.shaping.xy), packed.Extended.ClusterIndexAndCount, DecodeLightType(packed.Base));
     EmissiveTriangle tri = (EmissiveTriangle)0;
     tri.base = float4(float(n), -float(n), 0.25, 0);
     tri.edge1 = float4(-(packed.Base.Center.x + 1.0) / 16.0, 0.25, 2.0, 0);
@@ -344,19 +412,9 @@ void main(uint3 tid : SV_DispatchThreadID)
     float lightMIS = LightVsBSDFMISApprox(pdf, 5, 1, true);
     float bsdfMIS = LightVsBSDFMISApprox(pdf, 5, 1, false);
     u_Contract[n] = uint4(localCount, globalCount, asuint(lightMIS), asuint(bsdfMIS));
-    StandardBSDFData d = (StandardBSDFData)0;
-    d.N = float3(0,0,1);
-    d.diffuse = 0.5;
-    d.specular = 0.04;
-    d.transmission = 0.8;
-    d.roughness = float(n % 4) / 3.0;
-    d.alpha = d.roughness * d.roughness;
-    d.eta = (n & 1) != 0 ? 1.5 : 1.0 / 1.5;
-    d.metallic = (n % 3) == 0 ? 1 : 0;
-    d.specularTransmission = (n % 3) == 1 ? 1 : 0;
-    d.diffuseTransmission = (n % 3) == 2 ? 0.5 : 0;
-    d.thinSurface = (n & 1) != 0;
-    d.activeLobes = 0x3f;
+    SurfaceBSDFData d = MakeStandardBSDFData(float3(0,0,1), 0.5.xxx,
+        (n % 3) == 0 ? 1 : 0, float(n % 4) / 3.0, 1.5, 1.0,
+        (n % 3) == 1 ? 1 : 0, (n % 3) == 2 ? 0.5 : 0, (n & 1) != 0, (n & 1) == 0);
     float3 wo = normalize(float3(0.2, 0.1, 1));
     float3 wi = normalize(float3(float(n % 5) - 2, 0.3, (n & 4) != 0 ? -1 : 1));
     float3 f;
@@ -413,7 +471,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     RefCntAutoPtr<IPipelineState> ContractPSO;
     Device->CreateComputePipelineState(PCI, &ContractPSO);
     Require(ContractPSO != nullptr, "Light sampling contract PSO failed");
-    auto                                  ContractOutput = Buffer(Device, "Light sampling contract", 1024 * sizeof(uint4), BIND_UNORDERED_ACCESS, nullptr, sizeof(uint4));
+    auto                                  ContractOutput = Buffer(Device, "Light sampling contract", 1408 * sizeof(uint4), BIND_UNORDERED_ACCESS, nullptr, sizeof(uint4));
     auto                                  PackedInput    = Buffer(Device, "Packed light ABI", PackedLights.size() * sizeof(PolymorphicLightInfo), BIND_SHADER_RESOURCE, PackedLights.data(), sizeof(PolymorphicLightInfo));
     auto                                  PackedExInput  = Buffer(Device, "Packed light extension ABI", PackedExtensions.size() * sizeof(PolymorphicLightInfoEx), BIND_SHADER_RESOURCE, PackedExtensions.data(), sizeof(PolymorphicLightInfoEx));
     auto                                  PackedOutput   = Buffer(Device, "GPU packed triangle ABI", 128 * sizeof(PolymorphicLightInfo), BIND_UNORDERED_ACCESS, nullptr, sizeof(PolymorphicLightInfo));
@@ -438,6 +496,16 @@ void main(uint3 tid : SV_DispatchThreadID)
     };
     for (Uint32 N = 0; N < 128; ++N)
     {
+        const float ExpectedRoughness = (N == 0 ? 8.0f : 13.0f) / 255.0f;
+        Require(std::abs(ExpectedRoughness - FloatAt((1024 + N) * 4 + 1)) < 1e-6f, "v1.9 roughness must use A8 quantization");
+        Require(N == 0 ? FloatAt((1024 + N) * 4) == 0.0f : FloatAt((1024 + N) * 4) > 0.0f, "v1.9 delta roughness threshold");
+        Require(std::abs(0.50288646f - FloatAt((1024 + N) * 4 + 2)) < 1e-6f, "v1.9 diffuse must round-trip through sRGB8");
+        Require(FloatAt((1152 + N) * 4) == 2.0f && FloatAt((1152 + N) * 4 + 1) == -3.0f &&
+                    FloatAt((1152 + N) * 4 + 2) == 1.5f,
+                "Layer motion is the signed world-space displacement");
+        Require(FloatAt((1152 + N) * 4 + 3) == 1.0f / 2048.0f, "Ray origin offset must honor object-space position error");
+        Require(2097151u == ContractResults[(1280 + N) * 4] && N + 1 == ContractResults[(1280 + N) * 4 + 1],
+                "Cluster membership must preserve the last index in the 2M light table");
         const Uint32 Count = N / 2;
         const Uint32 Local = Count > 0 && (N & 1) ? std::min(Count - 1, Uint32((Count - 1) * (N % 5) * 0.25f + 0.75f)) : 0;
         Require(Local == ContractResults[N * 4] && Count - Local == ContractResults[N * 4 + 1], "Candidate count contract");

@@ -25,6 +25,7 @@
  */
 
 #include "RTXPTLightsBaker.hpp"
+#include "../shaders/PathTracer/Lighting/LightingConfig.h"
 
 #include "DebugUtilities.hpp"
 #include "GraphicsTypesX.hpp"
@@ -45,8 +46,8 @@ namespace Diligent
 namespace
 {
 
-constexpr Uint32 kProxyRatio                        = 12u;
-constexpr Uint32 kMaxLightCount                     = 512u * 1024u; // LightingConfig.h
+constexpr Uint32 kProxyRatio                        = RTXPT_LIGHTING_SAMPLING_PROXY_RATIO;
+constexpr Uint32 kMaxLightCount                     = RTXPT_LIGHTING_MAX_LIGHTS;
 constexpr Uint32 kLocalProxyCount                   = 128u;
 constexpr Uint32 kTileSize                          = 8u;
 constexpr float  kDistantVsLocalImportanceBaseScale = 0.0002f;
@@ -83,7 +84,7 @@ struct RTXPTLightingControlDataCPU
     Uint32 LocalSamplingTileJitter[2]                                    = {};
     Uint32 LocalSamplingTileJitterPrev[2]                                = {};
     Uint32 ValidFeedbackCount                                            = 0;
-    Uint32 _padding1                                                     = 0;
+    Uint32 LightClusterCount                                             = 0;
     Uint32 _padding2                                                     = 0;
     Uint32 _padding3                                                     = 0;
     Uint32 BakerPadding[kLightsBakerConstantsSizeBytes / sizeof(Uint32)] = {};
@@ -106,6 +107,8 @@ static_assert(offsetof(RTXPTLightingControlDataCPU, LocalSamplingTileJitter) == 
               "LightingControlData LocalSamplingTileJitter offset must match LightingTypes.hlsli");
 static_assert(offsetof(RTXPTLightingControlDataCPU, ValidFeedbackCount) == 96,
               "LightingControlData ValidFeedbackCount offset must match LightingTypes.hlsli");
+static_assert(offsetof(RTXPTLightingControlDataCPU, LightClusterCount) == 100,
+              "LightingControlData LightClusterCount offset must match LightingTypes.hlsli");
 static_assert(offsetof(RTXPTLightingControlDataCPU, BakerPadding) == kLightingControlHeaderSizeBytes,
               "LightingControlData BakerConstants offset must match LightingTypes.hlsli");
 static_assert(sizeof(RTXPTLightingControlDataCPU) - offsetof(RTXPTLightingControlDataCPU, BakerPadding) == kLightsBakerConstantsSizeBytes,
@@ -200,13 +203,13 @@ bool RTXPTLightsBaker::CreateResources(IRenderDevice* pDevice, IEngineFactory* p
         return false;
     }
 
-    const bool FeedbackOk          = CreateFeedbackTextures(pDevice, Width, Height);
-    const bool LocalOk             = CreateLocalSamplingBuffer(pDevice, Width, Height);
-    const bool ProxyBuildOk        = FeedbackOk && LocalOk && m_ProxyBuildPass.Initialize(pDevice, pEngineFactory, pStateCache) &&
+    const bool FeedbackOk   = CreateFeedbackTextures(pDevice, Width, Height);
+    const bool LocalOk      = CreateLocalSamplingBuffer(pDevice, Width, Height);
+    const bool ProxyBuildOk = FeedbackOk && LocalOk && m_ProxyBuildPass.Initialize(pDevice, pEngineFactory, pStateCache) &&
         m_LightFeedback.Initialize(pDevice, pEngineFactory, pStateCache, Width, Height);
     const bool EnvBuildOk = m_EnvironmentLights.Initialize(pDevice, pEngineFactory, pStateCache) &&
         m_LightHistory.Initialize(pDevice, pEngineFactory, pStateCache);
-    m_Stats.Ready         = FeedbackOk && LocalOk && ProxyBuildOk && EnvBuildOk;
+    m_Stats.Ready = FeedbackOk && LocalOk && ProxyBuildOk && EnvBuildOk;
     return m_Stats.Ready;
 }
 
@@ -239,6 +242,19 @@ bool RTXPTLightsBaker::UpdateBegin(IRenderDevice* pDevice, const RTXPTLights& Li
     for (auto Source : Lights.GetTriangleSources())
     {
         Source.Base += m_Stats.EnvironmentLightCount + m_Stats.AnalyticLightCount;
+        Sources.push_back(Source);
+    }
+    Uint32 ClusterBase = m_Stats.EnvironmentLightCount + m_Stats.AnalyticLightCount + m_Stats.TriangleLightCount;
+    for (auto Source : Lights.GetTriangleSources())
+    {
+        if (Source.Count <= RTXPT_LIGHT_CLUSTER_MIN_TRIANGLES) continue;
+        Source.Key[0] = 4u;
+        // Preserve the original triangle count in the identity: a changed source
+        // invalidates history even if it still needs the same number of clusters.
+        Source.Key[3] ^= Uint64{Source.Count} << 32;
+        Source.Base  = ClusterBase;
+        Source.Count = DivRoundUp(Source.Count, RTXPT_LIGHT_CLUSTER_SIZE);
+        ClusterBase += Source.Count;
         Sources.push_back(Source);
     }
     m_LightHistory.SetSources(std::move(Sources), m_Stats.TotalLightCount, m_Stats.EnvironmentLightCount);
@@ -453,26 +469,33 @@ bool RTXPTLightsBaker::CreateProxyBuffers(IRenderDevice* pDevice, const RTXPTLig
         return false;
     }
 
-    const Uint32 AnalyticCount   = static_cast<Uint32>(Lights.GetAnalyticLights().size());
-    const Uint32 TriangleCount   = Lights.GetEmissiveTriangleCount();
-    const Uint32 TotalLightCount = m_EnvironmentLights.GetLightCount() + AnalyticCount + TriangleCount;
-
-    m_Stats.TotalLightCount    = TotalLightCount;
-    m_Stats.AnalyticLightCount = AnalyticCount;
-    m_Stats.TriangleLightCount = TriangleCount;
-    m_Stats.EnvironmentLightCount = m_EnvironmentLights.GetLightCount();
-    m_Stats.ProxyTotalWeight   = 0.0f; // computed on the GPU now (control.WeightsSumUINT)
-    m_ProxyImportanceType      = Settings.ImportanceSamplingType;
-
-    if (TotalLightCount > kMaxLightCount)
+    const Uint64 AnalyticCount64      = Lights.GetAnalyticLights().size();
+    const Uint32 TriangleCount        = Lights.GetEmissiveTriangleCount();
+    const Uint64 PhysicalLightCount64 = Uint64{m_EnvironmentLights.GetLightCount()} + AnalyticCount64 + TriangleCount;
+    Uint64       ClusterCount         = 0;
+    for (const auto& Source : Lights.GetTriangleSources())
+        if (Source.Count > RTXPT_LIGHT_CLUSTER_MIN_TRIANGLES)
+            ClusterCount += (Uint64{Source.Count} + RTXPT_LIGHT_CLUSTER_SIZE - 1u) / RTXPT_LIGHT_CLUSTER_SIZE;
+    if (PhysicalLightCount64 + ClusterCount > kMaxLightCount)
     {
         m_Stats.LastError = "RTXPT unified light table exceeds RTXPT_LIGHTING_MAX_LIGHTS";
         LOG_ERROR_MESSAGE(m_Stats.LastError.c_str());
         return false;
     }
-    // Match RTXPT-fork's minimum proxy budget to retain precision for small scenes.
-    m_ProxyBudget              = kProxyRatio * std::max(TotalLightCount, kMaxLightCount / 10u);
-    m_Stats.SamplingProxyCount = m_ProxyBudget; // CPU estimate (UI / local-sampling gating); GPU writes the real count
+    const Uint32 AnalyticCount      = static_cast<Uint32>(AnalyticCount64);
+    const Uint32 PhysicalLightCount = static_cast<Uint32>(PhysicalLightCount64);
+    const Uint32 TotalLightCount    = static_cast<Uint32>(PhysicalLightCount64 + ClusterCount);
+
+    m_Stats.TotalLightCount       = TotalLightCount;
+    m_Stats.AnalyticLightCount    = AnalyticCount;
+    m_Stats.TriangleLightCount    = TriangleCount;
+    m_Stats.EnvironmentLightCount = m_EnvironmentLights.GetLightCount();
+    m_Stats.ProxyTotalWeight      = 0.0f; // computed on the GPU now (control.WeightsSumUINT)
+    m_ProxyImportanceType         = Settings.ImportanceSamplingType;
+
+    constexpr Uint32 MaxProxies = RTXPT_LIGHTING_MAX_SAMPLING_PROXIES;
+    m_ProxyBudget               = std::max(1u, std::min(kProxyRatio * PhysicalLightCount, MaxProxies - MaxProxies / 256u));
+    m_Stats.SamplingProxyCount  = m_ProxyBudget; // CPU estimate (UI / local-sampling gating); GPU writes the real count
 
     // Capture the source light buffers for the GPU weight computation (owned by RTXPTLights for the scene's lifetime).
     m_AnalyticLightBuffer    = Lights.GetLightBuffer();
@@ -480,7 +503,7 @@ bool RTXPTLightsBaker::CreateProxyBuffers(IRenderDevice* pDevice, const RTXPTLig
     m_EmissiveTriangleBuffer = Lights.GetEmissiveTriangleBuffer();
     m_LightBuffersDirty      = true;
 
-    auto CreateRWStructured = [&](const char* Name, Uint32 ElementCount, Uint32 Stride, RefCntAutoPtr<IBuffer>& Out) {
+    auto CreateRWStructured = [&](const char* Name, Uint32 ElementCount, Uint32 Stride, RefCntAutoPtr<IBuffer>& Out, const void* Initial = nullptr) {
         BufferDesc Desc;
         Desc.Name              = Name;
         Desc.Usage             = USAGE_DEFAULT;
@@ -489,12 +512,29 @@ bool RTXPTLightsBaker::CreateProxyBuffers(IRenderDevice* pDevice, const RTXPTLig
         Desc.ElementByteStride = Stride;
         Desc.Size              = Uint64{std::max(ElementCount, 1u)} * Stride;
         Out.Release();
-        pDevice->CreateBuffer(Desc, nullptr, &Out);
+        BufferData Data{Initial, Desc.Size};
+        pDevice->CreateBuffer(Desc, Initial ? &Data : nullptr, &Out);
         return Out != nullptr;
     };
 
+    std::vector<PolymorphicLightInfo> InitialLights(std::max(1u, TotalLightCount));
+    Uint32                            ClusterIndex   = PhysicalLightCount;
+    const Uint32                      TriangleOffset = m_EnvironmentLights.GetLightCount() + AnalyticCount;
+    for (const auto& Source : Lights.GetTriangleSources())
+    {
+        if (Source.Count <= RTXPT_LIGHT_CLUSTER_MIN_TRIANGLES) continue;
+        for (Uint32 From = 0; From < Source.Count; From += RTXPT_LIGHT_CLUSTER_SIZE)
+        {
+            auto& Cluster             = InitialLights[ClusterIndex++];
+            Cluster.ColorTypeAndFlags = kPolymorphicLightTypeCluster << kPolymorphicLightTypeShift;
+            Cluster.Direction1        = (TriangleOffset + Source.Base + From) |
+                ((std::min(Uint32{RTXPT_LIGHT_CLUSTER_SIZE}, Source.Count - From) - 1u) << 23);
+            // Keep the untrimmed range so each frame can rebuild LOD from current geometry.
+            Cluster.Direction2 = Cluster.Direction1;
+        }
+    }
     const bool BuffersOk =
-        CreateRWStructured("RTXPT packed lights", TotalLightCount, sizeof(PolymorphicLightInfo), m_LightsBuffer) &&
+        CreateRWStructured("RTXPT packed lights", TotalLightCount, sizeof(PolymorphicLightInfo), m_LightsBuffer, InitialLights.data()) &&
         CreateRWStructured("RTXPT LightsBaker light weights", TotalLightCount, sizeof(float), m_LightWeights) &&
         CreateRWStructured("RTXPT LightsBaker proxy counters", TotalLightCount, sizeof(Uint32), m_LightProxyCounters) &&
         CreateRWStructured("RTXPT LightsBaker sampling proxies", m_ProxyBudget, sizeof(Uint32), m_LightSamplingProxies);
@@ -507,16 +547,12 @@ bool RTXPTLightsBaker::CreateProxyBuffers(IRenderDevice* pDevice, const RTXPTLig
 
     // Extensions are a separate stream. Unshaped lights never fetch this buffer.
     std::vector<PolymorphicLightInfoEx> Extensions(std::max(TotalLightCount, 1u));
-    for (Uint32 I = 0; I < m_Stats.EnvironmentLightCount; ++I)
-        Extensions[I].UniqueID = GetLightDebugID({{3u, I, 0u, 0u}, 0, 1});
-    const Uint32 TriangleBase = m_Stats.EnvironmentLightCount + m_Stats.AnalyticLightCount;
-    for (const auto& Source : Lights.GetTriangleSources())
-        for (Uint32 I = 0; I < Source.Count; ++I)
-            Extensions[TriangleBase + Source.Base + I].UniqueID = GetLightDebugID(Source, I);
+    for (auto& Extension : Extensions)
+        Extension.ClusterIndexAndCount = ~0u;
     BufferDesc ExDesc;
     ExDesc.Name              = "RTXPT packed light extensions";
     ExDesc.Usage             = USAGE_DEFAULT;
-    ExDesc.BindFlags         = BIND_SHADER_RESOURCE;
+    ExDesc.BindFlags         = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
     ExDesc.Mode              = BUFFER_MODE_STRUCTURED;
     ExDesc.ElementByteStride = sizeof(PolymorphicLightInfoEx);
     ExDesc.Size              = Extensions.size() * sizeof(PolymorphicLightInfoEx);
@@ -550,7 +586,9 @@ bool RTXPTLightsBaker::RunProxyBuild(IDeviceContext* pContext)
                                   m_ProxyBudget,
                                   m_ProxyImportanceType,
                                   m_LightHistory.GetCurrentToPast(),
-                                  m_FrustumPlanes.data());
+                                  m_FrustumPlanes.data(),
+                                  m_Stats.TotalLightCount - m_Stats.EnvironmentLightCount - m_Stats.AnalyticLightCount - m_Stats.TriangleLightCount,
+                                  &m_CameraPosition);
 }
 
 void RTXPTLightsBaker::RequestProxyRebuild()
@@ -572,10 +610,11 @@ bool RTXPTLightsBaker::UploadControlBuffer(IRenderDevice* pDevice, const RTXPTLi
     }
 
     RTXPTLightingControlDataCPU Control;
-    Control.TotalLightCount    = m_Stats.TotalLightCount;
+    Control.TotalLightCount     = m_Stats.TotalLightCount;
     Control.EnvmapQuadNodeCount = m_Stats.EnvironmentLightCount;
-    Control.AnalyticLightCount = m_Stats.AnalyticLightCount;
-    Control.TriangleLightCount = m_Stats.TriangleLightCount;
+    Control.AnalyticLightCount  = m_Stats.AnalyticLightCount;
+    Control.TriangleLightCount  = m_Stats.TriangleLightCount;
+    Control.LightClusterCount   = m_Stats.TotalLightCount - m_Stats.EnvironmentLightCount - m_Stats.AnalyticLightCount - m_Stats.TriangleLightCount;
     // SamplingProxyCount, WeightsSumUINT and ProxyBuildTaskCount are produced by the GPU proxy build
     // (RTXPTLightProxyBuildPass) into this DEFAULT/UAV buffer; initialize them to zero.
     Control.SamplingProxyCount      = 0u;
@@ -655,8 +694,9 @@ bool RTXPTLightsBaker::UploadControlBuffer(IRenderDevice* pDevice, const RTXPTLi
     return true;
 }
 
-void RTXPTLightsBaker::UpdateFrame(const float4x4& ViewProj)
+void RTXPTLightsBaker::UpdateFrame(const float4x4& ViewProj, const float3& CameraPosition)
 {
+    m_CameraPosition = CameraPosition;
     if (!m_Stats.Ready || !m_ControlBuffer) return;
     // Diligent uses forward Z (near = clip.z), whereas upstream uses reversed Z
     // (near = clip.w - clip.z). The four side planes use the same row-vector math.

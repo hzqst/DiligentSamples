@@ -4,8 +4,8 @@
 // Path-tracer compile-time configuration. Values mirror
 // D:/RTXPT-fork/Rtxpt/Shaders/PathTracer/Config.h.
 #define PATH_TRACER_MODE_REFERENCE           0
-#define PATH_TRACER_MODE_BUILD_STABLE_PLANES 1
-#define PATH_TRACER_MODE_FILL_STABLE_PLANES  2
+#define PATH_TRACER_MODE_BUILD_DENOISING_LAYERS 1
+#define PATH_TRACER_MODE_FILL_DENOISING_LAYERS  2
 
 #ifndef PATH_TRACER_MODE
 #    define PATH_TRACER_MODE PATH_TRACER_MODE_REFERENCE

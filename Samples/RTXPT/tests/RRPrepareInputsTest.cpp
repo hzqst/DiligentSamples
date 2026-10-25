@@ -49,7 +49,7 @@ Uint32 Pack(float Low, float High)
     return Float16{Low}.Raw() | (Uint32{Float16{High}.Raw()} << 16);
 }
 
-using Plane = RTXPTStablePlaneData;
+using Plane = RTXPTDenoisingLayerData;
 Plane Surface(float Roughness, float Radiance)
 {
     Plane Data                            = {};
@@ -102,14 +102,14 @@ try
     RefCntAutoPtr<IShaderSourceInputStreamFactory> Source;
     Factory->CreateDefaultShaderSourceStreamFactory(Argv[2], &Source);
     CheckGeometryVertexLayout(Device, Context, Source);
-    ShaderMacro      Macros[] = {{"RTXPT_POST_PROCESS_MODE", "9"}, {"RTXPT_HAS_NRD_HEADERS", "0"}};
+    ShaderMacro      Macros[] = {{"RTXPT_PREPARE_DLSS_RR", "1"}, {"RTXPT_HAS_NRD_HEADERS", "0"}};
     ShaderCreateInfo ShaderCI;
     ShaderCI.Desc                       = {"RR input regression", SHADER_TYPE_COMPUTE, false};
     ShaderCI.SourceLanguage             = SHADER_SOURCE_LANGUAGE_HLSL;
     ShaderCI.ShaderCompiler             = SHADER_COMPILER_DXC;
     ShaderCI.CompileFlags               = SHADER_COMPILE_FLAG_PACK_MATRIX_ROW_MAJOR;
-    ShaderCI.FilePath                   = "PostProcessing/RTXPTPostProcess.csh";
-    ShaderCI.EntryPoint                 = "main";
+    ShaderCI.FilePath                   = "PathTracer/DenoisingGuidesBaker.hlsl";
+    ShaderCI.EntryPoint                 = "PrepareDLSSRRGuides";
     ShaderCI.Macros                     = {Macros, 2};
     ShaderCI.pShaderSourceStreamFactory = Source;
     RefCntAutoPtr<IShader> Shader;
@@ -127,8 +127,9 @@ try
 
     // A planar scene uses the same ray/motion producers as BUILD. Independent
     // expectations below check view Z and pixel-motion direction after prepare.
-    ShaderCI.FilePath = nullptr;
-    ShaderCI.Source   = R"(
+    ShaderCI.FilePath   = nullptr;
+    ShaderCI.EntryPoint = "main";
+    ShaderCI.Source     = R"(
 #include "PathTracer/PathTracerCamera.hlsli"
 cbuffer g_Const { SampleConstants g_Frame; };
 #ifndef VK_IMAGE_FORMAT
@@ -146,7 +147,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     u_Motion[tid.xy] = float4(ComputePathTracerMotionVector(worldPos, worldPos + float3(0.5, 0, 0),
         g_Frame.view, g_Frame.previousView), 0);
 })";
-    ShaderCI.Macros   = {};
+    ShaderCI.Macros     = {};
     Shader.Release();
     Device->CreateShader(ShaderCI, &Shader);
     Require(Shader != nullptr, "RR planar scene shader failed");
@@ -156,11 +157,11 @@ void main(uint3 tid : SV_DispatchThreadID)
     Require(ScenePSO != nullptr, "RR planar scene pipeline failed");
 
     // One-pixel inputs deliberately dispatch an 8x8 group to exercise bounds checks.
-    for (int Test = 0; Test < 14; ++Test)
+    for (int Test = 0; Test < 15; ++Test)
     {
         SampleConstants Frame     = {};
         Frame.ptConsts.imageWidth = Frame.ptConsts.imageHeight = 1;
-        Frame.ptConsts._activeStablePlaneCount                 = Test == 8 ? 0 : 3;
+        Frame.ptConsts._activeDenoisingLayerCount              = Test == 8 ? 0 : 3;
         Frame.ptConsts.genericTSLineStride                     = 8;
         Frame.ptConsts.genericTSPlaneStride                    = 64;
         Frame.ptConsts.DLSSRRBrightnessClampK                  = Test == 3 ? 2.0f : 0.0f;
@@ -193,6 +194,12 @@ void main(uint3 tid : SV_DispatchThreadID)
         std::array<Plane, 192> Planes = {};
         Planes[0]                     = Surface(Test == 5 ? 0.0f : 0.5f, 4.0f);
         Planes[64]                    = Surface(1.0f, 2.0f);
+        if (Test == 14)
+        {
+            Planes[0]                    = Surface(0.0f, 4.0f);
+            Planes[0].RayDir             = float3{0, 0, 1};
+            Planes[0].PackedThpAndMVs[0] = Pack(1.0f, 1.0f);
+        }
         if (Test == 6)
         {
             Planes[64].PackedThpAndMVs = uint3{Pack(0, 0.625f)};
@@ -213,8 +220,8 @@ void main(uint3 tid : SV_DispatchThreadID)
         SPDesc.ElementByteStride = sizeof(Plane);
         SPDesc.BindFlags         = BIND_UNORDERED_ACCESS;
         BufferData             SPData{Planes.data(), sizeof(Planes)};
-        RefCntAutoPtr<IBuffer> StablePlanes;
-        Device->CreateBuffer(SPDesc, &SPData, &StablePlanes);
+        RefCntAutoPtr<IBuffer> DenoisingLayers;
+        Device->CreateBuffer(SPDesc, &SPData, &DenoisingLayers);
 
         std::array<Uint32, 4> Header = {{Test < 2 ? 0xffffffffu : 1u, Test == 5 ? 1u : 0xffffffffu, 0xffffffffu, 0u}};
         if (Test == 6)
@@ -244,7 +251,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         TexDesc.Name      = "RR test stable radiance";
         RefCntAutoPtr<ITexture> StableRadiance;
         Device->CreateTexture(TexDesc, &StableInit, &StableRadiance);
-        std::array<RefCntAutoPtr<ITexture>, 6> Outputs;
+        std::array<RefCntAutoPtr<ITexture>, 7> Outputs;
         for (size_t Index = 0; Index < Outputs.size(); ++Index)
         {
             TexDesc.Format = Index < 4 ? TEX_FORMAT_RGBA16_FLOAT : Index == 4 ? TEX_FORMAT_R32_FLOAT : TEX_FORMAT_RG16_FLOAT;
@@ -284,19 +291,20 @@ void main(uint3 tid : SV_DispatchThreadID)
             Variable->Set(Object);
         };
         Bind("g_Const", Constants);
-        Bind("u_StablePlanesBuffer", StablePlanes->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS));
-        Bind("u_StablePlanesHeader", HeaderTexture->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
+        Bind("u_DenoisingLayersBuffer", DenoisingLayers->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS));
+        Bind("u_DenoisingLayersHeader", HeaderTexture->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
         Bind("u_StableRadiance", StableRadiance->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
         Bind("t_Depth", Depth->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
+        Bind("t_SpecularHitT", Depth->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
         Bind("t_MotionVectors", MotionTexture->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
-        const char* Names[] = {"u_OutputColor", "u_RRDiffuseAlbedo", "u_RRSpecAlbedo", "u_RRNormalsAndRoughness", "u_RRDepth", "u_RRMotionVectors"};
+        const char* Names[] = {"u_OutputColor", "u_RRDiffuseAlbedo", "u_RRSpecAlbedo", "u_RRNormalsAndRoughness", "u_RRDepth", "u_RRMotionVectors", "u_RRSpecMotionVectors"};
         for (size_t Index = 0; Index < Outputs.size(); ++Index)
             Bind(Names[Index], Outputs[Index]->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
         Context->SetPipelineState(PSO);
         Context->CommitShaderResources(SRB, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
         Context->DispatchCompute(DispatchComputeAttribs{1, 1, 1});
 
-        std::array<std::array<float, 4>, 6> Results = {};
+        std::array<std::array<float, 4>, 7> Results = {};
         for (size_t Index = 0; Index < Outputs.size(); ++Index)
         {
             TextureDesc ReadDesc    = Outputs[Index]->GetDesc();
@@ -323,9 +331,13 @@ void main(uint3 tid : SV_DispatchThreadID)
             Context->UnmapTextureSubresource(Readback, 0, 0);
         }
         const auto& Normal = Results[3];
+        std::cout << "RR motion case " << Test << ": " << Results[5][0] << ", " << Results[5][1]
+                  << "; specular " << Results[6][0] << ", " << Results[6][1] << '\n';
         Near(Test < 2 ? 5000000.0f : Test < 10 ? 2.1f : 3.0f, Results[4][0]);
         Near(Test < 10 ? 2.0f : Test == 10 ? 0.25f : Test == 12 ? 0.0f : -0.75f, Results[5][0]);
         Near(Test < 10 ? -3.0f : Test == 10 || Test == 12 ? 0.0f : -2.0f, Results[5][1]);
+        Near(Test == 14 ? -0.5f : Results[5][0], Results[6][0]);
+        Near(Test == 14 ? -2.0f : Results[5][1], Results[6][1]);
         Near(1, std::sqrt(Normal[0] * Normal[0] + Normal[1] * Normal[1] + Normal[2] * Normal[2]));
         Require(Normal[3] >= 0 && Normal[3] <= 1, "Roughness outside [0,1]");
         for (size_t Guide = 1; Guide <= 2; ++Guide)
@@ -334,7 +346,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         if (Test == 0)
         {
             Near(0, Results[0][0]);
-            Near(0.05f, Results[1][0]);
+            Require(std::abs(0.0001f - Results[1][0]) < 1e-6f, "RR black-albedo floor must remain nonzero and distinct from NRD's floor");
         }
         if (Test == 1) Near(8, Results[0][0]); // disabled clamp must preserve sky
         if (Test == 2)

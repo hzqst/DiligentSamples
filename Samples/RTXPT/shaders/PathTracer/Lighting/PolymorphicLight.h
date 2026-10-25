@@ -13,6 +13,8 @@ static const LIGHT_UINT kPolymorphicLightTypeShift = 24;
 static const LIGHT_UINT kPolymorphicLightTypeMask = 0xf;
 static const LIGHT_UINT kPolymorphicLightTypeTriangle = 1;
 static const LIGHT_UINT kPolymorphicLightTypeEnvironment = 5;
+static const LIGHT_UINT kPolymorphicLightTypeCluster = 8;
+static const LIGHT_UINT kPolymorphicLightIsInCluster = 1u << 31;
 static const LIGHT_UINT kPolymorphicLightShapingEnableBit = 1u << 28;
 static const LIGHT_UINT kPolymorphicLightIesProfileEnableBit = 1u << 29;
 static const LIGHT_UINT kPolymorphicLightShapingUseMinFalloff = 1u << 30;
@@ -30,6 +32,7 @@ struct PolymorphicLightInfo
     LIGHT_UINT LogRadiance;
 
     bool HasLightShaping() { return (ColorTypeAndFlags & kPolymorphicLightShapingEnableBit) != 0; }
+    bool IsPartOfLightCluster() { return (ColorTypeAndFlags & kPolymorphicLightIsInCluster) != 0; }
 };
 
 struct PolymorphicLightInfoEx
@@ -37,7 +40,11 @@ struct PolymorphicLightInfoEx
     LIGHT_UINT IesProfileIndex;
     LIGHT_UINT PrimaryAxis;
     LIGHT_UINT CosConeAngleAndSoftness;
-    LIGHT_UINT UniqueID;
+    LIGHT_UINT ClusterIndexAndCount;
+
+    static LIGHT_UINT PackClusterIndexAndCount(LIGHT_UINT index, LIGHT_UINT count) { return (index << 9) | (count - 1); }
+    static LIGHT_UINT UnpackClusterIndex(LIGHT_UINT packed) { return packed >> 9; }
+    static LIGHT_UINT UnpackClusterLightCount(LIGHT_UINT packed) { return (packed & 511u) + 1; }
 };
 
 struct PolymorphicLightInfoFull

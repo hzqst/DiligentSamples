@@ -79,7 +79,7 @@ constexpr Uint32 kRTXPTRealtimeNoisePeriod = 8192u;
 
 // Disk file used to persist the render state cache (compiled shaders + pipeline states)
 // across runs. Resolved relative to the working directory set in Initialize().
-constexpr char kStateCachePath[] = "RTXPTCache_013.bin";
+constexpr char kStateCachePath[] = "RTXPTCache_016.bin";
 
 bool IsStandaloneNrdAvailable()
 {
@@ -249,17 +249,17 @@ RTXPTRayTracingDispatch MakePathTraceDispatch(const RTXPTRenderTargets&  RenderT
                                               const SampleMiniConstants& MiniConstants)
 {
     RTXPTRayTracingDispatch Dispatch;
-    Dispatch.pOutputColorUAV        = RenderTargets.GetOutputColorUAV();
-    Dispatch.pDepthUAV              = RenderTargets.GetDepthUAV();
-    Dispatch.pMotionVectorsUAV      = RenderTargets.GetScreenMotionVectorsUAV();
-    Dispatch.pThroughputUAV         = RenderTargets.GetThroughputUAV();
-    Dispatch.pSpecularHitTUAV       = RenderTargets.GetSpecularHitTUAV();
-    Dispatch.pStableRadianceUAV     = RenderTargets.GetStableRadianceUAV();
-    Dispatch.pStablePlanesHeaderUAV = RenderTargets.GetStablePlanesHeaderUAV();
-    Dispatch.pStablePlanesBufferUAV = RenderTargets.GetStablePlanesBufferUAV();
-    Dispatch.pMiniConstants         = &MiniConstants;
-    Dispatch.Width                  = RenderTargets.GetRenderWidth();
-    Dispatch.Height                 = RenderTargets.GetRenderHeight();
+    Dispatch.pOutputColorUAV           = RenderTargets.GetOutputColorUAV();
+    Dispatch.pDepthUAV                 = RenderTargets.GetDepthUAV();
+    Dispatch.pMotionVectorsUAV         = RenderTargets.GetScreenMotionVectorsUAV();
+    Dispatch.pThroughputUAV            = RenderTargets.GetThroughputUAV();
+    Dispatch.pSpecularHitTUAV          = RenderTargets.GetSpecularHitTUAV();
+    Dispatch.pStableRadianceUAV        = RenderTargets.GetStableRadianceUAV();
+    Dispatch.pDenoisingLayersHeaderUAV = RenderTargets.GetDenoisingLayersHeaderUAV();
+    Dispatch.pDenoisingLayersBufferUAV = RenderTargets.GetDenoisingLayersBufferUAV();
+    Dispatch.pMiniConstants            = &MiniConstants;
+    Dispatch.Width                     = RenderTargets.GetRenderWidth();
+    Dispatch.Height                    = RenderTargets.GetRenderHeight();
     return Dispatch;
 }
 
@@ -622,7 +622,7 @@ void RTXPTSample::ModifyEngineInitInfo(const ModifyEngineInitInfoAttribs& Attrib
 {
     SampleBase::ModifyEngineInitInfo(Attribs);
 
-    Attribs.EngineCI.Features.RayTracing = DEVICE_FEATURE_STATE_ENABLED;
+    Attribs.EngineCI.Features.RayTracing    = DEVICE_FEATURE_STATE_ENABLED;
     Attribs.EngineCI.Features.ShaderFloat16 = DEVICE_FEATURE_STATE_OPTIONAL;
     // Also enables shaderInt16 on Vulkan and identifies native 16-bit support on D3D12.
     Attribs.EngineCI.Features.ResourceBuffer16BitAccess = DEVICE_FEATURE_STATE_OPTIONAL;
@@ -652,6 +652,16 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
     Args.Parse("hit_object", m_EnableHitObject);
     Args.Parse("thread_reorder", m_EnableThreadReorder);
     Args.Parse("fp16", m_ReferenceUI.UseFp16Types);
+    Args.Parse("sharc", m_SharcSettings.Enabled);
+    Args.Parse("sharc_capacity_log2", m_SharcSettings.CapacityLog2);
+    Args.Parse("sharc_downscale", m_SharcSettings.DownscaleFactor);
+    Args.Parse("sharc_debug", m_SharcSettings.DebugMode);
+    Args.Parse("sharc_update", m_SharcSettings.EnableUpdate);
+    Args.Parse("sharc_resolve", m_SharcSettings.EnableResolve);
+    Args.Parse("hdr_capture_path", m_HDRCapture.Path);
+    Args.Parse("hdr_capture_start", m_HDRCapture.StartFrame);
+    Args.Parse("hdr_capture_count", m_HDRCapture.FrameCount);
+    Args.Parse("exit_after_frames", m_ExitAfterFrames);
     Args.Parse("bounces", m_MaxBounces);
     m_MaxBounces = std::clamp(m_MaxBounces, 1u, static_cast<Uint32>(kMaxBounceSliderValue));
     Args.Parse("nee", m_EnableNEE);
@@ -661,10 +671,11 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
     Args.Parse("nee_type", m_ReferenceUI.NEEType);
     Args.Parse("nee_candidates", m_ReferenceUI.NEECandidateSamples);
     m_ReferenceUI.NEECandidateSamples = std::clamp(m_ReferenceUI.NEECandidateSamples, 1, kNEEMaxSampleCount);
-    m_ReferenceUI.NEEMISType = std::clamp(m_ReferenceUI.NEEMISType, 0, 2);
-    m_ReferenceUI.NEEType    = std::clamp(m_ReferenceUI.NEEType, 0, 2);
+    m_ReferenceUI.NEEMISType          = std::clamp(m_ReferenceUI.NEEMISType, 0, 2);
+    m_ReferenceUI.NEEType             = std::clamp(m_ReferenceUI.NEEType, 0, 2);
     Args.Parse("gpu_profile_csv", m_GpuProfileCSV);
     Args.Parse("scene", m_InitialSceneName);
+    Args.Parse("scene_animations", m_RequestSceneAnimations);
     Args.Parse("nrd", m_RealtimeUI.StandaloneDenoiser);
     Args.Parse("rr_validation", m_ValidateRayReconstruction);
     Args.Parse("vk_rr", m_EnableVulkanRayReconstruction);
@@ -725,7 +736,7 @@ void RTXPTSample::ResetSceneDependentResources()
     m_EmissiveTrianglePass.Reset();
 
     m_SelectedSceneCamera   = -1;
-    m_EnableSceneAnimations = !kReferencePathTraceMode;
+    m_EnableSceneAnimations = m_RequestSceneAnimations || !kReferencePathTraceMode;
     m_CameraVerticalFov     = PI_F / 4.0f;
     m_CameraNearPlane       = kDefaultCameraNearPlane;
     m_CameraFarPlane        = kDefaultCameraFarPlane;
@@ -846,7 +857,7 @@ bool RTXPTSample::SetCurrentScene(const std::string& SceneName, bool ForceReload
     {
         const RTXPTSceneSettings& SceneSettings = m_Scene.GetSceneGraphData().Settings;
         if (SceneSettings.EnableAnimations.has_value())
-            m_EnableSceneAnimations = SceneSettings.EnableAnimations.value() && !kReferencePathTraceMode;
+            m_EnableSceneAnimations = m_RequestSceneAnimations || (SceneSettings.EnableAnimations.value() && !kReferencePathTraceMode);
         if (SceneSettings.MaxBounces.has_value())
             m_MaxBounces = SceneSettings.MaxBounces.value();
         ApplySceneEnvironmentSettings();
@@ -1202,26 +1213,26 @@ void RTXPTSample::UpdateFrameConstants(double CurrTime)
     PtConsts.useReSTIRGI       = 0u;
     PtConsts.resetAccumulation = m_ResetAccumulationPending ? 1u : 0u;
 
-    PtConsts.stablePlanesSplitStopThreshold = m_RealtimeUI.StablePlanesSplitStopThreshold;
-    PtConsts._padding3                      = 0.0f;
-    PtConsts._padding4                      = 0u;
-    PtConsts.stablePlanesSuppressPrimaryIndirectSpecularK =
-        m_RealtimeUI.StablePlanesSuppressPrimaryIndirectSpecular ?
-        m_RealtimeUI.StablePlanesSuppressPrimaryIndirectSpecularK :
+    PtConsts.denoisingLayersSplitStopThreshold = m_RealtimeUI.DenoisingLayersSplitStopThreshold;
+    PtConsts._padding3                         = 0.0f;
+    PtConsts._padding4                         = 0u;
+    PtConsts.denoisingLayersSuppressPrimaryIndirectSpecularK =
+        m_RealtimeUI.DenoisingLayersSuppressPrimaryIndirectSpecular ?
+        m_RealtimeUI.DenoisingLayersSuppressPrimaryIndirectSpecularK :
         0.0f;
 
     PtConsts.denoiserRadianceClampK = m_RealtimeUI.DenoiserRadianceClampK;
     PtConsts.DLSSRRBrightnessClampK = m_RealtimeUI.DLSSRRBrightnessClampK > 0.0f ?
         m_RealtimeUI.DLSSRRBrightnessClampK * PtConsts.preExposedGrayLuminance :
         0.0f;
-    PtConsts.stablePlanesAntiAliasingFallthrough = m_RealtimeUI.StablePlanesAntiAliasingFallthrough;
-    PtConsts._activeStablePlaneCount =
-        static_cast<Uint32>(std::clamp(m_RealtimeUI.StablePlanesActiveCount, Int32{1}, static_cast<Int32>(kRTXPTStablePlaneCount)));
+    PtConsts.denoisingLayersAntiAliasingFallthrough = m_RealtimeUI.DenoisingLayersAntiAliasingFallthrough;
+    PtConsts._activeDenoisingLayerCount =
+        static_cast<Uint32>(std::clamp(m_RealtimeUI.DenoisingLayersActiveCount, Int32{1}, static_cast<Int32>(kRTXPTDenoisingLayerCount)));
 
-    PtConsts.maxStablePlaneVertexDepth =
-        std::min(static_cast<Uint32>(std::clamp(m_RealtimeUI.StablePlanesMaxVertexDepth,
+    PtConsts.maxDenoisingLayerVertexDepth =
+        std::min(static_cast<Uint32>(std::clamp(m_RealtimeUI.DenoisingLayersMaxVertexDepth,
                                                 Int32{2},
-                                                static_cast<Int32>(kRTXPTStablePlaneMaxVertexIndex))),
+                                                static_cast<Int32>(kRTXPTDenoisingLayerMaxVertexIndex))),
                  m_MaxBounces);
     PtConsts.allowPrimarySurfaceReplacement = m_RealtimeUI.AllowPrimarySurfaceReplacement ? 1u : 0u;
     PtConsts.genericTSLineStride            = ComputeGenericTSLineStride(RenderWidth);
@@ -1320,11 +1331,17 @@ void RTXPTSample::CreateSceneIndependentPasses()
 
 void RTXPTSample::CreateSceneDependentPasses()
 {
+    m_Sharc.Invalidate();
+    const bool EnableSharc = m_SharcSettings.Enabled && SharcIntegration::IsSupported(m_pDevice);
+    if (m_SharcSettings.Enabled && !EnableSharc)
+        LOG_WARNING_MESSAGE("SHaRC unavailable: requires D3D12 SM 6.6 and native FP16; Vulkan 64-bit atomics are not enabled by this backend. Rendering without cache.");
+    if (EnableSharc && !m_Sharc.Initialize(m_pDevice, m_pEngineFactory, m_pStateCache))
+        LOG_ERROR_MESSAGE("SHaRC initialization failed");
     // Build the textured shader variants whenever the scene actually carries material textures. Bindless is
     // mandatory (required in ModifyEngineInitInfo), so descriptor indexing is always available; the only
     // factor-only path left is the legitimate texture-less scene (MaterialTextureCount == 0).
-    const bool EnableMaterialTextures = m_Materials.GetTextureCount() > 0;
-    const bool EnableAnyHit           = EnableMaterialTextures || m_AccelerationStructures.GetStats().ExcludedFromNEEGeometryCount > 0;
+    const bool  EnableMaterialTextures = m_Materials.GetTextureCount() > 0;
+    const bool  EnableAnyHit           = EnableMaterialTextures || m_AccelerationStructures.GetStats().ExcludedFromNEEGeometryCount > 0;
     const auto& Features               = m_pDevice->GetDeviceInfo().Features;
     const bool  UseFp16Types           = m_ReferenceUI.UseFp16Types &&
         Features.ShaderFloat16 == DEVICE_FEATURE_STATE_ENABLED &&
@@ -1388,7 +1405,8 @@ void RTXPTSample::CreateSceneDependentPasses()
                                     static_cast<Uint32>(std::clamp(m_ReferenceUI.NEEFullSamples, 0, kNEEMaxSampleCount)),
                                     UseFp16Types,
                                     m_EnableHitObject,
-                                    m_EnableThreadReorder);
+                                    m_EnableThreadReorder,
+                                    EnableSharc);
 
     if (!RTReady)
     {
@@ -1484,16 +1502,16 @@ bool RTXPTSample::DispatchPathTracePrePass(const RTXPTRayTracingDispatch& BaseDi
 
     const bool PrePassOk =
         m_RayTracingPass.Dispatch(m_pImmediateContext,
-                                  RTXPTPathTraceVariant::BuildStablePlanes,
+                                  RTXPTPathTraceVariant::BuildDenoisingLayers,
                                   BaseDispatch);
     if (!PrePassOk)
     {
-        RecordRealtimePathTraceStatus("BUILD_STABLE_PLANES dispatch failed");
+        RecordRealtimePathTraceStatus("BUILD_DENOISING_LAYERS dispatch failed");
         return false;
     }
 
-    RTXPTRayTracingPass::InsertUAVBarrier(m_pImmediateContext, m_RenderTargets.GetStablePlanesBuffer());
-    RTXPTRayTracingPass::InsertUAVBarrier(m_pImmediateContext, m_RenderTargets.GetStablePlanesHeaderUAV());
+    RTXPTRayTracingPass::InsertUAVBarrier(m_pImmediateContext, m_RenderTargets.GetDenoisingLayersBuffer());
+    RTXPTRayTracingPass::InsertUAVBarrier(m_pImmediateContext, m_RenderTargets.GetDenoisingLayersHeaderUAV());
     RTXPTRayTracingPass::InsertUAVBarrier(m_pImmediateContext, m_RenderTargets.GetStableRadianceUAV());
     RTXPTRayTracingPass::InsertUAVBarrier(m_pImmediateContext, m_RenderTargets.GetDepthUAV());
     RTXPTRayTracingPass::InsertUAVBarrier(m_pImmediateContext, m_RenderTargets.GetScreenMotionVectorsUAV());
@@ -1504,24 +1522,31 @@ bool RTXPTSample::DispatchPathTracePrePass(const RTXPTRayTracingDispatch& BaseDi
 
 bool RTXPTSample::PathTrace()
 {
+    m_SharcActive = m_SharcSettings.Enabled && m_RealtimeUI.RealtimeMode &&
+        SharcIntegration::IsSupported(m_pDevice) && m_RayTracingPass.IsReady(RTXPTPathTraceVariant::SharcFill);
+    if (!m_SharcActive)
+    {
+        m_RayTracingPass.UnbindSharcBuffers();
+        m_Sharc.Reset();
+    }
     m_LastRealtimePathTraceExecuted = false;
     m_LastRealtimeFinalMergeReady   = false;
     RecordRealtimePathTraceStatus("");
 
-    SampleMiniConstants           MiniConstants   = {};
-    const RTXPTRayTracingDispatch BaseDispatch    = MakePathTraceDispatch(m_RenderTargets, MiniConstants);
-    const bool                    UseStablePlanes = m_RealtimeUI.RealtimeMode;
+    SampleMiniConstants           MiniConstants      = {};
+    const RTXPTRayTracingDispatch BaseDispatch       = MakePathTraceDispatch(m_RenderTargets, MiniConstants);
+    const bool                    UseDenoisingLayers = m_RealtimeUI.RealtimeMode;
 
     // BUILD can shade analytic proxies too; expose current packed light data before either RT pass.
     if (!m_LightsBaker.PrepareLightBuffers(m_pImmediateContext))
         return false;
 
-    // PathTracePrePass dispatches BuildStablePlanes and synchronizes exported realtime state.
-    if (UseStablePlanes && !DispatchPathTracePrePass(BaseDispatch))
+    // PathTracePrePass dispatches BuildDenoisingLayers and synchronizes exported realtime state.
+    if (UseDenoisingLayers && !DispatchPathTracePrePass(BaseDispatch))
         return false;
 
     m_GpuProfiler.Begin(m_pImmediateContext, RTXPTGpuProfiler::Stage::LightsBaker);
-    m_LightsBaker.UpdateFrame(m_Camera.GetViewMatrix() * m_Camera.GetProjMatrix());
+    m_LightsBaker.UpdateFrame(m_Camera.GetViewMatrix() * m_Camera.GetProjMatrix(), m_Camera.GetPos());
     const bool LightsOk = m_LightsBaker.UpdateEnd(m_pImmediateContext,
                                                   m_RenderTargets.GetDepthSRV(),
                                                   m_RenderTargets.GetScreenMotionVectorsSRV());
@@ -1532,11 +1557,61 @@ bool RTXPTSample::PathTrace()
         return false;
     }
 
-    // FillStablePlanes/Reference loop runs after LightsBaker.UpdateEnd.
-    if (!DispatchPathTraceLoop(UseStablePlanes, BaseDispatch))
+    if (m_SharcActive)
+    {
+        if (!m_Sharc.Prepare(m_pDevice, m_pImmediateContext, m_SharcSettings,
+                             BaseDispatch.Width, BaseDispatch.Height, m_Camera.GetPos()))
+        {
+            RecordRealtimePathTraceStatus("SHaRC resource preparation failed");
+            LOG_ERROR_MESSAGE("SHaRC resource preparation failed");
+            return false;
+        }
+        if (m_SharcSettings.EnableUpdate)
+        {
+            RTXPTGpuProfiler::Scope Timing{&m_GpuProfiler, m_pImmediateContext, RTXPTGpuProfiler::Stage::SharcUpdate};
+            SampleConstants         Training     = m_LastFrameConstants;
+            Training.ptConsts.bounceCount        = 8;
+            Training.ptConsts.diffuseBounceCount = 4;
+            Training.ptConsts.texLODBias += 1.f;
+            {
+                MapHelper<SampleConstants> CB{m_pImmediateContext, m_FrameConstantsCB, MAP_WRITE, MAP_FLAG_DISCARD};
+                *CB = Training;
+            }
+            RTXPTRayTracingDispatch Dispatch = BaseDispatch;
+            const Uint32            Scale    = std::clamp(m_SharcSettings.DownscaleFactor, 2, 5);
+            Dispatch.Width                   = (Dispatch.Width + Scale - 1) / Scale;
+            Dispatch.Height                  = (Dispatch.Height + Scale - 1) / Scale;
+            m_Sharc.Bind(Dispatch);
+            const bool Trained = m_RayTracingPass.Dispatch(m_pImmediateContext, RTXPTPathTraceVariant::SharcTrain, Dispatch);
+            {
+                MapHelper<SampleConstants> CB{m_pImmediateContext, m_FrameConstantsCB, MAP_WRITE, MAP_FLAG_DISCARD};
+                *CB = m_LastFrameConstants;
+            }
+            if (!Trained)
+            {
+                RecordRealtimePathTraceStatus("SHaRC training dispatch failed");
+                LOG_ERROR_MESSAGE("SHaRC training dispatch failed");
+                return false;
+            }
+            m_Sharc.Barrier(m_pImmediateContext);
+        }
+        if (m_SharcSettings.EnableResolve)
+        {
+            RTXPTGpuProfiler::Scope Timing{&m_GpuProfiler, m_pImmediateContext, RTXPTGpuProfiler::Stage::SharcResolve};
+            if (!m_Sharc.Resolve(m_pImmediateContext))
+            {
+                RecordRealtimePathTraceStatus("SHaRC resolve failed");
+                LOG_ERROR_MESSAGE("SHaRC resolve failed");
+                return false;
+            }
+        }
+    }
+
+    // FillDenoisingLayers/Reference loop runs after LightsBaker.UpdateEnd and SHaRC resolve.
+    if (!DispatchPathTraceLoop(UseDenoisingLayers, BaseDispatch))
         return false;
 
-    if (UseStablePlanes)
+    if (UseDenoisingLayers)
     {
         if (!BakeDenoisingGuides())
             return false;
@@ -1549,18 +1624,18 @@ bool RTXPTSample::PathTrace()
     return true;
 }
 
-bool RTXPTSample::DispatchPathTraceLoop(bool UseStablePlanes, const RTXPTRayTracingDispatch& BaseDispatch)
+bool RTXPTSample::DispatchPathTraceLoop(bool UseDenoisingLayers, const RTXPTRayTracingDispatch& BaseDispatch)
 {
     RTXPTGpuProfiler::Scope     Timing{&m_GpuProfiler, m_pImmediateContext, RTXPTGpuProfiler::Stage::Fill};
     const Uint32                SPP = std::max(m_RealtimeUI.ActualSamplesPerPixel(), 1u);
     const RTXPTPathTraceVariant Variant =
-        UseStablePlanes ? RTXPTPathTraceVariant::FillStablePlanes : RTXPTPathTraceVariant::Reference;
+        UseDenoisingLayers ? (m_SharcActive ? RTXPTPathTraceVariant::SharcFill : RTXPTPathTraceVariant::FillDenoisingLayers) : RTXPTPathTraceVariant::Reference;
 
     for (Uint32 SubSampleIndex = 0; SubSampleIndex < SPP; ++SubSampleIndex)
     {
-        if (UseStablePlanes)
+        if (UseDenoisingLayers)
         {
-            RTXPTRayTracingPass::InsertUAVBarrier(m_pImmediateContext, m_RenderTargets.GetStablePlanesBuffer());
+            RTXPTRayTracingPass::InsertUAVBarrier(m_pImmediateContext, m_RenderTargets.GetDenoisingLayersBuffer());
             RTXPTRayTracingPass::InsertUAVBarrier(m_pImmediateContext, m_RenderTargets.GetSpecularHitTUAV());
         }
 
@@ -1569,21 +1644,22 @@ bool RTXPTSample::DispatchPathTraceLoop(bool UseStablePlanes, const RTXPTRayTrac
 
         RTXPTRayTracingDispatch Dispatch = BaseDispatch;
         Dispatch.pMiniConstants          = &MiniConstants;
+        if (m_SharcActive) m_Sharc.Bind(Dispatch);
 
         const bool TraceOk = m_RayTracingPass.Dispatch(m_pImmediateContext, Variant, Dispatch);
         if (!TraceOk)
         {
-            const char* Status = UseStablePlanes ? "FILL_STABLE_PLANES dispatch failed" : "REFERENCE dispatch failed";
+            const char* Status = UseDenoisingLayers ? "FILL_DENOISING_LAYERS dispatch failed" : "REFERENCE dispatch failed";
             RecordRealtimePathTraceStatus(Status);
             return false;
         }
 
-        if (UseStablePlanes)
+        if (UseDenoisingLayers)
             RTXPTRayTracingPass::InsertUAVBarrier(m_pImmediateContext, m_RenderTargets.GetSpecularHitTUAV());
     }
 
-    if (UseStablePlanes)
-        RTXPTRayTracingPass::InsertUAVBarrier(m_pImmediateContext, m_RenderTargets.GetStablePlanesBuffer());
+    if (UseDenoisingLayers)
+        RTXPTRayTracingPass::InsertUAVBarrier(m_pImmediateContext, m_RenderTargets.GetDenoisingLayersBuffer());
 
     return true;
 }
@@ -1901,7 +1977,7 @@ bool RTXPTSample::Denoise()
         HasRealtimeResetFlag(m_CurrentFrameRealtimeReset, RTXPT_REALTIME_RESET_REALTIME_CACHES);
     const bool EnableValidation = m_RenderTargets.GetDenoiserOutValidationUAV() != nullptr;
 
-    Int32 MaxPassCount = std::min(m_RealtimeUI.StablePlanesActiveCount, static_cast<Int32>(kRTXPTStablePlaneCount));
+    Int32 MaxPassCount = std::min(m_RealtimeUI.DenoisingLayersActiveCount, static_cast<Int32>(kRTXPTDenoisingLayerCount));
     MaxPassCount       = std::max(MaxPassCount, Int32{1});
 
     bool InitWithStableRadiance = true;
@@ -2002,6 +2078,8 @@ bool RTXPTSample::RunRealtimePathTraceOnly()
         return false;
     }
 
+    m_HDRCapture.Capture(m_pDevice, m_pImmediateContext, m_RenderTargets.GetOutputColorSRV()->GetTexture(), m_FrameIndex);
+
     return true;
 }
 
@@ -2016,7 +2094,7 @@ void RTXPTSample::Render()
                   << " bounces=" << Pt.bounceCount << " diffuse=" << Pt.diffuseBounceCount
                   << " spp=" << m_RealtimeUI.ActualSamplesPerPixel() << " NEE=" << Pt.NEEEnabled
                   << " type=" << Pt.NEEType << " candidates=" << Pt.NEECandidateSamples << " full=" << Pt.NEEFullSamples
-                  << " planes=" << Pt._activeStablePlaneCount << " rrPreset=" << static_cast<int>(m_RayReconstructionSettings.Preset) << std::endl;
+                  << " planes=" << Pt._activeDenoisingLayerCount << " rrPreset=" << static_cast<int>(m_RayReconstructionSettings.Preset) << std::endl;
     }
     auto Timing          = m_GpuProfiler.BeginFrame(m_pDevice, m_pImmediateContext, m_EnableGpuProfiling, m_GpuProfileCSV);
     m_LastFrameSucceeded = false;
@@ -2088,6 +2166,7 @@ void RTXPTSample::Update(double CurrTime, double ElapsedTime, bool DoUpdateUI)
                 // on the next LightsBaker UpdateEnd so the sampling weights track the deformed emitters.
                 m_LightsBaker.RequestProxyRebuild();
                 RequestAccumulationReset("Skinned geometry updated", false);
+                m_Sharc.Invalidate();
                 m_Scene.ClearGeometryDirty();
             }
         }
@@ -2121,6 +2200,10 @@ void RTXPTSample::Update(double CurrTime, double ElapsedTime, bool DoUpdateUI)
     UpdateRenderTargetDimensions(m_LastElapsedTimeSeconds);
     EnsureRenderTargets();
     UpdateFrameConstants(CurrTime);
+#if PLATFORM_WIN32
+    if (m_ExitAfterFrames != 0 && m_FrameIndex >= m_ExitAfterFrames)
+        PostQuitMessage(0);
+#endif
 }
 
 void RTXPTSample::WindowResize(Uint32 Width, Uint32 Height)
@@ -2226,6 +2309,31 @@ void RTXPTSample::UpdateUI()
     const float  Indent = 16.0f;
 
     ImGui::Begin("RTXPT");
+    if (ImGui::CollapsingHeader("SHaRC radiance cache"))
+    {
+        const bool Supported = SharcIntegration::IsSupported(m_pDevice);
+        if (!Supported) ImGui::TextWrapped("Unavailable: requires D3D12 SM 6.6 and native FP16. Vulkan backend does not enable 64-bit atomics.");
+        if (ImGui::Checkbox("Enable SHaRC (realtime only)", &m_SharcSettings.Enabled))
+        {
+            m_RayTracingPassSettingsDirty = true;
+            RequestAccumulationReset("SHaRC mode changed");
+        }
+        bool CacheChanged = ImGui::SliderInt("Cache capacity log2", &m_SharcSettings.CapacityLog2, 16, 24);
+        CacheChanged |= ImGui::SliderInt("Training downscale", &m_SharcSettings.DownscaleFactor, 2, 5);
+        CacheChanged |= ImGui::SliderFloat("Grid scene scale", &m_SharcSettings.SceneScale, 1.f, 100.f);
+        CacheChanged |= ImGui::SliderFloat("Training roughness floor", &m_SharcSettings.MinRoughnessOverride, 0.f, 1.f);
+        bool HistoryChanged = ImGui::SliderInt("Cache accumulation frames", &m_SharcSettings.AccumulationFrameNum, 1, 128);
+        HistoryChanged |= ImGui::SliderInt("Cache stale frames", &m_SharcSettings.StaleFrameNum, 8, 256);
+        HistoryChanged |= ImGui::SliderFloat("Termination threshold", &m_SharcSettings.TerminateThreshold, 0.f, 10.f);
+        HistoryChanged |= ImGui::Checkbox("Update cache", &m_SharcSettings.EnableUpdate);
+        HistoryChanged |= ImGui::Checkbox("Resolve cache", &m_SharcSettings.EnableResolve);
+        HistoryChanged |= ImGui::Combo("Cache debug", &m_SharcSettings.DebugMode, "Off\0Radiance\0Hash\0Occupancy\0Collisions\0Voxel size\0Grid level\0");
+        const bool ClearCache = ImGui::Button("Clear radiance cache");
+        if (CacheChanged || ClearCache)
+            RequestAccumulationReset("SHaRC cache settings changed");
+        else if (HistoryChanged)
+            RequestRealtimeReset(RTXPT_REALTIME_RESET_NRD_HISTORY | RTXPT_REALTIME_RESET_TAA_SR_HISTORY, "SHaRC query/update settings changed");
+    }
 
     // ------------------------------------------------------------------ Path Tracer
     if (ImGui::CollapsingHeader("Path Tracer", ImGuiTreeNodeFlags_DefaultOpen))
@@ -2666,31 +2774,31 @@ void RTXPTSample::UpdateUI()
 
         if (m_RealtimeUI.RealtimeMode)
         {
-            int ActiveStablePlanes = m_RealtimeUI.StablePlanesActiveCount;
-            if (ResetRealtimeOnChange(ImGui::InputInt("Active stable planes", &ActiveStablePlanes),
+            int ActiveDenoisingLayers = m_RealtimeUI.DenoisingLayersActiveCount;
+            if (ResetRealtimeOnChange(ImGui::InputInt("Active stable planes", &ActiveDenoisingLayers),
                                       "Active stable-plane count changed"))
-                m_RealtimeUI.StablePlanesActiveCount = ActiveStablePlanes;
+                m_RealtimeUI.DenoisingLayersActiveCount = ActiveDenoisingLayers;
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("How many stable planes to allow; one plane is standard denoising.");
 
-            int MaxStablePlaneVertexDepth = m_RealtimeUI.StablePlanesMaxVertexDepth;
-            if (ResetRealtimeOnChange(ImGui::InputInt("Max stable plane vertex depth", &MaxStablePlaneVertexDepth),
+            int MaxDenoisingLayerVertexDepth = m_RealtimeUI.DenoisingLayersMaxVertexDepth;
+            if (ResetRealtimeOnChange(ImGui::InputInt("Max stable plane vertex depth", &MaxDenoisingLayerVertexDepth),
                                       "Stable-plane max vertex depth changed"))
-                m_RealtimeUI.StablePlanesMaxVertexDepth = MaxStablePlaneVertexDepth;
+                m_RealtimeUI.DenoisingLayersMaxVertexDepth = MaxDenoisingLayerVertexDepth;
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("How deep the stable part of path tracing can go.");
 
-            ResetRealtimeOnChange(ImGui::SliderFloat("Path split stop threshold", &m_RealtimeUI.StablePlanesSplitStopThreshold, 0.0f, 2.0f),
+            ResetRealtimeOnChange(ImGui::SliderFloat("Path split stop threshold", &m_RealtimeUI.DenoisingLayersSplitStopThreshold, 0.0f, 2.0f),
                                   "Stable-plane split threshold changed");
             ResetRealtimeOnChange(ImGui::Checkbox("Primary Surface Replacement", &m_RealtimeUI.AllowPrimarySurfaceReplacement),
                                   "Primary surface replacement toggled");
-            ResetRealtimeOnChange(ImGui::Checkbox("Suppress primary plane noisy specular", &m_RealtimeUI.StablePlanesSuppressPrimaryIndirectSpecular),
+            ResetRealtimeOnChange(ImGui::Checkbox("Suppress primary plane noisy specular", &m_RealtimeUI.DenoisingLayersSuppressPrimaryIndirectSpecular),
                                   "Primary-plane noisy specular suppression toggled");
             ResetRealtimeOnChange(ImGui::SliderFloat("Suppress primary plane noisy specular amount",
-                                                     &m_RealtimeUI.StablePlanesSuppressPrimaryIndirectSpecularK, 0.0f, 1.0f),
+                                                     &m_RealtimeUI.DenoisingLayersSuppressPrimaryIndirectSpecularK, 0.0f, 1.0f),
                                   "Primary-plane noisy specular suppression amount changed");
             ResetRealtimeOnChange(ImGui::SliderFloat("Non-primary plane anti-aliasing fallthrough",
-                                                     &m_RealtimeUI.StablePlanesAntiAliasingFallthrough, 0.0f, 1.0f),
+                                                     &m_RealtimeUI.DenoisingLayersAntiAliasingFallthrough, 0.0f, 1.0f),
                                   "Stable-plane anti-aliasing fallthrough changed");
         }
         else
@@ -3047,7 +3155,7 @@ void RTXPTSample::UpdateUI()
         ImGui::Text("Standalone NRD active: %s", ShouldRunStandaloneNrd(m_RealtimeUI) ? "yes" : "no");
         ImGui::Text("NRD availability: %s", IsStandaloneNrdAvailable() ? "available" : GetStandaloneNrdDisabledReason());
         ImGui::Text("NRD method: %s", GetNrdMethodName(m_RealtimeUI.NRDMethod));
-        ImGui::Text("Stable planes active: %d / %u", m_RealtimeUI.StablePlanesActiveCount, kRTXPTStablePlaneCount);
+        ImGui::Text("Stable planes active: %d / %u", m_RealtimeUI.DenoisingLayersActiveCount, kRTXPTDenoisingLayerCount);
         ImGui::Text("Current realtime reset flags: 0x%08x", static_cast<Uint32>(m_CurrentFrameRealtimeReset));
         ImGui::Text("Pending realtime reset flags: 0x%08x", static_cast<Uint32>(m_RealtimeResetPending));
         ImGui::Text("Path-trace frame index: %u", m_LastFrameConstants.ptConsts.frameIndex);
@@ -3064,11 +3172,11 @@ void RTXPTSample::UpdateUI()
         ImGui::Text("OutputColor: %s", m_RenderTargets.GetOutputColorSRV() != nullptr ? "created" : "missing");
         ImGui::Text("TraceRays pass: %s", m_RayTracingPass.IsReady() ? "ready" : "not ready");
         const RTXPTRayTracingVariantStats& ReferenceStats = m_RayTracingPass.GetVariantStats(RTXPTPathTraceVariant::Reference);
-        const RTXPTRayTracingVariantStats& BuildStats     = m_RayTracingPass.GetVariantStats(RTXPTPathTraceVariant::BuildStablePlanes);
-        const RTXPTRayTracingVariantStats& FillStats      = m_RayTracingPass.GetVariantStats(RTXPTPathTraceVariant::FillStablePlanes);
+        const RTXPTRayTracingVariantStats& BuildStats     = m_RayTracingPass.GetVariantStats(RTXPTPathTraceVariant::BuildDenoisingLayers);
+        const RTXPTRayTracingVariantStats& FillStats      = m_RayTracingPass.GetVariantStats(RTXPTPathTraceVariant::FillDenoisingLayers);
         ImGui::Text("Reference variant: %s, dispatches=%u", ReferenceStats.Ready ? "ready" : "missing", ReferenceStats.TraceCount);
-        ImGui::Text("BuildStablePlanes variant: %s, dispatches=%u", BuildStats.Ready ? "ready" : "missing", BuildStats.TraceCount);
-        ImGui::Text("FillStablePlanes variant: %s, dispatches=%u", FillStats.Ready ? "ready" : "missing", FillStats.TraceCount);
+        ImGui::Text("BuildDenoisingLayers variant: %s, dispatches=%u", BuildStats.Ready ? "ready" : "missing", BuildStats.TraceCount);
+        ImGui::Text("FillDenoisingLayers variant: %s, dispatches=%u", FillStats.Ready ? "ready" : "missing", FillStats.TraceCount);
         ImGui::Text("Material bridge: %s", RTPassStats.MaterialBridgeBound ? "bound" : "fallback");
         ImGui::Text("Sub-instance bridge: %s", RTPassStats.SubInstanceBound ? "bound" : "fallback");
         ImGui::Text("Light bridge: %s", RTPassStats.LightBridgeBound ? "bound" : "fallback");
@@ -3110,11 +3218,11 @@ void RTXPTSample::UpdateUI()
                         "not requested");
         if (m_RenderTargets.AreRealtimeRenderTargetsRequested())
         {
-            ImGui::Text("StablePlanesBuffer elements: %llu",
-                        static_cast<unsigned long long>(m_RenderTargets.GetStablePlanesElementCount()));
+            ImGui::Text("DenoisingLayersBuffer elements: %llu",
+                        static_cast<unsigned long long>(m_RenderTargets.GetDenoisingLayersElementCount()));
             ImGui::Text("StableRadiance: %s", m_RenderTargets.GetStableRadianceSRV() != nullptr ? "created" : "missing");
-            ImGui::Text("StablePlanesHeader: %s", m_RenderTargets.GetStablePlanesHeaderSRV() != nullptr ? "created" : "missing");
-            ImGui::Text("StablePlanesBuffer: %s", m_RenderTargets.GetStablePlanesBufferSRV() != nullptr ? "created" : "missing");
+            ImGui::Text("DenoisingLayersHeader: %s", m_RenderTargets.GetDenoisingLayersHeaderSRV() != nullptr ? "created" : "missing");
+            ImGui::Text("DenoisingLayersBuffer: %s", m_RenderTargets.GetDenoisingLayersBufferSRV() != nullptr ? "created" : "missing");
             ImGui::Text("NRD guide inputs: %s",
                         m_RenderTargets.GetDenoiserViewspaceZSRV() != nullptr &&
                                 m_RenderTargets.GetDenoiserMotionVectorsSRV() != nullptr &&
@@ -3167,6 +3275,7 @@ void RTXPTSample::RequestAccumulationReset(const char* /*Reason*/, bool ResetTem
 {
     m_AccumulationFrame        = 0;
     m_ResetAccumulationPending = true;
+    if (ResetTemporalHistory) m_Sharc.Invalidate();
     if (ResetLightFeedback && (!m_RealtimeUI.RealtimeMode || ResetTemporalHistory))
         m_LightsBaker.RequestFeedbackReset();
 
@@ -3180,6 +3289,7 @@ void RTXPTSample::RequestAccumulationReset(const char* /*Reason*/, bool ResetTem
 
 void RTXPTSample::RequestRealtimeReset(RTXPTRealtimeResetFlags Flags, const char* Reason)
 {
+    if (HasRealtimeResetFlag(Flags, RTXPT_REALTIME_RESET_REALTIME_CACHES)) m_Sharc.Invalidate();
     if (HasRealtimeResetFlag(Flags, RTXPT_REALTIME_RESET_ACCUMULATION))
         RequestAccumulationReset(Reason);
 

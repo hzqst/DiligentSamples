@@ -56,7 +56,7 @@ struct RTXPTRenderTargetFormats
     TEXTURE_FORMAT CombinedHistoryClampRelax = TEX_FORMAT_R8_UNORM;
 
     TEXTURE_FORMAT StableRadiance                   = TEX_FORMAT_RGBA16_FLOAT;
-    TEXTURE_FORMAT StablePlanesHeader               = TEX_FORMAT_R32_UINT;
+    TEXTURE_FORMAT DenoisingLayersHeader            = TEX_FORMAT_R32_UINT;
     TEXTURE_FORMAT Throughput                       = TEX_FORMAT_R32_UINT;
     TEXTURE_FORMAT SpecularHitT                     = TEX_FORMAT_R32_FLOAT;
     TEXTURE_FORMAT ScratchFloat1                    = TEX_FORMAT_R32_FLOAT;
@@ -100,7 +100,7 @@ struct RTXPTRenderTargetDimensions
     }
 };
 
-struct RTXPTStablePlaneData
+struct RTXPTDenoisingLayerData
 {
     float3 RayOrigin       = float3{0, 0, 0};
     float  LastRayTCurrent = 0.0f;
@@ -116,17 +116,17 @@ struct RTXPTStablePlaneData
     Uint32 FlagsAndVertexIndex              = 0;
     Uint32 PackedCounters                   = 0;
 };
-static_assert(sizeof(RTXPTStablePlaneData) == 80, "RTXPTStablePlaneData layout must match PathTracer/StablePlanes.hlsli StablePlane");
-static_assert(offsetof(RTXPTStablePlaneData, LastRayTCurrent) == 12, "RTXPTStablePlaneData LastRayTCurrent offset must match StablePlane");
-static_assert(offsetof(RTXPTStablePlaneData, RayDir) == 16, "RTXPTStablePlaneData RayDir offset must match StablePlane");
-static_assert(offsetof(RTXPTStablePlaneData, SceneLength) == 28, "RTXPTStablePlaneData SceneLength offset must match StablePlane");
-static_assert(offsetof(RTXPTStablePlaneData, PackedThpAndMVs) == 32, "RTXPTStablePlaneData PackedThpAndMVs offset must match StablePlane");
-static_assert(offsetof(RTXPTStablePlaneData, VertexIndexAndRoughness) == 44, "RTXPTStablePlaneData VertexIndexAndRoughness offset must match StablePlane");
-static_assert(offsetof(RTXPTStablePlaneData, DenoiserPackedBSDFEstimate) == 48, "RTXPTStablePlaneData DenoiserPackedBSDFEstimate offset must match StablePlane");
-static_assert(offsetof(RTXPTStablePlaneData, PackedNormal) == 60, "RTXPTStablePlaneData PackedNormal offset must match StablePlane");
-static_assert(offsetof(RTXPTStablePlaneData, PackedNoisyRadianceAndSpecAvg) == 64, "RTXPTStablePlaneData PackedNoisyRadianceAndSpecAvg offset must match StablePlane");
-static_assert(offsetof(RTXPTStablePlaneData, FlagsAndVertexIndex) == 72, "RTXPTStablePlaneData FlagsAndVertexIndex offset must match StablePlane");
-static_assert(offsetof(RTXPTStablePlaneData, PackedCounters) == 76, "RTXPTStablePlaneData PackedCounters offset must match StablePlane");
+static_assert(sizeof(RTXPTDenoisingLayerData) == 80, "RTXPTDenoisingLayerData layout must match PathTracer/DenoisingLayers.hlsli DenoisingLayer");
+static_assert(offsetof(RTXPTDenoisingLayerData, LastRayTCurrent) == 12, "RTXPTDenoisingLayerData LastRayTCurrent offset must match DenoisingLayer");
+static_assert(offsetof(RTXPTDenoisingLayerData, RayDir) == 16, "RTXPTDenoisingLayerData RayDir offset must match DenoisingLayer");
+static_assert(offsetof(RTXPTDenoisingLayerData, SceneLength) == 28, "RTXPTDenoisingLayerData SceneLength offset must match DenoisingLayer");
+static_assert(offsetof(RTXPTDenoisingLayerData, PackedThpAndMVs) == 32, "RTXPTDenoisingLayerData PackedThpAndMVs offset must match DenoisingLayer");
+static_assert(offsetof(RTXPTDenoisingLayerData, VertexIndexAndRoughness) == 44, "RTXPTDenoisingLayerData VertexIndexAndRoughness offset must match DenoisingLayer");
+static_assert(offsetof(RTXPTDenoisingLayerData, DenoiserPackedBSDFEstimate) == 48, "RTXPTDenoisingLayerData DenoiserPackedBSDFEstimate offset must match DenoisingLayer");
+static_assert(offsetof(RTXPTDenoisingLayerData, PackedNormal) == 60, "RTXPTDenoisingLayerData PackedNormal offset must match DenoisingLayer");
+static_assert(offsetof(RTXPTDenoisingLayerData, PackedNoisyRadianceAndSpecAvg) == 64, "RTXPTDenoisingLayerData PackedNoisyRadianceAndSpecAvg offset must match DenoisingLayer");
+static_assert(offsetof(RTXPTDenoisingLayerData, FlagsAndVertexIndex) == 72, "RTXPTDenoisingLayerData FlagsAndVertexIndex offset must match DenoisingLayer");
+static_assert(offsetof(RTXPTDenoisingLayerData, PackedCounters) == 76, "RTXPTDenoisingLayerData PackedCounters offset must match DenoisingLayer");
 
 struct RTXPTRenderTargetCreateInfo
 {
@@ -191,7 +191,7 @@ public:
     bool          HasRealtimeRenderTargets() const;
     bool          AreRealtimeRenderTargetsRequested() const { return m_RealtimeResourcesRequested; }
     const char*   GetLastFailureReason() const { return m_LastFailureReason.c_str(); }
-    Uint64        GetStablePlanesElementCount() const { return m_StablePlanesElementCount; }
+    Uint64        GetDenoisingLayersElementCount() const { return m_DenoisingLayersElementCount; }
 
     bool          HasRayReconstructionRenderTargets() const;
     ITextureView* GetRRDiffuseAlbedoUAV() const;
@@ -204,14 +204,16 @@ public:
     ITextureView* GetRRDepthSRV() const;
     ITextureView* GetRRMotionVectorsUAV() const;
     ITextureView* GetRRMotionVectorsSRV() const;
+    ITextureView* GetRRSpecMotionVectorsUAV() const;
+    ITextureView* GetRRSpecMotionVectorsSRV() const;
 
     ITextureView* GetStableRadianceUAV() const;
     ITextureView* GetStableRadianceSRV() const;
-    ITextureView* GetStablePlanesHeaderUAV() const;
-    ITextureView* GetStablePlanesHeaderSRV() const;
-    IBufferView*  GetStablePlanesBufferUAV() const;
-    IBufferView*  GetStablePlanesBufferSRV() const;
-    IBuffer*      GetStablePlanesBuffer() const;
+    ITextureView* GetDenoisingLayersHeaderUAV() const;
+    ITextureView* GetDenoisingLayersHeaderSRV() const;
+    IBufferView*  GetDenoisingLayersBufferUAV() const;
+    IBufferView*  GetDenoisingLayersBufferSRV() const;
+    IBuffer*      GetDenoisingLayersBuffer() const;
     ITextureView* GetThroughputUAV() const;
     ITextureView* GetThroughputSRV() const;
     ITextureView* GetSpecularHitTUAV() const;
@@ -270,46 +272,47 @@ private:
                       RefCntAutoPtr<ITexture>& Target,
                       RESOURCE_DIMENSION       Type      = RESOURCE_DIM_TEX_2D,
                       Uint32                   ArraySize = 1);
-    bool CreateStablePlanesBuffer(IRenderDevice*          pDevice,
-                                  Uint64                  ElementCount,
-                                  RefCntAutoPtr<IBuffer>& Target);
+    bool CreateDenoisingLayersBuffer(IRenderDevice*          pDevice,
+                                     Uint64                  ElementCount,
+                                     RefCntAutoPtr<IBuffer>& Target);
     bool SupportsBindFlags(IRenderDevice* pDevice, TEXTURE_FORMAT TargetFormat, BIND_FLAGS BindFlags) const;
     bool FailResize(const char* Reason);
 
-    RefCntAutoPtr<ITexture>                                     m_OutputColor;
-    RefCntAutoPtr<ITexture>                                     m_AccumulatedRadiance;
-    RefCntAutoPtr<ITexture>                                     m_SuperResolutionInputColor;
-    RefCntAutoPtr<ITexture>                                     m_ProcessedOutputColor;
-    RefCntAutoPtr<ITexture>                                     m_LdrColor;
-    RefCntAutoPtr<ITexture>                                     m_ComputeColor;
-    RefCntAutoPtr<ITexture>                                     m_Depth;
-    RefCntAutoPtr<ITexture>                                     m_PreviousDepth;
-    RefCntAutoPtr<ITexture>                                     m_ScreenMotionVectors;
-    RefCntAutoPtr<ITexture>                                     m_TemporalFeedback1;
-    RefCntAutoPtr<ITexture>                                     m_TemporalFeedback2;
-    RefCntAutoPtr<ITexture>                                     m_CombinedHistoryClampRelax;
-    RefCntAutoPtr<ITexture>                                     m_StableRadiance;
-    RefCntAutoPtr<ITexture>                                     m_StablePlanesHeader;
-    RefCntAutoPtr<IBuffer>                                      m_StablePlanesBuffer;
-    RefCntAutoPtr<ITexture>                                     m_Throughput;
-    RefCntAutoPtr<ITexture>                                     m_SpecularHitT;
-    RefCntAutoPtr<ITexture>                                     m_ScratchFloat1;
-    RefCntAutoPtr<ITexture>                                     m_DenoiserViewspaceZ;
-    RefCntAutoPtr<ITexture>                                     m_DenoiserMotionVectors;
-    RefCntAutoPtr<ITexture>                                     m_DenoiserNormalRoughness;
-    RefCntAutoPtr<ITexture>                                     m_DenoiserDiffRadianceHitDist;
-    RefCntAutoPtr<ITexture>                                     m_DenoiserSpecRadianceHitDist;
-    RefCntAutoPtr<ITexture>                                     m_DenoiserDisocclusionThresholdMix;
-    std::array<RefCntAutoPtr<ITexture>, kRTXPTStablePlaneCount> m_DenoiserOutDiffRadianceHitDist;
-    std::array<RefCntAutoPtr<ITexture>, kRTXPTStablePlaneCount> m_DenoiserOutSpecRadianceHitDist;
-    RefCntAutoPtr<ITexture>                                     m_DenoiserOutValidation;
-    RefCntAutoPtr<ITexture>                                     m_DenoiserAvgLayerRadianceHalfRes;
+    RefCntAutoPtr<ITexture>                                        m_OutputColor;
+    RefCntAutoPtr<ITexture>                                        m_AccumulatedRadiance;
+    RefCntAutoPtr<ITexture>                                        m_SuperResolutionInputColor;
+    RefCntAutoPtr<ITexture>                                        m_ProcessedOutputColor;
+    RefCntAutoPtr<ITexture>                                        m_LdrColor;
+    RefCntAutoPtr<ITexture>                                        m_ComputeColor;
+    RefCntAutoPtr<ITexture>                                        m_Depth;
+    RefCntAutoPtr<ITexture>                                        m_PreviousDepth;
+    RefCntAutoPtr<ITexture>                                        m_ScreenMotionVectors;
+    RefCntAutoPtr<ITexture>                                        m_TemporalFeedback1;
+    RefCntAutoPtr<ITexture>                                        m_TemporalFeedback2;
+    RefCntAutoPtr<ITexture>                                        m_CombinedHistoryClampRelax;
+    RefCntAutoPtr<ITexture>                                        m_StableRadiance;
+    RefCntAutoPtr<ITexture>                                        m_DenoisingLayersHeader;
+    RefCntAutoPtr<IBuffer>                                         m_DenoisingLayersBuffer;
+    RefCntAutoPtr<ITexture>                                        m_Throughput;
+    RefCntAutoPtr<ITexture>                                        m_SpecularHitT;
+    RefCntAutoPtr<ITexture>                                        m_ScratchFloat1;
+    RefCntAutoPtr<ITexture>                                        m_DenoiserViewspaceZ;
+    RefCntAutoPtr<ITexture>                                        m_DenoiserMotionVectors;
+    RefCntAutoPtr<ITexture>                                        m_DenoiserNormalRoughness;
+    RefCntAutoPtr<ITexture>                                        m_DenoiserDiffRadianceHitDist;
+    RefCntAutoPtr<ITexture>                                        m_DenoiserSpecRadianceHitDist;
+    RefCntAutoPtr<ITexture>                                        m_DenoiserDisocclusionThresholdMix;
+    std::array<RefCntAutoPtr<ITexture>, kRTXPTDenoisingLayerCount> m_DenoiserOutDiffRadianceHitDist;
+    std::array<RefCntAutoPtr<ITexture>, kRTXPTDenoisingLayerCount> m_DenoiserOutSpecRadianceHitDist;
+    RefCntAutoPtr<ITexture>                                        m_DenoiserOutValidation;
+    RefCntAutoPtr<ITexture>                                        m_DenoiserAvgLayerRadianceHalfRes;
     // Fixed RR formats match the prepare shader, independently of NRD encoding.
     RefCntAutoPtr<ITexture>     m_RRDiffuseAlbedo;
     RefCntAutoPtr<ITexture>     m_RRSpecAlbedo;
     RefCntAutoPtr<ITexture>     m_RRNormalsAndRoughness;
     RefCntAutoPtr<ITexture>     m_RRDepth;
     RefCntAutoPtr<ITexture>     m_RRMotionVectors;
+    RefCntAutoPtr<ITexture>     m_RRSpecMotionVectors;
     bool                        m_RayReconstructionResourcesRequested = false;
     bool                        m_AccumulatedRadianceUnavailable      = false;
     bool                        m_AccumulatedRadianceRequested        = false;
@@ -318,7 +321,7 @@ private:
     bool                        m_PendingResizeRequestValid           = false;
     bool                        m_PendingRealtimeResources            = false;
     bool                        m_PendingDenoiserValidation           = false;
-    Uint64                      m_StablePlanesElementCount            = 0;
+    Uint64                      m_DenoisingLayersElementCount         = 0;
     std::string                 m_LastFailureReason;
     RTXPTRenderTargetDimensions m_Dimensions = {0, 0, 0, 0, false};
     RTXPTRenderTargetFormats    m_Formats    = {};

@@ -26,6 +26,8 @@ public:
         Total,
         Build,
         LightsBaker,
+        SharcUpdate,
+        SharcResolve,
         Fill,
         Guides,
         RRPrepare,
@@ -108,7 +110,7 @@ private:
     static constexpr Uint32                               kBufferedFrames = 8;
     static constexpr Uint32                               kReportFrames   = 120;
     static constexpr std::array<const char*, kStageCount> kNames          = {
-        "Total", "BUILD", "LightsBaker", "FILL", "Guides", "RRPrepare", "RR", "PostProcess"};
+        "Total", "BUILD", "LightsBaker", "SHaRCUpdate", "SHaRCResolve", "FILL", "Guides", "RRPrepare", "RR", "PostProcess"};
     struct Frame
     {
         std::array<RefCntAutoPtr<IQuery>, kStageCount * 2> Queries;

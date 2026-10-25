@@ -50,7 +50,7 @@ struct IRenderStateCache;
 
 enum class RTXPTPostProcessPassId : Uint32
 {
-    StablePlanesDebugViz,
+    DenoisingLayersDebugViz,
     RelaxDenoiserPrepareInputs,
     ReblurDenoiserPrepareInputs,
     RelaxDenoiserFinalMerge,
@@ -80,15 +80,15 @@ struct RTXPTDenoiserPostProcessAttribs
 
 struct RTXPTPostProcessPassStats
 {
-    bool   Ready                           = false;
-    bool   LastStablePlanesDebugExecuted   = false;
-    bool   LastDenoiserPrepareExecuted     = false;
-    bool   LastDenoiserFinalMergeExecuted  = false;
-    bool   LastNoDenoiserMergeExecuted     = false;
-    Uint32 StablePlanesDebugDispatchCount  = 0;
-    Uint32 DenoiserPrepareDispatchCount    = 0;
-    Uint32 DenoiserFinalMergeDispatchCount = 0;
-    Uint32 NoDenoiserMergeDispatchCount    = 0;
+    bool   Ready                             = false;
+    bool   LastDenoisingLayersDebugExecuted  = false;
+    bool   LastDenoiserPrepareExecuted       = false;
+    bool   LastDenoiserFinalMergeExecuted    = false;
+    bool   LastNoDenoiserMergeExecuted       = false;
+    Uint32 DenoisingLayersDebugDispatchCount = 0;
+    Uint32 DenoiserPrepareDispatchCount      = 0;
+    Uint32 DenoiserFinalMergeDispatchCount   = 0;
+    Uint32 NoDenoiserMergeDispatchCount      = 0;
 };
 
 class RTXPTPostProcessPass
@@ -96,7 +96,7 @@ class RTXPTPostProcessPass
 public:
     void Reset();
     bool Initialize(IRenderDevice* pDevice, IEngineFactory* pEngineFactory, IRenderStateCache* pStateCache, IBuffer* pFrameConstants, bool ComputeSupported);
-    bool RunStablePlanesDebugViz(IDeviceContext* pContext, const RTXPTDenoiserPostProcessAttribs& Attribs);
+    bool RunDenoisingLayersDebugViz(IDeviceContext* pContext, const RTXPTDenoiserPostProcessAttribs& Attribs);
     bool RunDenoiserPrepare(IDeviceContext* pContext, const RTXPTDenoiserPostProcessAttribs& Attribs);
     bool RunDenoiserFinalMerge(IDeviceContext* pContext, const RTXPTDenoiserPostProcessAttribs& Attribs);
     bool RunNoDenoiserFinalMerge(IDeviceContext* pContext, const RTXPTDenoiserPostProcessAttribs& Attribs);

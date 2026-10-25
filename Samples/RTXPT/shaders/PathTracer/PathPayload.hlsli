@@ -24,7 +24,7 @@ PathPayload PathPayload::pack(const PathState path)
     p.packed[1] = path.PackDirSceneLength;
 
     p.packed[2].xy = path.pack23;
-#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_STABLE_PLANES
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
     p.packed[2].zw = path.imageXformPacked;
 #else
     p.packed[2].zw = path.pack45;
@@ -54,7 +54,7 @@ PathState PathPayload::unpack(const PathPayload p)
     path.PackDirSceneLength = p.packed[1];
 
     path.pack23 = p.packed[2].xy;
-#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_STABLE_PLANES
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
     path.imageXformPacked = p.packed[2].zw;
 #else
     path.pack45 = p.packed[2].zw;

@@ -2,7 +2,7 @@
 
 #define ENABLE_HIT_BRIDGE 1
 #include "PathTracer.hlsli"
-#include "Rendering/Materials/MaterialBridge.hlsli"
+#include "BSDFs/MaterialBridge.hlsli"
 
 using ActiveRayPayload = PathPayload;
 
@@ -138,7 +138,7 @@ namespace PathTracer
         worldNormal = normalize(worldNormal);
         tangent     = normalize(tangent);
 
-        StablePlaneMaterialState mtl;
+        DenoisingLayerMaterialState mtl;
         mtl.flags                          = materialFlags;
         mtl.nestedPriority                 = nestedPriority;
         mtl.activeLobes                    = kLobeTypeAll;
@@ -146,7 +146,7 @@ namespace PathTracer
         mtl.psdBlockMotionVectorsAtSurface = psdBlockMotionVectorsAtSurface;
         mtl.psdDominantDeltaLobeP1         = psdDominantDeltaLobeP1;
 
-        StablePlaneShadingData shadingData;
+        ShadingData shadingData;
         shadingData.posW        = worldPos;
         shadingData.N           = worldNormal;
         shadingData.V           = normalize(-rayDir);
@@ -159,9 +159,14 @@ namespace PathTracer
         shadingData.vertexN           = vertexNormal;
         shadingData.shadowNoLFadeout  = shadowNoLFadeout;
         shadingData.emission          = surfaceEmission;
+        const float3 objectExtent = max(abs(V0.position), max(abs(V1.position), abs(V2.position)));
+        const float3 extentW = mul(abs((float3x3)ObjectToWorld3x4()), objectExtent);
+        shadingData.posErrorScale = max(max(abs(worldPos.x), max(abs(worldPos.y), abs(worldPos.z))),
+                                       max(extentW.x, max(extentW.y, extentW.z)));
+        shadingData.exteriorIoR = lpfloat(1.0);
+        shadingData.interiorIoR = lpfloat(ior);
 
         ActiveBSDF bsdf;
-        bsdf.data.roughness = lpfloat(roughness);
         bsdf.standardData = MakeStandardBSDFData(worldNormal,
                                                  baseColor,
                                                  metallic,
@@ -179,10 +184,9 @@ namespace PathTracer
 
         return SurfaceData::make(shadingData,
                                  bsdf,
-#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_STABLE_PLANES
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
                                  worldPos,
 #endif
-                                 lpfloat(ior),
                                  neeTriangleLightIndex,
                                  0xFFFFFFFFu,
                                   emissiveLightPdf);
@@ -198,7 +202,7 @@ namespace PathTracer
         const float3 rayDir       = WorldRayDirection();
         const float  rayTCurrent  = RayTCurrent();
 
-#if PATH_TRACER_MODE == PATH_TRACER_MODE_REFERENCE
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_REFERENCE && !RTXPT_SHARC_TRAIN
         UpdatePathTravelled(path, rayOrigin, rayDir, rayTCurrent, workingContext);
 
 #if RTXPT_NESTED_DIELECTRICS_QUALITY > 0 || defined(__INTELLISENSE__)
@@ -236,12 +240,12 @@ namespace PathTracer
         {
             const float3 radiance = path.GetThp() * referenceSurfaceEmission;
             const float specRadianceAvg =
-                path.hasFlag(PathFlags::stablePlaneBaseScatterDiff) ? 0.0 : Average(radiance);
+                path.hasFlag(PathFlags::denoisingLayerBaseScatterDiff) ? 0.0 : Average(radiance);
             AccumulatePathRadiance(workingContext,
                                    path,
                                    radiance,
                                    specRadianceAvg,
-                                   path.hasFlag(PathFlags::stablePlaneOnBranch),
+                                   path.hasFlag(PathFlags::denoisingLayerOnBranch),
                                    ShouldCollectGISecondaryRadiance(path));
         }
 

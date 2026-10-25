@@ -19,8 +19,8 @@
 #    define kMaxRayTravel (1e15f)
 #endif
 
-#ifndef cStablePlaneCount
-#    define cStablePlaneCount (3u)
+#ifndef cDenoisingLayerCount
+#    define cDenoisingLayerCount (3u)
 #endif
 
 #ifndef PT_USE_RESTIR_DI
@@ -65,23 +65,17 @@ typedef uint3    lpuint3;
 typedef uint4    lpuint4;
 #endif
 
-float ComputeRayOriginComponent(float worldPosition, float faceNormal)
+float3 ComputeRayOrigin(float3 worldPosition, float3 faceNormal, float positionErrorScale)
 {
-    const float originScale = 1.0 / 16.0;
-    const float floatScale  = 3.0 / 65536.0;
-    const float intScale    = 3.0 * 256.0;
-
-    const int   intOffset = int(faceNormal * intScale);
-    const int   intPos    = asint(worldPosition) + (worldPosition < 0.0 ? -intOffset : intOffset);
-    const float fpOffset  = worldPosition + faceNormal * floatScale;
-    return abs(worldPosition) < originScale ? fpOffset : asfloat(intPos);
+    // A single error magnitude avoids sliding sideways across triangle creases.
+    const float kOrigin = 1.0 / 1024.0;
+    const float kOffsetScale = 4.0 / 8388608.0;
+    return worldPosition + faceNormal * (max(kOrigin, positionErrorScale) * kOffsetScale);
 }
 
 float3 ComputeRayOrigin(float3 worldPosition, float3 faceNormal)
 {
-    return float3(ComputeRayOriginComponent(worldPosition.x, faceNormal.x),
-                  ComputeRayOriginComponent(worldPosition.y, faceNormal.y),
-                  ComputeRayOriginComponent(worldPosition.z, faceNormal.z));
+    return ComputeRayOrigin(worldPosition, faceNormal, max(abs(worldPosition.x), max(abs(worldPosition.y), abs(worldPosition.z))));
 }
 
 float ComputeLowGrazingAngleFalloff(float3 lightDirection, float3 interpolatedGeometryNormal, float falloffFrom, float falloffRange)
@@ -121,7 +115,7 @@ float2 SampleConcentricDisk(float2 sample)
 
 float3 ComputeNonNormalizedRayDirPinhole(PathTracerCameraData data, uint2 pixel, float2 jitter)
 {
-    const float2 p   = (float2(pixel) + float2(0.5, 0.5) + jitter) / float2(data.ViewportSize);
+    const float2 p   = (float2(pixel) + float2(0.5, 0.5) + float2(-jitter.x, jitter.y)) / float2(data.ViewportSize);
     const float2 ndc = float2(2.0, -2.0) * p + float2(-1.0, 1.0);
     return ndc.x * data.CameraU + ndc.y * data.CameraV + data.CameraW;
 }
@@ -131,9 +125,7 @@ CameraRay ComputeRayThinlens(PathTracerCameraData data, uint2 pixel, float2 jitt
     CameraRay ray;
     ray.origin = data.PosW;
 
-    const float2 p   = (float2(pixel) + float2(0.5, 0.5) + float2(-jitter.x, jitter.y)) / float2(data.ViewportSize);
-    const float2 ndc = float2(2.0, -2.0) * p + float2(-1.0, 1.0);
-    ray.dir          = ndc.x * data.CameraU + ndc.y * data.CameraV + data.CameraW;
+    ray.dir = ComputeNonNormalizedRayDirPinhole(data, pixel, jitter);
 
     const float2 apertureSample = SampleConcentricDisk(sample2D);
     const float3 target         = ray.origin + ray.dir;

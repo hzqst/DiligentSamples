@@ -1,9 +1,9 @@
 #ifndef __MATERIAL_BRIDGE_HLSLI__
 #define __MATERIAL_BRIDGE_HLSLI__
 
-#include "../../Config.h"
-#include "../../PathTracerShared.h"
-#include "../../Scene/Material/HomogeneousVolumeData.hlsli"
+#include "../Config.h"
+#include "../PathTracerShared.h"
+#include "../Scene/Material/HomogeneousVolumeData.hlsli"
 
 #ifndef RTXPT_ENABLE_MATERIAL_PSD_BRIDGE
 #    define RTXPT_ENABLE_MATERIAL_PSD_BRIDGE 0

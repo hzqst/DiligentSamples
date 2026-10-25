@@ -45,6 +45,8 @@
 #include "RTXPTLightsBaker.hpp"
 #include "RTXPTMaterials.hpp"
 #include "RTXPTRayTracingPass.hpp"
+#include "SharcIntegration.hpp"
+#include "../tests/HDRValidationCapture.hpp"
 #include "RTXPTDenoisingGuidesBaker.hpp"
 #include "RTXPTNrdIntegration.hpp"
 #include "RTXPTRenderTargets.hpp"
@@ -164,46 +166,52 @@ private:
     bool BakeDenoisingGuides();
     bool PresentRealtimeGuideDebug();
     bool DispatchPathTracePrePass(const RTXPTRayTracingDispatch& BaseDispatch);
-    bool DispatchPathTraceLoop(bool UseStablePlanes, const RTXPTRayTracingDispatch& BaseDispatch);
+    bool DispatchPathTraceLoop(bool UseDenoisingLayers, const RTXPTRayTracingDispatch& BaseDispatch);
     void RecordRealtimePathTraceStatus(const char* Status);
 
-    RefCntAutoPtr<IRenderStateCache>                        m_pStateCache;
-    RTXPTFeatureCaps                                        m_FeatureCaps;
-    RTXPTGpuProfiler                                        m_GpuProfiler;
-    bool                                                    m_EnableGpuProfiling = false;
-    bool                                                    m_EnableInlineVisibility = true;
-    bool                                                    m_EnableHitObject        = true;
-    bool                                                    m_EnableThreadReorder    = true;
-    std::string                                             m_GpuProfileCSV;
-    std::string                                             m_AssetsRoot;
-    std::vector<std::string>                                m_AvailableScenes;
-    std::string                                             m_CurrentSceneName;
-    std::string                                             m_InitialSceneName;
-    RTXPTScene                                              m_Scene;
-    RTXPTMaterials                                          m_Materials;
-    RTXPTLights                                             m_Lights;
-    RTXPTLightsBaker                                        m_LightsBaker;
-    RTXPTEnvMapBaker                                        m_EnvMapBaker;
-    std::vector<RTXPTEnvMapSource>                          m_EnvMapSources;
-    RTXPTEnvMapSettings                                     m_EnvMapSettings;
-    RTXPTAccelerationStructures                             m_AccelerationStructures;
-    RTXPTSkinnedSceneGeometry                               m_SkinnedGeometry;
-    RTXPTRenderTargets                                      m_RenderTargets;
-    RTXPTRayTracingPass                                     m_RayTracingPass;
-    RTXPTDenoisingGuidesBaker                               m_DenoisingGuidesBaker;
-    std::array<RTXPTNrdIntegration, kRTXPTStablePlaneCount> m_NrdIntegrations;
-    bool                                                    m_LastRealtimePathTraceExecuted = false;
-    bool                                                    m_LastRealtimeFinalMergeReady   = false;
-    std::string                                             m_RealtimePathTraceStatus;
-    RTXPTEmissiveTrianglePass                               m_EmissiveTrianglePass;
-    RTXPTBlitPass                                           m_BlitPass;
-    RTXPTPostProcessPipeline                                m_PostProcessPipeline;
-    FirstPersonCamera                                       m_Camera;
-    RefCntAutoPtr<IBuffer>                                  m_FrameConstantsCB;
-    SampleConstants                                         m_LastFrameConstants;
-    RTXPTReferenceUIState                                   m_ReferenceUI;
-    RTXPTRealtimeSettings                                   m_RealtimeUI;
-    RTXPTRealtimeResetFlags                                 m_RealtimeResetPending = RTXPT_REALTIME_RESET_REALTIME_CACHES |
+    RefCntAutoPtr<IRenderStateCache>                           m_pStateCache;
+    RTXPTFeatureCaps                                           m_FeatureCaps;
+    RTXPTGpuProfiler                                           m_GpuProfiler;
+    bool                                                       m_EnableGpuProfiling     = false;
+    bool                                                       m_EnableInlineVisibility = true;
+    bool                                                       m_EnableHitObject        = true;
+    bool                                                       m_EnableThreadReorder    = true;
+    std::string                                                m_GpuProfileCSV;
+    std::string                                                m_AssetsRoot;
+    std::vector<std::string>                                   m_AvailableScenes;
+    std::string                                                m_CurrentSceneName;
+    std::string                                                m_InitialSceneName;
+    RTXPTScene                                                 m_Scene;
+    RTXPTMaterials                                             m_Materials;
+    RTXPTLights                                                m_Lights;
+    RTXPTLightsBaker                                           m_LightsBaker;
+    RTXPTEnvMapBaker                                           m_EnvMapBaker;
+    std::vector<RTXPTEnvMapSource>                             m_EnvMapSources;
+    RTXPTEnvMapSettings                                        m_EnvMapSettings;
+    RTXPTAccelerationStructures                                m_AccelerationStructures;
+    RTXPTSkinnedSceneGeometry                                  m_SkinnedGeometry;
+    RTXPTRenderTargets                                         m_RenderTargets;
+    RTXPTRayTracingPass                                        m_RayTracingPass;
+    SharcIntegration                                           m_Sharc;
+    SharcSettings                                              m_SharcSettings;
+    bool                                                       m_SharcActive = false;
+    HDRValidationCapture                                       m_HDRCapture;
+    bool                                                       m_RequestSceneAnimations = false;
+    Uint32                                                     m_ExitAfterFrames        = 0;
+    RTXPTDenoisingGuidesBaker                                  m_DenoisingGuidesBaker;
+    std::array<RTXPTNrdIntegration, kRTXPTDenoisingLayerCount> m_NrdIntegrations;
+    bool                                                       m_LastRealtimePathTraceExecuted = false;
+    bool                                                       m_LastRealtimeFinalMergeReady   = false;
+    std::string                                                m_RealtimePathTraceStatus;
+    RTXPTEmissiveTrianglePass                                  m_EmissiveTrianglePass;
+    RTXPTBlitPass                                              m_BlitPass;
+    RTXPTPostProcessPipeline                                   m_PostProcessPipeline;
+    FirstPersonCamera                                          m_Camera;
+    RefCntAutoPtr<IBuffer>                                     m_FrameConstantsCB;
+    SampleConstants                                            m_LastFrameConstants;
+    RTXPTReferenceUIState                                      m_ReferenceUI;
+    RTXPTRealtimeSettings                                      m_RealtimeUI;
+    RTXPTRealtimeResetFlags                                    m_RealtimeResetPending = RTXPT_REALTIME_RESET_REALTIME_CACHES |
         RTXPT_REALTIME_RESET_NRD_HISTORY |
         RTXPT_REALTIME_RESET_TAA_SR_HISTORY;
     RTXPTRealtimeResetFlags        m_CurrentFrameRealtimeReset   = RTXPT_REALTIME_RESET_NONE;

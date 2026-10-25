@@ -101,17 +101,17 @@ struct PathTracerConstants
     Uint32 useReSTIRGI       = 0;
     Uint32 resetAccumulation = 1;
 
-    float  stablePlanesSplitStopThreshold               = 0.95f;
-    float  _padding3                                    = 0.0f;
-    Uint32 _padding4                                    = 0;
-    float  stablePlanesSuppressPrimaryIndirectSpecularK = 0.0f;
+    float  denoisingLayersSplitStopThreshold               = 0.95f;
+    float  _padding3                                       = 0.0f;
+    Uint32 _padding4                                       = 0;
+    float  denoisingLayersSuppressPrimaryIndirectSpecularK = 0.0f;
 
-    float  denoiserRadianceClampK              = 0.0f;
-    float  DLSSRRBrightnessClampK              = 0.0f; // RR input max-channel clamp; zero disables the user clamp.
-    float  stablePlanesAntiAliasingFallthrough = 0.0f;
-    Uint32 _activeStablePlaneCount             = 1;
+    float  denoiserRadianceClampK                 = 0.0f;
+    float  DLSSRRBrightnessClampK                 = 0.0f; // RR input max-channel clamp; zero disables the user clamp.
+    float  denoisingLayersAntiAliasingFallthrough = 0.0f;
+    Uint32 _activeDenoisingLayerCount             = 1;
 
-    Uint32 maxStablePlaneVertexDepth      = 0;
+    Uint32 maxDenoisingLayerVertexDepth   = 0;
     Uint32 allowPrimarySurfaceReplacement = 0;
     Uint32 genericTSLineStride            = 1;
     Uint32 genericTSPlaneStride           = 1;
@@ -144,7 +144,7 @@ static_assert(offsetof(PathTracerConstants, sampleBaseIndex) == 8, "PathTracerCo
 static_assert(offsetof(PathTracerConstants, invSubSampleCount) == 32, "PathTracerConstants invSubSampleCount offset must match PathTracer/PathTracerShared.h");
 static_assert(offsetof(PathTracerConstants, frameIndex) == 48, "PathTracerConstants frameIndex offset must match PathTracer/PathTracerShared.h");
 static_assert(offsetof(PathTracerConstants, resetAccumulation) == 60, "PathTracerConstants resetAccumulation offset must match PathTracer/PathTracerShared.h");
-static_assert(offsetof(PathTracerConstants, _activeStablePlaneCount) == 92, "PathTracerConstants active stable-plane count offset must match PathTracer/PathTracerShared.h");
+static_assert(offsetof(PathTracerConstants, _activeDenoisingLayerCount) == 92, "PathTracerConstants active stable-plane count offset must match PathTracer/PathTracerShared.h");
 static_assert(offsetof(PathTracerConstants, genericTSLineStride) == 104, "PathTracerConstants genericTSLineStride offset must match PathTracer/PathTracerShared.h");
 static_assert(offsetof(PathTracerConstants, sampleIndex) == 128, "PathTracerConstants sampleIndex offset must match PathTracer/PathTracerShared.h");
 static_assert(offsetof(PathTracerConstants, environmentIntensity) == 140, "PathTracerConstants environmentIntensity offset must match PathTracer/PathTracerShared.h");

@@ -102,7 +102,8 @@ float4 ApplyToneMapping(float2 UV)
     const float4 SourceColor = t_Color.Sample(s_ColorSampler, UV);
     float3       FinalColor  = SourceColor.rgb;
 
-    if (g_Params.AutoExposure != 0)
+    // Disabled tone mapping is a pure passthrough, including exposure.
+    if (g_Params.Enabled != 0 && g_Params.AutoExposure != 0)
     {
         const float AvgLuminance = max(GetAverageLuminance(), 1.0e-6);
         FinalColor *= clamp(RTXPT_TONEMAPPING_EXPOSURE_KEY / AvgLuminance,

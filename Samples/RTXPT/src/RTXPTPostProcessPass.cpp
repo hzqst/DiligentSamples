@@ -46,7 +46,7 @@ const char* GetPassName(RTXPTPostProcessPassId Pass)
 {
     switch (Pass)
     {
-        case RTXPTPostProcessPassId::StablePlanesDebugViz: return "StablePlanesDebugViz";
+        case RTXPTPostProcessPassId::DenoisingLayersDebugViz: return "DenoisingLayersDebugViz";
         case RTXPTPostProcessPassId::RelaxDenoiserPrepareInputs: return "RelaxDenoiserPrepareInputs";
         case RTXPTPostProcessPassId::ReblurDenoiserPrepareInputs: return "ReblurDenoiserPrepareInputs";
         case RTXPTPostProcessPassId::RelaxDenoiserFinalMerge: return "RelaxDenoiserFinalMerge";
@@ -62,7 +62,7 @@ const char* GetModeMacro(RTXPTPostProcessPassId Pass)
 {
     switch (Pass)
     {
-        case RTXPTPostProcessPassId::StablePlanesDebugViz: return "RTXPT_POST_PROCESS_STABLE_PLANES_DEBUG_VIZ";
+        case RTXPTPostProcessPassId::DenoisingLayersDebugViz: return "RTXPT_POST_PROCESS_DENOISING_LAYERS_DEBUG_VIZ";
         case RTXPTPostProcessPassId::RelaxDenoiserPrepareInputs: return "RTXPT_POST_PROCESS_RELAX_PREPARE_INPUTS";
         case RTXPTPostProcessPassId::ReblurDenoiserPrepareInputs: return "RTXPT_POST_PROCESS_REBLUR_PREPARE_INPUTS";
         case RTXPTPostProcessPassId::RelaxDenoiserFinalMerge: return "RTXPT_POST_PROCESS_RELAX_FINAL_MERGE";
@@ -169,11 +169,11 @@ bool BindDispatchResources(IShaderResourceBinding*                pSRB,
     const bool                PreparePass    = IsDenoiserPreparePass(Pass);
     const bool                FinalMergePass = IsDenoiserFinalMergePass(Pass);
     const bool                RRPreparePass  = Pass == RTXPTPostProcessPassId::DLSSRRDenoiserPrepareInputs;
-    const bool                StablePlanesRequired =
+    const bool                DenoisingLayersRequired =
         PreparePass || RRPreparePass ||
-        Pass == RTXPTPostProcessPassId::StablePlanesDebugViz ||
+        Pass == RTXPTPostProcessPassId::DenoisingLayersDebugViz ||
         Pass == RTXPTPostProcessPassId::NoDenoiserFinalMerge;
-    const bool StableBufferRequired = StablePlanesRequired || FinalMergePass;
+    const bool StableBufferRequired = DenoisingLayersRequired || FinalMergePass;
 
     ITextureView* pDenoiserOutDiffRadianceHitDistSRV = RenderTargets.GetDenoiserOutDiffRadianceHitDistSRV(Attribs.PlaneIndex);
     ITextureView* pDenoiserOutValidationSRV          = RenderTargets.GetDenoiserOutValidationSRV();
@@ -188,6 +188,7 @@ bool BindDispatchResources(IShaderResourceBinding*                pSRB,
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_RRNormalsAndRoughness", Attribs.pRRNormalsAndRoughnessUAV, RRPreparePass, Pass, "RR normals and roughness UAV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_RRDepth", Attribs.pRRDepthUAV, RRPreparePass, Pass, "RR view depth UAV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_RRMotionVectors", Attribs.pRRMotionVectorsUAV, RRPreparePass, Pass, "RR pixel motion UAV") &&
+        SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_RRSpecMotionVectors", RenderTargets.GetRRSpecMotionVectorsUAV(), RRPreparePass, Pass, "RR specular pixel motion UAV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "t_Depth", RenderTargets.GetDepthSRV(), RRPreparePass, Pass, "depth SRV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "t_MotionVectors", RenderTargets.GetScreenMotionVectorsSRV(), RRPreparePass, Pass, "motion vectors SRV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "t_SpecularHitT", RenderTargets.GetSpecularHitTSRV(), PreparePass, Pass, "specular hit T SRV") &&
@@ -197,9 +198,9 @@ bool BindDispatchResources(IShaderResourceBinding*                pSRB,
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "t_DenoiserViewspaceZ", RenderTargets.GetDenoiserViewspaceZSRV(), FinalMergePass, Pass, "denoiser viewspace Z SRV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "t_DenoiserDisocclusionThresholdMix", RenderTargets.GetDenoiserDisocclusionThresholdMixSRV(), false, Pass, "denoiser disocclusion threshold mix SRV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_OutputColor", Attribs.pMergeOutputUAV, true, Pass, "merge output UAV") &&
-        SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_StableRadiance", RenderTargets.GetStableRadianceUAV(), StablePlanesRequired, Pass, "stable radiance UAV") &&
-        SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_StablePlanesHeader", RenderTargets.GetStablePlanesHeaderUAV(), StablePlanesRequired, Pass, "stable planes header UAV") &&
-        SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_StablePlanesBuffer", RenderTargets.GetStablePlanesBufferUAV(), StableBufferRequired, Pass, "stable planes buffer UAV") &&
+        SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_StableRadiance", RenderTargets.GetStableRadianceUAV(), DenoisingLayersRequired, Pass, "stable radiance UAV") &&
+        SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_DenoisingLayersHeader", RenderTargets.GetDenoisingLayersHeaderUAV(), DenoisingLayersRequired, Pass, "stable planes header UAV") &&
+        SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_DenoisingLayersBuffer", RenderTargets.GetDenoisingLayersBufferUAV(), StableBufferRequired, Pass, "stable planes buffer UAV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_DenoiserViewspaceZ", RenderTargets.GetDenoiserViewspaceZUAV(), PreparePass, Pass, "denoiser viewspace Z UAV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_DenoiserMotionVectors", RenderTargets.GetDenoiserMotionVectorsUAV(), PreparePass, Pass, "denoiser motion vectors UAV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_DenoiserNormalRoughness", RenderTargets.GetDenoiserNormalRoughnessUAV(), PreparePass, Pass, "denoiser normal roughness UAV") &&
@@ -335,7 +336,13 @@ bool RTXPTPostProcessPass::CreatePostProcessPSO(IRenderDevice*          pDevice,
 
     ShaderCreateInfo ShaderCI = BaseShaderCI;
     ShaderCI.Desc.Name        = GetPassName(Pass);
-    ShaderCI.Macros           = Macros;
+    if (Pass == RTXPTPostProcessPassId::DLSSRRDenoiserPrepareInputs)
+    {
+        Macros.Add("RTXPT_PREPARE_DLSS_RR", 1);
+        ShaderCI.FilePath   = "PathTracer/DenoisingGuidesBaker.hlsl";
+        ShaderCI.EntryPoint = "PrepareDLSSRRGuides";
+    }
+    ShaderCI.Macros = Macros;
 
     RefCntAutoPtr<IShader> pCS;
     if (pStateCache != nullptr)
@@ -370,9 +377,10 @@ bool RTXPTPostProcessPass::CreatePostProcessPSO(IRenderDevice*          pDevice,
         .AddVariable(SHADER_TYPE_COMPUTE, "u_RRNormalsAndRoughness", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_RRDepth", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_RRMotionVectors", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
+        .AddVariable(SHADER_TYPE_COMPUTE, "u_RRSpecMotionVectors", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_StableRadiance", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
-        .AddVariable(SHADER_TYPE_COMPUTE, "u_StablePlanesHeader", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
-        .AddVariable(SHADER_TYPE_COMPUTE, "u_StablePlanesBuffer", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
+        .AddVariable(SHADER_TYPE_COMPUTE, "u_DenoisingLayersHeader", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
+        .AddVariable(SHADER_TYPE_COMPUTE, "u_DenoisingLayersBuffer", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_DenoiserViewspaceZ", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_DenoiserMotionVectors", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_DenoiserNormalRoughness", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
@@ -393,7 +401,7 @@ bool RTXPTPostProcessPass::CreatePostProcessPSO(IRenderDevice*          pDevice,
     const bool MiniConstantsRequired =
         IsDenoiserPreparePass(Pass) ||
         IsDenoiserFinalMergePass(Pass) ||
-        Pass == RTXPTPostProcessPassId::StablePlanesDebugViz;
+        Pass == RTXPTPostProcessPassId::DenoisingLayersDebugViz;
     const bool StaticBound =
         SetStaticVariable(State.PSO, SHADER_TYPE_COMPUTE, "g_Const", m_FrameConstants, true, Pass, "frame constants") &&
         SetStaticVariable(State.PSO, SHADER_TYPE_COMPUTE, "g_MiniConst", m_MiniConstants, MiniConstantsRequired, Pass, "mini constants");
@@ -429,7 +437,7 @@ bool RTXPTPostProcessPass::DispatchPass(IDeviceContext*                        p
 
     if (!IsDenoiserPreparePass(Pass) &&
         !IsDenoiserFinalMergePass(Pass) &&
-        Pass != RTXPTPostProcessPassId::StablePlanesDebugViz &&
+        Pass != RTXPTPostProcessPassId::DenoisingLayersDebugViz &&
         Pass != RTXPTPostProcessPassId::DLSSRRDenoiserPrepareInputs &&
         Pass != RTXPTPostProcessPassId::NoDenoiserFinalMerge)
         return false;
@@ -453,15 +461,15 @@ bool RTXPTPostProcessPass::DispatchPass(IDeviceContext*                        p
     return true;
 }
 
-bool RTXPTPostProcessPass::RunStablePlanesDebugViz(IDeviceContext* pContext, const RTXPTDenoiserPostProcessAttribs& Attribs)
+bool RTXPTPostProcessPass::RunDenoisingLayersDebugViz(IDeviceContext* pContext, const RTXPTDenoiserPostProcessAttribs& Attribs)
 {
-    m_Stats.LastStablePlanesDebugExecuted = false;
+    m_Stats.LastDenoisingLayersDebugExecuted = false;
 
-    const bool Executed = DispatchPass(pContext, RTXPTPostProcessPassId::StablePlanesDebugViz, Attribs);
+    const bool Executed = DispatchPass(pContext, RTXPTPostProcessPassId::DenoisingLayersDebugViz, Attribs);
     if (Executed)
     {
-        m_Stats.LastStablePlanesDebugExecuted = true;
-        ++m_Stats.StablePlanesDebugDispatchCount;
+        m_Stats.LastDenoisingLayersDebugExecuted = true;
+        ++m_Stats.DenoisingLayersDebugDispatchCount;
     }
     return Executed;
 }
@@ -519,16 +527,17 @@ bool RTXPTPostProcessPass::RunDLSSRRDenoiserPrepareInputs(IDeviceContext* pConte
         Attribs.pRenderTargets->GetDepthSRV() == nullptr ||
         Attribs.pRenderTargets->GetScreenMotionVectorsSRV() == nullptr ||
         Attribs.pRenderTargets->GetStableRadianceUAV() == nullptr ||
-        Attribs.pRenderTargets->GetStablePlanesHeaderUAV() == nullptr ||
-        Attribs.pRenderTargets->GetStablePlanesBufferUAV() == nullptr)
+        Attribs.pRenderTargets->GetDenoisingLayersHeaderUAV() == nullptr ||
+        Attribs.pRenderTargets->GetDenoisingLayersBufferUAV() == nullptr)
         return false;
 
     // Reject missing/stale/aliased outputs before touching the SRB.
     // The subsequent IRayReconstruction dispatch belongs to the frame scheduler.
-    const std::array<ITextureView*, 6>  Outputs = {{Attribs.pMergeOutputUAV, Attribs.pRRDiffuseAlbedoUAV,
-                                                   Attribs.pRRSpecAlbedoUAV, Attribs.pRRNormalsAndRoughnessUAV, Attribs.pRRDepthUAV, Attribs.pRRMotionVectorsUAV}};
-    const std::array<TEXTURE_FORMAT, 6> Formats = {{TEX_FORMAT_RGBA16_FLOAT, TEX_FORMAT_RGBA16_FLOAT,
-                                                    TEX_FORMAT_RGBA16_FLOAT, TEX_FORMAT_RGBA16_FLOAT, TEX_FORMAT_R32_FLOAT, TEX_FORMAT_RG16_FLOAT}};
+    const std::array<ITextureView*, 7>  Outputs = {{Attribs.pMergeOutputUAV, Attribs.pRRDiffuseAlbedoUAV,
+                                                   Attribs.pRRSpecAlbedoUAV, Attribs.pRRNormalsAndRoughnessUAV, Attribs.pRRDepthUAV, Attribs.pRRMotionVectorsUAV,
+                                                   Attribs.pRenderTargets->GetRRSpecMotionVectorsUAV()}};
+    const std::array<TEXTURE_FORMAT, 7> Formats = {{TEX_FORMAT_RGBA16_FLOAT, TEX_FORMAT_RGBA16_FLOAT,
+                                                    TEX_FORMAT_RGBA16_FLOAT, TEX_FORMAT_RGBA16_FLOAT, TEX_FORMAT_R32_FLOAT, TEX_FORMAT_RG16_FLOAT, TEX_FORMAT_RG16_FLOAT}};
     for (size_t Index = 0; Index < Outputs.size(); ++Index)
     {
         ITextureView* pView = Outputs[Index];
@@ -554,12 +563,12 @@ bool RTXPTPostProcessPass::RunDLSSRRDenoiserPrepareInputs(IDeviceContext* pConte
     const RTXPTRenderTargets& Targets            = *Attribs.pRenderTargets;
     StateTransitionDesc       ProducerBarriers[] = {
         {Targets.GetStableRadianceUAV()->GetTexture(), RESOURCE_STATE_UNKNOWN, RESOURCE_STATE_UNORDERED_ACCESS, STATE_TRANSITION_FLAG_UPDATE_STATE},
-        {Targets.GetStablePlanesHeaderUAV()->GetTexture(), RESOURCE_STATE_UNKNOWN, RESOURCE_STATE_UNORDERED_ACCESS, STATE_TRANSITION_FLAG_UPDATE_STATE},
-        {Targets.GetStablePlanesBuffer(), RESOURCE_STATE_UNKNOWN, RESOURCE_STATE_UNORDERED_ACCESS, STATE_TRANSITION_FLAG_UPDATE_STATE}};
+        {Targets.GetDenoisingLayersHeaderUAV()->GetTexture(), RESOURCE_STATE_UNKNOWN, RESOURCE_STATE_UNORDERED_ACCESS, STATE_TRANSITION_FLAG_UPDATE_STATE},
+        {Targets.GetDenoisingLayersBuffer(), RESOURCE_STATE_UNKNOWN, RESOURCE_STATE_UNORDERED_ACCESS, STATE_TRANSITION_FLAG_UPDATE_STATE}};
     pContext->TransitionResourceStates(3, ProducerBarriers);
     if (!DispatchPass(pContext, RTXPTPostProcessPassId::DLSSRRDenoiserPrepareInputs, Attribs))
         return false;
-    std::array<StateTransitionDesc, 6> ConsumerBarriers;
+    std::array<StateTransitionDesc, 7> ConsumerBarriers;
     for (size_t Index = 0; Index < Outputs.size(); ++Index)
         ConsumerBarriers[Index] = StateTransitionDesc{Outputs[Index]->GetTexture(), RESOURCE_STATE_UNORDERED_ACCESS,
                                                       RESOURCE_STATE_SHADER_RESOURCE, STATE_TRANSITION_FLAG_UPDATE_STATE};
@@ -567,8 +576,8 @@ bool RTXPTPostProcessPass::RunDLSSRRDenoiserPrepareInputs(IDeviceContext* pConte
     // Do not keep resized/mode-specific textures alive through cached bindings.
     auto* SRB = m_Passes[static_cast<size_t>(RTXPTPostProcessPassId::DLSSRRDenoiserPrepareInputs)].SRB.RawPtr();
     for (const char* Name : {"t_Depth", "t_MotionVectors", "u_OutputColor", "u_RRDiffuseAlbedo", "u_RRSpecAlbedo",
-                             "u_RRNormalsAndRoughness", "u_RRDepth", "u_RRMotionVectors", "u_StableRadiance",
-                             "u_StablePlanesHeader", "u_StablePlanesBuffer"})
+                             "u_RRNormalsAndRoughness", "u_RRDepth", "u_RRMotionVectors", "u_RRSpecMotionVectors", "t_SpecularHitT", "u_StableRadiance",
+                             "u_DenoisingLayersHeader", "u_DenoisingLayersBuffer"})
         if (auto* Variable = SRB->GetVariableByName(SHADER_TYPE_COMPUTE, Name))
             Variable->Set(nullptr);
     return true;

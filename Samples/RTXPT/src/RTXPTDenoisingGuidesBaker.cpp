@@ -201,8 +201,8 @@ bool RTXPTDenoisingGuidesBaker::CreatePass(IRenderDevice*                   pDev
         .AddVariable(SHADER_TYPE_COMPUTE, "u_SpecularHitT", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_ScratchFloat1", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_StableRadiance", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
-        .AddVariable(SHADER_TYPE_COMPUTE, "u_StablePlanesHeader", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
-        .AddVariable(SHADER_TYPE_COMPUTE, "u_StablePlanesBuffer", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
+        .AddVariable(SHADER_TYPE_COMPUTE, "u_DenoisingLayersHeader", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
+        .AddVariable(SHADER_TYPE_COMPUTE, "u_DenoisingLayersBuffer", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_DenoiserAvgLayerRadianceHalfRes", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_DebugOutput", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC);
     PSOCreateInfo.PSODesc.ResourceLayout = ResourceLayout;
@@ -335,11 +335,11 @@ bool RTXPTDenoisingGuidesBaker::DispatchPass(IDeviceContext*              pConte
         SetVariable("t_MotionVectors", RenderTargets.GetScreenMotionVectorsSRV(), NeedsAvgLayer || NeedsDebugViz) &&
         SetVariable("u_SpecularHitT", RenderTargets.GetSpecularHitTUAV(), NeedsDenoiseSpecHitT || NeedsDebugViz) &&
         SetVariable("u_ScratchFloat1", RenderTargets.GetScratchFloat1UAV(), NeedsDenoiseSpecHitT) &&
-        // Stable radiance is carried by StablePlanesContext, but this baker does not read it.
+        // Stable radiance is carried by DenoisingLayersContext, but this baker does not read it.
         // Some shader compilers optimize the UAV out of reflection for these entry points.
         SetVariable("u_StableRadiance", RenderTargets.GetStableRadianceUAV(), false) &&
-        SetVariable("u_StablePlanesHeader", RenderTargets.GetStablePlanesHeaderUAV(), NeedsAvgLayer) &&
-        SetVariable("u_StablePlanesBuffer", RenderTargets.GetStablePlanesBufferUAV(), NeedsAvgLayer) &&
+        SetVariable("u_DenoisingLayersHeader", RenderTargets.GetDenoisingLayersHeaderUAV(), NeedsAvgLayer) &&
+        SetVariable("u_DenoisingLayersBuffer", RenderTargets.GetDenoisingLayersBufferUAV(), NeedsAvgLayer) &&
         SetVariable("u_DenoiserAvgLayerRadianceHalfRes", RenderTargets.GetDenoiserAvgLayerRadianceHalfResUAV(), NeedsAvgLayer || NeedsDebugViz) &&
         SetVariable("u_DebugOutput", RenderTargets.GetProcessedOutputColorUAV(), NeedsDebugViz);
     if (!Bound)

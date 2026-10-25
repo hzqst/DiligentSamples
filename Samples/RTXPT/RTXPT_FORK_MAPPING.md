@@ -1,5 +1,103 @@
 # RTXPT Fork Mapping
 
+## SHaRC integration (#23, 2026-10-26)
+
+Reference: RTXPT-fork `9503910839f013f7ee0a2590a1131d84160ca712` and its
+shader-only SHaRC SDK `4e21b585c33c83d723ca9a1e11bbb1090d145793` (1.8.3).
+The sample fetches the pinned SDK, or accepts `RTXPT_SHARC_ROOT`; SDK sources
+and Diligent public APIs are unchanged. Headers are deployed alongside shaders.
+
+`SharcIntegration` owns 64-bit hash entries (8 bytes), accumulation (16 bytes),
+resolved radiance (16 bytes), and a 64-byte scratch slot per training ray.
+The scratch state survives TraceRay/HitObject without expanding the payload.
+Frame order: BUILD, LightsBaker, sparse reference-mode training, resolve,
+FILL/query, guides and post-processing. Explicit UAV barriers order producers
+and consumers. Training never writes surface exports or the displayed image.
+Reference always bypasses the cache. Training uses 8 surface / 4 diffuse bounces,
+no Russian roulette, per-segment throughput, separate emission, material
+demodulation, and a roughness floor only on non-delta surfaces.
+Separate emission is MIS-weighted before both cache training and lookup, avoiding
+double counting with the incoming path's NEE. Training bypasses the sample's
+separate Reference closest-hit implementation so cache updates actually execute.
+Path-tracing and SHaRC shaders explicitly use DXC O3 even in Debug; the known
+unoptimized DXC path must not be used for correctness validation.
+
+Preserved differences: Diligent binds named resources instead of an NVRHI
+descriptor heap. Constants use a separate 64-byte constant buffer. FILL cannot
+query on the deterministic denoising-layer branch, whose contribution BUILD
+already owns. Existing light sampling, material specialization and native NGX
+remain in place. No asynchronous compute or IntroSample integration is added.
+
+Support is currently D3D12 SM 6.6+ with native FP16 buffer access. The main
+path-tracer math may still use FP32. Vulkan explicitly reports unavailable and
+renders without SHaRC: the current backend does not enable shaderInt64 or
+shaderBufferInt64Atomics. This is an unsupported configuration, not a Vulkan
+SHaRC runtime pass. The SDK spin-lock/compact-key fallbacks are not substituted.
+
+Controls: `--sharc`, `--sharc_capacity_log2` (16..24), `--sharc_downscale` (2..5),
+`--sharc_update`, `--sharc_resolve`, `--sharc_debug` (0..6), plus runtime controls
+for scale, history, roughness and termination. Default is off. Debug views are
+radiance, hash, occupancy, collisions, voxel size and level.
+
+Scene reload, camera selection/cut, material/environment/grid/training changes,
+history reset and resize invalidate the cache. Ordinary camera motion uses
+world-space grid history. Successful skinning/BLAS updates clear the cache each
+frame conservatively; animated scenes therefore lose temporal-cache benefit.
+`--scene_animations true` enables the existing animation path for validation.
+Disabling SHaRC or entering Reference releases cache/scratch resources; Diligent
+retains in-flight allocations as necessary. Query/debug/update switches reset
+image histories without destroying the cache being inspected. Clear/resolve use
+a 2D dispatch to keep the 2^24 capacity below the per-axis group limit.
+Shader/PSO cache is `RTXPTCache_016.bin`.
+
+See [SHaRC validation](tests/README.md#sharc-validation-issue-23).
+
+## v1.9.0 existing-feature synchronization (2026-10-26)
+
+Target: RTXPT-fork `9503910839f013f7ee0a2590a1131d84160ca712` (v1.9.0 plus
+fork fixes). Local starting point: DiligentSamples `50774cdc`. The local renderer
+was already an adapted subset, not a complete v1.8.1 implementation. This section
+supersedes the historical naming/layout contracts below where they conflict.
+Algorithm changes in this synchronization are not subject to the earlier
+byte-identical-image requirement. Pure refactors retain their existing contracts.
+
+| Area | Status and current mapping |
+| --- | --- |
+| BSDF and hit organization | Ported: `BSDFs/`, `Surface/ShadingData.hlsli`, `PathTracerHandleHit.hlsli`. `StandardBSDFData` holds four packed words; `SurfaceBSDFData` is the local adapter for shading state. |
+| Material transport | Ported: sRGB8/A8 material packing, 0.04 roughness threshold, surface-owned interior/exterior IOR, scalar position-error ray offset, geometric-normal shadow termination. |
+| Denoising layers | Ported: `DenoisingLayers.hlsli` and `PathTracerDenoisingLayers.hlsli`, BUILD/FILL constants, payloads, resources and UI. Layer stride remains 80 bytes, with signed world-space motion in `PackedThpAndMVs`. NRD prepare projects it to the local screen-space convention. |
+| Albedo guides | Ported: raw layer estimates permit zero; NRD applies 0.04 at both demodulation and remodulation; RR uses 0.0001. |
+| RR preparation | Ported shader entry: `DenoisingGuidesBaker.hlsl::PrepareDLSSRRGuides`, with common code in `DenoisingGuidesRR.hlsli`; adds RG16F specular motion and native NGX binding. Invalid source data falls back to ordinary motion. |
+| NEE-AT | Ported: 2,097,152 total light descriptors, 3,145,728 maximum proxy storage, 64-triangle source-local clusters, distance/brightness LOD, end trimming, leaf expansion, forward/reverse PDF and feedback. Cluster descriptors count against the 2M limit. CPU rejects overflow before narrowing to 32 bits. |
+| Environment hierarchy | Ported: 20 subdivision steps and 12 boosted levels (2,812 nodes). Existing environment bake and Diligent texture upload remain. |
+| Tone mapping | Ported: disabled tone mapping also bypasses auto exposure. GPU luminance reduction remains local. |
+| Cache | `RTXPTCache_014.bin`; old 013 shader/PSO caches are not reused. |
+| Realtime and profiling | Realtime is the default; existing asynchronous timestamp collection and CLI are retained. No second profiler or synchronous timing path was added. |
+| Existing integrations | Kept: 32-byte packed vertices, local coordinate/matrix conventions, two-slot SBT, native HitObject/SER with TraceRay fallback, material specialization, native NGX, linear HDR and independent RR output. |
+
+The host RR pass still uses `RTXPTPostProcessPass` for its tested resource
+validation, barriers and dispatch; its shader now comes from the guide baker.
+Mode 9 remains a compatibility entry. Existing `stable_planes` CLI arguments
+remain supported despite the internal renaming. No public engine API changes.
+
+Cluster membership is retained for inactive clusters so a previous local table
+can still contain cluster and leaf proposals during an LOD transition. Local
+leaf PDF sums both contributions; global proxies select only the current LOD.
+Feedback uses luminance and the expanded leaf PDF, then routes to an active
+cluster. Source history distinguishes cluster ranges and invalidates them when
+the original triangle count changes. Clusters are rebuilt after emissive geometry
+updates, including the existing skinning path; there is no new geometry owner.
+
+Intentionally unimplemented in the original synchronization: SHaRC (subsequently
+added above), IntroSample, RTXDI, OMM, Tracy, sub-1spp,
+async-compute overlap, GPU TLAS, and BLAS pooling. Streamline/NVRHI scheduling,
+upstream CMake/Agility/dependency upgrades are not copied. The existing pinned
+NRD 4.17.3-series dependency is unchanged (its current runtime reports 4.17.4).
+This is not a claim of complete v1.9.0 feature parity.
+
+Validation and outstanding image/performance limits are recorded in
+[the regression notes](tests/README.md#v190-synchronization-validation-2026-10-26).
+
 ## Native scatter HitObject (2026-09-23)
 
 `PathTracerSample.rgen::nextHit` now follows upstream `PathTracerSample.hlsl`:
@@ -18,7 +116,7 @@ the current DiligentSamples rendering behavior.
 Reference source spec: `docs/superpowers/specs/2026-05-30-rtxpt-reference-pathtracer-completion-design.md`
 (relative to the superproject root, not the `DiligentSamples` submodule root), goal G0.5.
 
-This is a mapping document only. Later migration tasks should apply exact
+The original R0.5 sections below are historical. Their migration tasks applied exact
 whole-word, case-sensitive renames and file relocations without changing shader
 math, CPU/GPU struct byte layouts, or sample-framework glue behavior.
 

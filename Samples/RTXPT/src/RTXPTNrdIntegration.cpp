@@ -806,7 +806,7 @@ bool RTXPTNrdIntegration::Dispatch(IDeviceContext* pContext, const RTXPTNrdFrame
         return Fail("RTXPT NRD dispatch requires a device context");
     if (Attribs.pRenderTargets == nullptr || Attribs.pFrameConstants == nullptr || Attribs.pRealtime == nullptr)
         return Fail("RTXPT NRD dispatch requires render targets, frame constants, and realtime settings");
-    if (Attribs.PlaneIndex >= kRTXPTStablePlaneCount)
+    if (Attribs.PlaneIndex >= kRTXPTDenoisingLayerCount)
         return Fail("RTXPT NRD dispatch plane index is out of range");
     if (Attribs.pRealtime->NRDMethod != m_Stats.Method)
         return Fail("RTXPT NRD dispatch method does not match the initialized denoiser");

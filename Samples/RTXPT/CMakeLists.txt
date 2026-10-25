@@ -22,6 +22,7 @@ set(SOURCE
     src/RTXPTNrdConfig.cpp
     src/RTXPTNrdIntegration.cpp
     src/RTXPTRayTracingPass.cpp
+    src/SharcIntegration.cpp
     src/RTXPTDenoisingGuidesBaker.cpp
     src/RTXPTEmissiveTrianglePass.cpp
     src/RTXPTComputePass.cpp
@@ -61,6 +62,7 @@ set(INCLUDE
     src/RTXPTNrdConfig.hpp
     src/RTXPTNrdIntegration.hpp
     src/RTXPTRayTracingPass.hpp
+    src/SharcIntegration.hpp
     src/RTXPTDenoisingGuidesBaker.hpp
     src/RTXPTEmissiveTrianglePass.hpp
     src/RTXPTComputePass.hpp
@@ -74,11 +76,17 @@ set(INCLUDE
     src/RTXPTBlitPass.hpp
     RTXPT_FORK_MAPPING.md
     tests/RRSceneValidation.hpp
+    tests/HDRValidationCapture.hpp
 )
 
 set(SHADERS
     shaders/RTXPTCommon.fxh
     shaders/PathTracer/PathTracer.hlsli
+    shaders/PathTracer/PathTracerHandleHit.hlsli
+    shaders/PathTracer/PathTracerSHaRC.hlsli
+    shaders/PathTracer/SharcBindings.hlsli
+    shaders/PathTracer/SharcConstants.h
+    shaders/PathTracer/SharcResolve.hlsl
     shaders/PathTracer/Config.h
     shaders/PathTracer/PathTracerHelpers.hlsli
     shaders/PathTracer/PathTracerShared.h
@@ -87,13 +95,15 @@ set(SHADERS
     shaders/PathTracer/PathPayload.hlsli
     shaders/PathTracer/PathState.hlsli
     shaders/PathTracer/PathTracerTypes.hlsli
-    shaders/PathTracer/StablePlanes.hlsli
-    shaders/PathTracer/PathTracerStablePlanes.hlsli
+    shaders/PathTracer/Surface/ShadingData.hlsli
+    shaders/PathTracer/DenoisingLayers.hlsli
+    shaders/PathTracer/PathTracerDenoisingLayers.hlsli
     shaders/PathTracer/DenoisingGuidesBaker.hlsl
+    shaders/PathTracer/DenoisingGuidesRR.hlsli
     shaders/PathTracer/PathTracerNestedDielectrics.hlsli
-    shaders/PathTracer/Rendering/Materials/MaterialBridge.hlsli
-    shaders/PathTracer/Rendering/Materials/LobeType.hlsli
-    shaders/PathTracer/Rendering/Materials/InteriorList.hlsli
+    shaders/PathTracer/BSDFs/MaterialBridge.hlsli
+    shaders/PathTracer/BSDFs/LobeType.hlsli
+    shaders/PathTracer/BSDFs/InteriorList.hlsli
     shaders/PathTracer/Scene/Material/MaterialData.hlsli
     shaders/PathTracer/Scene/Material/HomogeneousVolumeData.hlsli
     shaders/PathTracer/Rendering/Volumes/HomogeneousVolumeSampler.hlsli
@@ -106,8 +116,10 @@ set(SHADERS
     shaders/PathTracer/Lighting/LightProxyBuild.hlsl
     shaders/PathTracer/Lighting/EnvMapImportanceBaker.hlsl
     shaders/PathTracer/Utils/SampleGenerators.hlsli
+    shaders/PathTracer/Utils/Packing.hlsli
     shaders/PathTracer/Utils/StatelessSampleGenerators.hlsli
-    shaders/PathTracer/Rendering/Materials/BxDF.hlsli
+    shaders/PathTracer/BSDFs/BxDF.hlsli
+    shaders/PathTracer/BSDFs/StandardBSDFData.hlsli
     shaders/PathTracer/PathTracerSample.rgen
     shaders/PathTracer/PathTracerMiss.rmiss
     shaders/PathTracer/PathTracerVisibilityMiss.rmiss
@@ -141,6 +153,19 @@ set(SHADERS
 )
 
 include(FetchContent)
+
+# Shader-only SDK, pinned to the version used by RTXPT-fork 9503910.
+set(RTXPT_SHARC_ROOT "" CACHE PATH "Optional local SHaRC SDK checkout")
+if(NOT RTXPT_SHARC_ROOT)
+    FetchContent_Declare(RTXPTSharc
+        GIT_REPOSITORY https://github.com/NVIDIA-RTX/SHARC.git
+        GIT_TAG 4e21b585c33c83d723ca9a1e11bbb1090d145793)
+    FetchContent_MakeAvailable(RTXPTSharc)
+    set(RTXPT_SHARC_ROOT "${rtxptsharc_SOURCE_DIR}")
+endif()
+if(NOT EXISTS "${RTXPT_SHARC_ROOT}/include/SharcCommon.h")
+    message(FATAL_ERROR "RTXPT_SHARC_ROOT must contain include/SharcCommon.h")
+endif()
 
 # Fetch assets
 set(RTXPT_ASSETS_FETCH_URL "https://github.com/NVIDIA-RTX/RTXPT-Assets")
@@ -382,6 +407,11 @@ if(PLATFORM_WIN32)
 endif()
 
 if(PLATFORM_WIN32 OR PLATFORM_LINUX)
+    add_custom_target(RTXPT-SharcShaders
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${RTXPT_SHARC_ROOT}/include" "$<TARGET_FILE_DIR:RTXPT>/shaders/SHARC"
+        VERBATIM)
+    add_dependencies(RTXPT RTXPT-SharcShaders)
     add_custom_command(TARGET RTXPT POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders"
@@ -392,6 +422,8 @@ if(DILIGENT_INSTALL_SAMPLES AND (PLATFORM_LINUX OR PLATFORM_WIN32))
     file(RELATIVE_PATH RTXPT_REL_PATH "${CMAKE_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
     install(DIRECTORY   "${CMAKE_CURRENT_SOURCE_DIR}/shaders/"
             DESTINATION "${CMAKE_INSTALL_BINDIR}/${RTXPT_REL_PATH}/$<CONFIG>/shaders")
+    install(DIRECTORY "${RTXPT_SHARC_ROOT}/include/"
+            DESTINATION "${CMAKE_INSTALL_BINDIR}/${RTXPT_REL_PATH}/$<CONFIG>/shaders/SHARC")
 endif()
 
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/shaders PREFIX Shaders FILES ${SHADERS})
@@ -416,6 +448,7 @@ endif()
 
 target_compile_definitions(RTXPT
 PRIVATE
+    RTXPT_SHARC_SHADER_DIR="${RTXPT_SHARC_ROOT}/include"
     RTXPT_HAS_NRD=$<BOOL:${RTXPT_HAS_NRD}>
     RTXPT_HAS_D3D_SHADER_REFLECTION=$<BOOL:${RTXPT_HAS_D3D_SHADER_REFLECTION}>
     RTXPT_NRD_SHADER_INCLUDE_DIR="${RTXPT_NRD_SHADER_INCLUDE_DIR}"

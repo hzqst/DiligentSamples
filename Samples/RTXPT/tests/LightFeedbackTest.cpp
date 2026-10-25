@@ -148,7 +148,7 @@ try
         Depths.fill(Case == 2 ? 4.0f : 1.0f);
         auto CurrentDepth = Texture(TEX_FORMAT_R32_FLOAT, 4, Depths.data());
         Motions.fill(Case == 3 ? float4{100, 0, 0, 0} : float4{});
-        auto CurrentMotion = Texture(TEX_FORMAT_RGBA32_FLOAT, 16, Motions.data());
+        auto                  CurrentMotion = Texture(TEX_FORMAT_RGBA32_FLOAT, 16, Motions.data());
         std::array<Uint32, 8> Remap{0, 1, 2, 3, 4, 5, 6, Case == 6 ? ~0u : 3u};
         auto                  RemapBuffer = Buffer(sizeof(Remap), 4, Remap.data());
         if (Case == 7)
@@ -166,7 +166,7 @@ try
         Require(Feedback.Prepare(Context, ControlBuffer, Proxies, Local, RawWeights, RawCandidates,
                                  CurrentDepth->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE), CurrentMotion->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE), false, Case >= 5 ? RemapBuffer.RawPtr() : nullptr),
                 "History prepare");
-        const auto Counts = Read(Feedback.GetCounts());
+        const auto   Counts     = Read(Feedback.GetCounts());
         const Uint32 CountIndex = Case < 5 ? 7u : Case == 5 ? 3u : 8u;
         Require(Counts[CountIndex] == Pixels, "Feedback counts must follow source remapping and reject removed IDs");
         Require(Feedback.Finish(Context, Local), "History finish");
@@ -204,20 +204,82 @@ try
     }
     RTXPTLightProxyBuildPass ProxyBuild;
     Require(ProxyBuild.Initialize(Device, Factory, nullptr), "Cannot initialize proxy jobs");
-    for (Uint32 Case = 0; Case < 8; ++Case)
+    for (Uint32 Case = 0; Case < 5; ++Case)
     {
-        const Uint32 LightCount = Case == 4 ? 70000u : 8u;
-        const Uint32 Budget     = Case == 4 ? LightCount : 400000u;
+        constexpr Uint32                               Triangles = 8, LightCount = Triangles + 1, Budget = 256;
+        std::array<PolymorphicLightInfo, LightCount>   Lights{};
+        std::array<PolymorphicLightInfoEx, LightCount> Extensions{};
+        for (auto& Extension : Extensions) Extension.ClusterIndexAndCount = ~0u;
+        for (Uint32 I = 0; I < Triangles; ++I)
+        {
+            auto& Light             = Lights[I];
+            Light.Center            = float3{0, 0, 0};
+            Light.ColorTypeAndFlags = kPolymorphicLightTypeTriangle << kPolymorphicLightTypeShift;
+            if (Case == 1) Light.ColorTypeAndFlags |= kPolymorphicLightIsInCluster;
+            Light.Direction1 = PackLightFloat16(0.125f);
+            Light.Direction2 = PackLightFloat16(0.125f) << 16;
+            const bool Dark  = Case == 3 || (Case == 2 && (I == 0 || I == 7)) || (Case == 4 && I >= 2);
+            if (!Dark) PackLightColor(float3{1, 1, 1}, Light);
+        }
+        Lights[Triangles].ColorTypeAndFlags = kPolymorphicLightTypeCluster << kPolymorphicLightTypeShift;
+        Lights[Triangles].Direction1 = Lights[Triangles].Direction2 = (Triangles - 1) << 23;
+        LightingControlData Control{};
+        Control.TotalLightCount                            = LightCount;
+        Control.TriangleLightCount                         = Triangles;
+        Control.LightClusterCount                          = 1;
+        Control.BakerConstants.SceneCameraPos              = Case == 1 ? float3{} : float3{0, 0, 100};
+        auto                               ControlBuffer   = Buffer(sizeof(Control), sizeof(Control), &Control);
+        auto                               LightBuffer     = Buffer(sizeof(Lights), sizeof(PolymorphicLightInfo), Lights.data());
+        auto                               ExtensionBuffer = Buffer(sizeof(Extensions), sizeof(PolymorphicLightInfoEx), Extensions.data());
+        auto                               LightWeights    = Buffer(LightCount * 4, 4, nullptr);
+        auto                               Counts          = Buffer(LightCount * 4, 4, nullptr);
+        auto                               Table           = Buffer(Budget * 4, 4, nullptr);
+        std::array<Uint32, LightCount + 1> FeedbackCounts{};
+        auto                               HistoryCounts = Buffer(sizeof(FeedbackCounts), 4, FeedbackCounts.data());
+        Require(ProxyBuild.Build(Context, ControlBuffer, LightBuffer, ExtensionBuffer, HistoryCounts, LightWeights, Counts, Table,
+                                 LightCount, 0, Budget, 2, nullptr, nullptr, 1),
+                "Cluster build failed");
+        const auto Stored        = Read(LightBuffer);
+        const auto ActualCounts  = Read(Counts);
+        const auto ActualControl = Read(ControlBuffer);
+        const auto ProxyTable    = Read(Table);
+        const bool Active        = Case == 0 || Case == 2;
+        Require(Active == ((Stored[Triangles * 8 + 4] & 0x80000000u) != 0), "Cluster LOD activation");
+        Require((Case == 2 ? 1u : Case == 3 ? 7u : 0u) == (Stored[Triangles * 8 + 4] & 0x7fffffu), "Cluster trim start");
+        Require(ActualControl[4] <= Budget, "Cluster proxy budget overflow");
+        std::array<Uint32, LightCount> Histogram{};
+        for (Uint32 I = 0; I < ActualControl[4]; ++I)
+        {
+            Require(ProxyTable[I] < LightCount, "Cluster proxy outside light table");
+            ++Histogram[ProxyTable[I]];
+        }
+        for (Uint32 I = 0; I < LightCount; ++I)
+            Require(Histogram[I] == ActualCounts[I], "Cluster histogram/PDF mismatch");
+        for (Uint32 I = 0; I < Triangles; ++I)
+        {
+            const bool Covered = Active && (Case != 2 || (I > 0 && I < 7));
+            Require(Covered == ((Stored[I * 8 + 3] & kPolymorphicLightIsInCluster) != 0), "Stale cluster membership after LOD change");
+            if (Covered) Require(0u == ActualCounts[I], "Clustered leaf must not receive global proxies");
+        }
+        if (Case == 3) Require(0u == ActualControl[4], "Dark clusters must produce no proxies");
+        std::cout << "Cluster case " << Case << " passed\n";
+    }
+    for (Uint32 Case = 0; Case < 9; ++Case)
+    {
+        const bool                          Uniform    = Case == 4 || Case == 8;
+        const bool                          Analytic   = Case >= 5 && Case <= 7;
+        const Uint32                        LightCount = Case == 8 ? 2097152u : Case == 4 ? 70000u : 8u;
+        const Uint32                        Budget     = Uniform ? LightCount : 400000u;
         std::vector<PolymorphicLightInfo>   Lights(LightCount);
         std::vector<PolymorphicLightInfoEx> Extensions(LightCount);
-        float                      WeightSum = 0.0f;
-        std::vector<float>         BaseWeights(LightCount);
+        float                               WeightSum = 0.0f;
+        std::vector<float>                  BaseWeights(LightCount);
         for (Uint32 I = 0; I < LightCount; ++I)
         {
             float Power = Case == 0 ? 0.0f : Case == 2 && I == 0 ? 10000.0f : 1.0f;
-            if (Case >= 5)
+            if (Analytic)
             {
-                const float Radiance = float(I + 1);
+                const float             Radiance = float(I + 1);
                 const AnalyticLightData Source   = {float4{Radiance, Radiance, Radiance, Case == 5 ? 0.0f : 4.0f},
                                                   float4{0, 0, 0, 0.5f}, float4{0, 0, 1, 0},
                                                   Case == 7 ? float4{0.5f, 0.25f, 0, 0} : float4{-1, 0, 0, 0}};
@@ -225,7 +287,7 @@ try
                 Lights[I]                        = Packed.Base;
                 Extensions[I]                    = Packed.Extended;
                 const float     DecodedRadiance  = std::exp2(float((Packed.Base.LogRadiance & 0xffffu) - 1u) / 65534.0f * 48.0f - 8.0f) * float(Packed.Base.ColorTypeAndFlags & 255u) / 255.0f;
-                constexpr float Pi   = 3.14159265358979323846f;
+                constexpr float Pi               = 3.14159265358979323846f;
                 Power                            = (Case == 5 ? Pi * Pi : 4.0f * Pi) * DecodedRadiance * (Case == 7 ? 0.21875f : 1.0f);
             }
             else
@@ -233,13 +295,13 @@ try
                 Lights[I].ColorTypeAndFlags = 5u << 24u;
                 std::memcpy(&Lights[I].Scalars, &Power, sizeof(Power));
             }
-            BaseWeights[I]               = std::pow(Power, 0.8f);
+            BaseWeights[I] = std::pow(Power, 0.8f);
             WeightSum += BaseWeights[I];
         }
         LightingControlData Control{};
         Control.TotalLightCount                    = LightCount;
-        Control.EnvmapQuadNodeCount                = Case >= 5 ? 0u : LightCount;
-        Control.AnalyticLightCount                 = Case >= 5 ? LightCount : 0u;
+        Control.EnvmapQuadNodeCount                = Analytic ? 0u : LightCount;
+        Control.AnalyticLightCount                 = Analytic ? LightCount : 0u;
         Control.TotalMaxFeedbackCount              = Pixels;
         Control.LastFrameTemporalFeedbackAvailable = Case == 3;
         Control.GlobalFeedbackUseWeight            = 0.9f;
@@ -253,7 +315,7 @@ try
         FeedbackCounts[7]  = Pixels;
         auto HistoryCounts = Buffer(static_cast<Uint32>(FeedbackCounts.size()) * 4, 4, FeedbackCounts.data());
         Require(ProxyBuild.Build(Context, ControlBuffer, LightBuffer, ExtensionBuffer, HistoryCounts, LightWeights, Counts, Table,
-                                 LightCount, Control.AnalyticLightCount, Budget, Case == 4 ? 0 : 2),
+                                 LightCount, Control.AnalyticLightCount, Budget, Uniform ? 0 : 2),
                 "Proxy build failed");
         const auto   ActualControl = Read(ControlBuffer);
         const Uint32 ProxyCount    = ActualControl[4];
@@ -271,8 +333,8 @@ try
             Require(Histogram[I] == ActualCounts[I], "Proxy histogram disagrees with sampling PDF counters");
             float Weight = BaseWeights[I];
             if (Case == 3) Weight = 0.1f * Weight + 0.9f * (I == 7 ? WeightSum : 0.0f);
-            const Uint32 Expected = Weight <= 0.0f ? 0u : Case == 4 ? 1u : std::min(262143u, static_cast<Uint32>(std::ceil(float(Budget - LightCount) * Weight / WeightSum)));
-            Require(Expected == 0u || Case == 4 ? Expected == ActualCounts[I] : std::abs(double(Expected) - ActualCounts[I]) <= 1.0,
+            const Uint32 Expected = Weight <= 0.0f ? 0u : Uniform ? 1u : std::min(262143u, static_cast<Uint32>(std::ceil(float(Budget - LightCount) * Weight / WeightSum)));
+            Require(Expected == 0u || Uniform ? Expected == ActualCounts[I] : std::abs(double(Expected) - ActualCounts[I]) <= 1.0,
                     "Proxy weight / feedback mixture differs");
         }
         std::cout << "Proxy job case " << Case << " passed\n";
@@ -280,11 +342,11 @@ try
     {
         RTXPTLightProxyBuildPass Boost;
         Require(Boost.Initialize(Device, Factory, nullptr), "Cannot initialize importance boost");
-        constexpr float     Pi               = 3.14159265358979323846f;
-        const float         Radiance         = 1.0f / (4.0f * Pi);
+        constexpr float        Pi               = 3.14159265358979323846f;
+        const float            Radiance         = 1.0f / (4.0f * Pi);
         AnalyticLightData      Sources[]        = {{float4{Radiance, Radiance, Radiance, 4}, {}, {}, float4{-1, 0, 0, 0}},
                                        {float4{Radiance, Radiance, Radiance, 4}, float4{-2.5f, 0, 0, 0}, {}, float4{-1, 0, 0, 0}}};
-        const float         TriangleRadiance = 2.0f / Pi;
+        const float            TriangleRadiance = 2.0f / Pi;
         PolymorphicLightInfo   Lights[4]        = {};
         PolymorphicLightInfoEx Extensions[4]    = {};
         Lights[0].ColorTypeAndFlags             = 5u << 24u;

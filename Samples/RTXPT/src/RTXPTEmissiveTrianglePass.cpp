@@ -146,7 +146,7 @@ bool RTXPTEmissiveTrianglePass::Initialize(IRenderDevice*        pDevice,
     if (UseTextures)
     {
         // The bindless material-texture array is bound per-build on the SRB (mutable); the sampler matches
-        // the closest-hit material sampler (Rendering/Materials/MaterialBridge.hlsli) so baked emissive
+        // the closest-hit material sampler (BSDFs/MaterialBridge.hlsli) so baked emissive
         // radiance is consistent with the BSDF-path emission.
         ResourceLayout.AddVariable(SHADER_TYPE_COMPUTE, "t_BindlessTextures", SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE);
 

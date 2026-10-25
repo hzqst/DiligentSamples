@@ -165,7 +165,7 @@ void RTXPTLights::Reset()
 bool RTXPTLights::UploadLightBuffer(IRenderDevice* pDevice, std::vector<PolymorphicLightInfoFull>& Lights)
 {
     for (const auto& Source : m_AnalyticSources)
-        Lights[Source.Base].Extended.UniqueID = GetLightDebugID(Source);
+        Lights[Source.Base].Extended.ClusterIndexAndCount = ~0u;
     m_AnalyticLights   = Lights;
     m_Stats.LightCount = static_cast<Uint32>(m_AnalyticLights.size());
     if (Lights.empty())

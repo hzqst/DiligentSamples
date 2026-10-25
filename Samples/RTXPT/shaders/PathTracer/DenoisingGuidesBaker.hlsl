@@ -22,8 +22,26 @@ struct DenoisingGuidesBakerConstants
 #if !defined(__cplusplus)
 
 #include "PathTracerHelpers.hlsli"
-#include "StablePlanes.hlsli"
+#include "DenoisingLayers.hlsli"
 
+#if RTXPT_PREPARE_DLSS_RR
+cbuffer g_Const { SampleConstants g_Frame; };
+Texture2D<float> t_Depth;
+Texture2D<float4> t_MotionVectors;
+Texture2D<float> t_SpecularHitT;
+VK_IMAGE_FORMAT("rg16f") RWTexture2D<float2> u_RRSpecMotionVectors;
+VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4> u_OutputColor;
+VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4> u_StableRadiance;
+VK_IMAGE_FORMAT("r32ui") RWTexture2DArray<uint> u_DenoisingLayersHeader;
+RWStructuredBuffer<DenoisingLayer> u_DenoisingLayersBuffer;
+#include "DenoisingGuidesRR.hlsli"
+[numthreads(DGB_2D_THREADGROUP_SIZE, DGB_2D_THREADGROUP_SIZE, 1)]
+void PrepareDLSSRRGuides(uint2 pixelPos : SV_DispatchThreadID)
+{
+    if (all(pixelPos < uint2(g_Frame.ptConsts.imageWidth, g_Frame.ptConsts.imageHeight)))
+        DLSSRRDenoiserPrepareInputs(pixelPos);
+}
+#else
 ConstantBuffer<SampleConstants>               g_Const;
 ConstantBuffer<DenoisingGuidesBakerConstants> g_DenoisingGuidesBakerConstants;
 
@@ -32,8 +50,8 @@ Texture2D<float4>                                 t_MotionVectors;
 VK_IMAGE_FORMAT("r32f") RWTexture2D<float>        u_SpecularHitT;
 VK_IMAGE_FORMAT("r32f") RWTexture2D<float>        u_ScratchFloat1;
 VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4>    u_StableRadiance;
-VK_IMAGE_FORMAT("r32ui") RWTexture2DArray<uint>   u_StablePlanesHeader;
-RWStructuredBuffer<StablePlane>                   u_StablePlanesBuffer;
+VK_IMAGE_FORMAT("r32ui") RWTexture2DArray<uint>   u_DenoisingLayersHeader;
+RWStructuredBuffer<DenoisingLayer>                   u_DenoisingLayersBuffer;
 VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4>    u_DenoiserAvgLayerRadianceHalfRes;
 VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4>    u_DebugOutput;
 
@@ -132,14 +150,14 @@ void ComputeAvgLayerRadiance(uint2 DispatchThreadID : SV_DispatchThreadID)
     float4      OutVal              = clamp(u_DenoiserAvgLayerRadianceHalfRes[HistoricHalfResPos], 0.0, HLF_MAX) *
         (1.0 - ExponentialFalloffK);
 
-    StablePlanesContext StablePlanes = StablePlanesContext::make(u_StablePlanesHeader,
-                                                                  u_StablePlanesBuffer,
+    DenoisingLayersContext DenoisingLayers = DenoisingLayersContext::make(u_DenoisingLayersHeader,
+                                                                  u_DenoisingLayersBuffer,
                                                                   u_StableRadiance,
                                                                   g_Const.ptConsts);
 
-    for (uint StablePlaneIndex = 0;
-         StablePlaneIndex < min(g_Const.ptConsts.GetActiveStablePlaneCount(), cStablePlaneCount);
-         ++StablePlaneIndex)
+    for (uint DenoisingLayerIndex = 0;
+         DenoisingLayerIndex < min(g_Const.ptConsts.GetActiveDenoisingLayerCount(), cDenoisingLayerCount);
+         ++DenoisingLayerIndex)
     {
         float Avg   = 0.0;
         float Count = 1e-7;
@@ -148,11 +166,11 @@ void ComputeAvgLayerRadiance(uint2 DispatchThreadID : SV_DispatchThreadID)
             for (uint Y = 0; Y < 2; ++Y)
             {
                 const uint2 PixelPos = min(BasePixel + uint2(X, Y), RenderMax);
-                const uint  BranchID = StablePlanes.GetBranchID(PixelPos, StablePlaneIndex);
-                if (BranchID == cStablePlaneInvalidBranchID)
+                const uint  BranchID = DenoisingLayers.GetBranchID(PixelPos, DenoisingLayerIndex);
+                if (BranchID == cDenoisingLayerInvalidBranchID)
                     continue;
 
-                StablePlane SP       = StablePlanes.LoadStablePlane(PixelPos, StablePlaneIndex);
+                DenoisingLayer SP       = DenoisingLayers.LoadDenoisingLayer(PixelPos, DenoisingLayerIndex);
                 float       Radiance = max(1e-5, Average(SP.GetNoisyRadiance()));
                 Radiance             = min(Radiance, g_Const.ptConsts.preExposedGrayLuminance * 2.0);
                 Avg += log(Radiance + 1.0);
@@ -161,7 +179,7 @@ void ComputeAvgLayerRadiance(uint2 DispatchThreadID : SV_DispatchThreadID)
         }
 
         Avg = exp(Avg / Count) - 1.0;
-        OutVal[StablePlaneIndex] += Avg * ExponentialFalloffK;
+        OutVal[DenoisingLayerIndex] += Avg * ExponentialFalloffK;
     }
 
     OutVal.w = OutVal.x + OutVal.y + OutVal.z;
@@ -221,6 +239,7 @@ void DebugViz(uint2 DispatchThreadID : SV_DispatchThreadID)
     u_DebugOutput[PixelPos] = Color;
 }
 
+#endif // RTXPT_PREPARE_DLSS_RR
 #endif
 
 #endif // __DENOISING_GUIDES_BAKER__

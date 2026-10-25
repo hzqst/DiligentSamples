@@ -49,7 +49,7 @@ bool FormatsMatch(const RTXPTRenderTargetFormats& Lhs, const RTXPTRenderTargetFo
         Lhs.TemporalFeedback == Rhs.TemporalFeedback &&
         Lhs.CombinedHistoryClampRelax == Rhs.CombinedHistoryClampRelax &&
         Lhs.StableRadiance == Rhs.StableRadiance &&
-        Lhs.StablePlanesHeader == Rhs.StablePlanesHeader &&
+        Lhs.DenoisingLayersHeader == Rhs.DenoisingLayersHeader &&
         Lhs.Throughput == Rhs.Throughput &&
         Lhs.SpecularHitT == Rhs.SpecularHitT &&
         Lhs.ScratchFloat1 == Rhs.ScratchFloat1 &&
@@ -79,9 +79,9 @@ Uint64 ComputeGenericTSPlaneStride(Uint32 ImageWidth, Uint32 ImageHeight)
     return ComputeGenericTSLineStride(ImageWidth) * TileCountY * kRTXPTGenericTSTileSize;
 }
 
-Uint64 ComputeStablePlanesElementCount(Uint32 ImageWidth, Uint32 ImageHeight)
+Uint64 ComputeDenoisingLayersElementCount(Uint32 ImageWidth, Uint32 ImageHeight)
 {
-    return ComputeGenericTSPlaneStride(ImageWidth, ImageHeight) * kRTXPTStablePlaneCount;
+    return ComputeGenericTSPlaneStride(ImageWidth, ImageHeight) * kRTXPTDenoisingLayerCount;
 }
 
 } // namespace
@@ -101,8 +101,8 @@ void RTXPTRenderTargets::Reset()
     m_TemporalFeedback2.Release();
     m_CombinedHistoryClampRelax.Release();
     m_StableRadiance.Release();
-    m_StablePlanesHeader.Release();
-    m_StablePlanesBuffer.Release();
+    m_DenoisingLayersHeader.Release();
+    m_DenoisingLayersBuffer.Release();
     m_Throughput.Release();
     m_SpecularHitT.Release();
     m_ScratchFloat1.Release();
@@ -123,6 +123,7 @@ void RTXPTRenderTargets::Reset()
     m_RRNormalsAndRoughness.Release();
     m_RRDepth.Release();
     m_RRMotionVectors.Release();
+    m_RRSpecMotionVectors.Release();
     m_RayReconstructionResourcesRequested = false;
     m_AccumulatedRadianceUnavailable      = false;
     m_AccumulatedRadianceRequested        = false;
@@ -131,7 +132,7 @@ void RTXPTRenderTargets::Reset()
     m_PendingResizeRequestValid           = false;
     m_PendingRealtimeResources            = false;
     m_PendingDenoiserValidation           = false;
-    m_StablePlanesElementCount            = 0;
+    m_DenoisingLayersElementCount         = 0;
     m_LastFailureReason.clear();
     m_Dimensions = {0, 0, 0, 0, false};
     m_Formats    = {};
@@ -178,30 +179,30 @@ bool RTXPTRenderTargets::CreateTarget(IRenderDevice*           pDevice,
     return true;
 }
 
-bool RTXPTRenderTargets::CreateStablePlanesBuffer(IRenderDevice*          pDevice,
-                                                  Uint64                  ElementCount,
-                                                  RefCntAutoPtr<IBuffer>& Target)
+bool RTXPTRenderTargets::CreateDenoisingLayersBuffer(IRenderDevice*          pDevice,
+                                                     Uint64                  ElementCount,
+                                                     RefCntAutoPtr<IBuffer>& Target)
 {
     BufferDesc Desc;
-    Desc.Name              = "RTXPT StablePlanesBuffer";
+    Desc.Name              = "RTXPT DenoisingLayersBuffer";
     Desc.Usage             = USAGE_DEFAULT;
     Desc.BindFlags         = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
     Desc.Mode              = BUFFER_MODE_STRUCTURED;
-    Desc.ElementByteStride = sizeof(RTXPTStablePlaneData);
-    Desc.Size              = std::max<Uint64>(ElementCount, Uint64{1}) * sizeof(RTXPTStablePlaneData);
+    Desc.ElementByteStride = sizeof(RTXPTDenoisingLayerData);
+    Desc.Size              = std::max<Uint64>(ElementCount, Uint64{1}) * sizeof(RTXPTDenoisingLayerData);
 
     Target.Release();
     pDevice->CreateBuffer(Desc, nullptr, &Target);
     if (!Target)
     {
-        LOG_ERROR_MESSAGE("Failed to create RTXPT StablePlanesBuffer");
+        LOG_ERROR_MESSAGE("Failed to create RTXPT DenoisingLayersBuffer");
         return false;
     }
 
     if (Target->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) == nullptr ||
         Target->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS) == nullptr)
     {
-        LOG_ERROR_MESSAGE("RTXPT StablePlanesBuffer is missing one or more required default views");
+        LOG_ERROR_MESSAGE("RTXPT DenoisingLayersBuffer is missing one or more required default views");
         Target.Release();
         return false;
     }
@@ -339,8 +340,8 @@ bool RTXPTRenderTargets::Resize(IRenderDevice* pDevice, const RTXPTRenderTargetC
     {
         if (!SupportsBindFlags(pDevice, Formats.StableRadiance, UavFlags))
             return FailResize("RGBA16F UAV StableRadiance is not supported; RTXPT realtime resources are unavailable");
-        if (!SupportsBindFlags(pDevice, Formats.StablePlanesHeader, UavFlags))
-            return FailResize("R32_UINT UAV StablePlanesHeader is not supported; RTXPT realtime resources are unavailable");
+        if (!SupportsBindFlags(pDevice, Formats.DenoisingLayersHeader, UavFlags))
+            return FailResize("R32_UINT UAV DenoisingLayersHeader is not supported; RTXPT realtime resources are unavailable");
         if (!SupportsBindFlags(pDevice, Formats.Throughput, UavFlags))
             return FailResize("R32_UINT UAV Throughput is not supported; RTXPT realtime resources are unavailable");
         if (!SupportsBindFlags(pDevice, Formats.SpecularHitT, UavFlags))
@@ -377,42 +378,44 @@ bool RTXPTRenderTargets::Resize(IRenderDevice* pDevice, const RTXPTRenderTargetC
     const Uint32 DisplayWidth  = Dimensions.DisplayWidth;
     const Uint32 DisplayHeight = Dimensions.DisplayHeight;
 
-    RefCntAutoPtr<ITexture>                                     OutputColor;
-    RefCntAutoPtr<ITexture>                                     AccumulatedRadiance;
-    RefCntAutoPtr<ITexture>                                     SuperResolutionInputColor;
-    RefCntAutoPtr<ITexture>                                     ProcessedOutputColor;
-    RefCntAutoPtr<ITexture>                                     LdrColor;
-    RefCntAutoPtr<ITexture>                                     ComputeColor;
-    RefCntAutoPtr<ITexture>                                     Depth;
-    RefCntAutoPtr<ITexture>                                     PreviousDepth;
-    RefCntAutoPtr<ITexture>                                     ScreenMotionVectors;
-    RefCntAutoPtr<ITexture>                                     TemporalFeedback1;
-    RefCntAutoPtr<ITexture>                                     TemporalFeedback2;
-    RefCntAutoPtr<ITexture>                                     CombinedHistoryClampRelax;
-    RefCntAutoPtr<ITexture>                                     StableRadiance;
-    RefCntAutoPtr<ITexture>                                     StablePlanesHeader;
-    RefCntAutoPtr<IBuffer>                                      StablePlanesBuffer;
-    RefCntAutoPtr<ITexture>                                     Throughput;
-    RefCntAutoPtr<ITexture>                                     SpecularHitT;
-    RefCntAutoPtr<ITexture>                                     ScratchFloat1;
-    RefCntAutoPtr<ITexture>                                     DenoiserViewspaceZ;
-    RefCntAutoPtr<ITexture>                                     DenoiserMotionVectors;
-    RefCntAutoPtr<ITexture>                                     DenoiserNormalRoughness;
-    RefCntAutoPtr<ITexture>                                     DenoiserDiffRadianceHitDist;
-    RefCntAutoPtr<ITexture>                                     DenoiserSpecRadianceHitDist;
-    RefCntAutoPtr<ITexture>                                     DenoiserDisocclusionThresholdMix;
-    std::array<RefCntAutoPtr<ITexture>, kRTXPTStablePlaneCount> DenoiserOutDiffRadianceHitDist;
-    std::array<RefCntAutoPtr<ITexture>, kRTXPTStablePlaneCount> DenoiserOutSpecRadianceHitDist;
-    RefCntAutoPtr<ITexture>                                     DenoiserOutValidation;
-    RefCntAutoPtr<ITexture>                                     DenoiserAvgLayerRadianceHalfRes;
-    RefCntAutoPtr<ITexture>                                     RRDiffuseAlbedo, RRSpecAlbedo, RRNormalsAndRoughness, RRDepth, RRMotionVectors;
+    RefCntAutoPtr<ITexture>                                        OutputColor;
+    RefCntAutoPtr<ITexture>                                        AccumulatedRadiance;
+    RefCntAutoPtr<ITexture>                                        SuperResolutionInputColor;
+    RefCntAutoPtr<ITexture>                                        ProcessedOutputColor;
+    RefCntAutoPtr<ITexture>                                        LdrColor;
+    RefCntAutoPtr<ITexture>                                        ComputeColor;
+    RefCntAutoPtr<ITexture>                                        Depth;
+    RefCntAutoPtr<ITexture>                                        PreviousDepth;
+    RefCntAutoPtr<ITexture>                                        ScreenMotionVectors;
+    RefCntAutoPtr<ITexture>                                        TemporalFeedback1;
+    RefCntAutoPtr<ITexture>                                        TemporalFeedback2;
+    RefCntAutoPtr<ITexture>                                        CombinedHistoryClampRelax;
+    RefCntAutoPtr<ITexture>                                        StableRadiance;
+    RefCntAutoPtr<ITexture>                                        DenoisingLayersHeader;
+    RefCntAutoPtr<IBuffer>                                         DenoisingLayersBuffer;
+    RefCntAutoPtr<ITexture>                                        Throughput;
+    RefCntAutoPtr<ITexture>                                        SpecularHitT;
+    RefCntAutoPtr<ITexture>                                        ScratchFloat1;
+    RefCntAutoPtr<ITexture>                                        DenoiserViewspaceZ;
+    RefCntAutoPtr<ITexture>                                        DenoiserMotionVectors;
+    RefCntAutoPtr<ITexture>                                        DenoiserNormalRoughness;
+    RefCntAutoPtr<ITexture>                                        DenoiserDiffRadianceHitDist;
+    RefCntAutoPtr<ITexture>                                        DenoiserSpecRadianceHitDist;
+    RefCntAutoPtr<ITexture>                                        DenoiserDisocclusionThresholdMix;
+    std::array<RefCntAutoPtr<ITexture>, kRTXPTDenoisingLayerCount> DenoiserOutDiffRadianceHitDist;
+    std::array<RefCntAutoPtr<ITexture>, kRTXPTDenoisingLayerCount> DenoiserOutSpecRadianceHitDist;
+    RefCntAutoPtr<ITexture>                                        DenoiserOutValidation;
+    RefCntAutoPtr<ITexture>                                        DenoiserAvgLayerRadianceHalfRes;
+    RefCntAutoPtr<ITexture>                                        RRDiffuseAlbedo, RRSpecAlbedo, RRNormalsAndRoughness, RRDepth, RRMotionVectors;
+    RefCntAutoPtr<ITexture>                                        RRSpecMotionVectors;
 
     if (CreateRayReconstructionResources &&
         (!CreateTarget(pDevice, "RTXPT RRDiffuseAlbedo", RenderWidth, RenderHeight, TEX_FORMAT_RGBA16_FLOAT, UavFlags, RRDiffuseAlbedo) ||
          !CreateTarget(pDevice, "RTXPT RRSpecAlbedo", RenderWidth, RenderHeight, TEX_FORMAT_RGBA16_FLOAT, UavFlags, RRSpecAlbedo) ||
          !CreateTarget(pDevice, "RTXPT RRNormalsAndRoughness", RenderWidth, RenderHeight, TEX_FORMAT_RGBA16_FLOAT, UavFlags, RRNormalsAndRoughness) ||
          !CreateTarget(pDevice, "RTXPT RRDepth", RenderWidth, RenderHeight, TEX_FORMAT_R32_FLOAT, UavFlags, RRDepth) ||
-         !CreateTarget(pDevice, "RTXPT RRMotionVectors", RenderWidth, RenderHeight, TEX_FORMAT_RG16_FLOAT, UavFlags, RRMotionVectors)))
+         !CreateTarget(pDevice, "RTXPT RRMotionVectors", RenderWidth, RenderHeight, TEX_FORMAT_RG16_FLOAT, UavFlags, RRMotionVectors) ||
+         !CreateTarget(pDevice, "RTXPT RRSpecMotionVectors", RenderWidth, RenderHeight, TEX_FORMAT_RG16_FLOAT, UavFlags, RRSpecMotionVectors)))
         return FailResize("Failed to create RTXPT RR inputs");
 
     if (!CreateTarget(pDevice, "RTXPT OutputColor", RenderWidth, RenderHeight, Formats.OutputColor, UavFlags, OutputColor))
@@ -458,20 +461,20 @@ bool RTXPTRenderTargets::Resize(IRenderDevice* pDevice, const RTXPTRenderTargetC
         !CreateTarget(pDevice, "RTXPT ComputeColor", DisplayWidth, DisplayHeight, Formats.ComputeColor, UavFlags, ComputeColor))
         return FailResize("Failed to create RTXPT ComputeColor");
 
-    const Uint32 HalfRenderWidth          = (RenderWidth + 1u) / 2u;
-    const Uint32 HalfRenderHeight         = (RenderHeight + 1u) / 2u;
-    Uint64       StablePlanesElementCount = 0;
+    const Uint32 HalfRenderWidth             = (RenderWidth + 1u) / 2u;
+    const Uint32 HalfRenderHeight            = (RenderHeight + 1u) / 2u;
+    Uint64       DenoisingLayersElementCount = 0;
 
     if (CreateRealtimeResources)
     {
-        StablePlanesElementCount = ComputeStablePlanesElementCount(RenderWidth, RenderHeight);
+        DenoisingLayersElementCount = ComputeDenoisingLayersElementCount(RenderWidth, RenderHeight);
 
         if (!CreateTarget(pDevice, "RTXPT StableRadiance", RenderWidth, RenderHeight, Formats.StableRadiance, UavFlags, StableRadiance))
             return FailResize("Failed to create RTXPT StableRadiance");
-        if (!CreateTarget(pDevice, "RTXPT StablePlanesHeader", RenderWidth, RenderHeight, Formats.StablePlanesHeader, UavFlags, StablePlanesHeader, RESOURCE_DIM_TEX_2D_ARRAY, 4))
-            return FailResize("Failed to create RTXPT StablePlanesHeader");
-        if (!CreateStablePlanesBuffer(pDevice, StablePlanesElementCount, StablePlanesBuffer))
-            return FailResize("Failed to create RTXPT StablePlanesBuffer");
+        if (!CreateTarget(pDevice, "RTXPT DenoisingLayersHeader", RenderWidth, RenderHeight, Formats.DenoisingLayersHeader, UavFlags, DenoisingLayersHeader, RESOURCE_DIM_TEX_2D_ARRAY, 4))
+            return FailResize("Failed to create RTXPT DenoisingLayersHeader");
+        if (!CreateDenoisingLayersBuffer(pDevice, DenoisingLayersElementCount, DenoisingLayersBuffer))
+            return FailResize("Failed to create RTXPT DenoisingLayersBuffer");
         if (!CreateTarget(pDevice, "RTXPT Throughput", RenderWidth, RenderHeight, Formats.Throughput, UavFlags, Throughput))
             return FailResize("Failed to create RTXPT Throughput");
         if (!CreateTarget(pDevice, "RTXPT SpecularHitT", RenderWidth, RenderHeight, Formats.SpecularHitT, UavFlags, SpecularHitT))
@@ -493,7 +496,7 @@ bool RTXPTRenderTargets::Resize(IRenderDevice* pDevice, const RTXPTRenderTargetC
             if (!CreateTarget(pDevice, "RTXPT DenoiserDisocclusionThresholdMix", RenderWidth, RenderHeight, Formats.DenoiserDisocclusionThresholdMix, UavFlags, DenoiserDisocclusionThresholdMix))
                 return FailResize("Failed to create RTXPT DenoiserDisocclusionThresholdMix");
 
-            for (Uint32 PlaneIndex = 0; PlaneIndex < kRTXPTStablePlaneCount; ++PlaneIndex)
+            for (Uint32 PlaneIndex = 0; PlaneIndex < kRTXPTDenoisingLayerCount; ++PlaneIndex)
             {
                 const std::string DiffName = "RTXPT DenoiserOutDiffRadianceHitDist[" + std::to_string(PlaneIndex) + "]";
                 const std::string SpecName = "RTXPT DenoiserOutSpecRadianceHitDist[" + std::to_string(PlaneIndex) + "]";
@@ -526,8 +529,8 @@ bool RTXPTRenderTargets::Resize(IRenderDevice* pDevice, const RTXPTRenderTargetC
     m_TemporalFeedback2                   = TemporalFeedback2;
     m_CombinedHistoryClampRelax           = CombinedHistoryClampRelax;
     m_StableRadiance                      = StableRadiance;
-    m_StablePlanesHeader                  = StablePlanesHeader;
-    m_StablePlanesBuffer                  = StablePlanesBuffer;
+    m_DenoisingLayersHeader               = DenoisingLayersHeader;
+    m_DenoisingLayersBuffer               = DenoisingLayersBuffer;
     m_Throughput                          = Throughput;
     m_SpecularHitT                        = SpecularHitT;
     m_ScratchFloat1                       = ScratchFloat1;
@@ -546,12 +549,13 @@ bool RTXPTRenderTargets::Resize(IRenderDevice* pDevice, const RTXPTRenderTargetC
     m_RRNormalsAndRoughness               = RRNormalsAndRoughness;
     m_RRDepth                             = RRDepth;
     m_RRMotionVectors                     = RRMotionVectors;
+    m_RRSpecMotionVectors                 = RRSpecMotionVectors;
     m_RayReconstructionResourcesRequested = CreateRayReconstructionResources;
     m_AccumulatedRadianceUnavailable      = false;
     m_AccumulatedRadianceRequested        = CreateAccumulatedRadiance;
     m_RealtimeResourcesRequested          = CreateRealtimeResources;
     m_DenoiserValidationRequested         = CreateDenoiserValidation;
-    m_StablePlanesElementCount            = StablePlanesElementCount;
+    m_DenoisingLayersElementCount         = DenoisingLayersElementCount;
     m_LastFailureReason.clear();
     m_Dimensions = Dimensions;
     m_Formats    = Formats;
@@ -620,8 +624,8 @@ bool RTXPTRenderTargets::HasRealtimeRenderTargets() const
 
     return m_PreviousDepth != nullptr &&
         m_StableRadiance != nullptr &&
-        m_StablePlanesHeader != nullptr &&
-        m_StablePlanesBuffer != nullptr &&
+        m_DenoisingLayersHeader != nullptr &&
+        m_DenoisingLayersBuffer != nullptr &&
         m_Throughput != nullptr &&
         m_SpecularHitT != nullptr &&
         m_ScratchFloat1 != nullptr &&
@@ -635,7 +639,7 @@ bool RTXPTRenderTargets::HasRealtimeRenderTargets() const
           HasPerPlaneOutputs &&
           (!m_DenoiserValidationRequested || m_DenoiserOutValidation != nullptr))) &&
         m_DenoiserAvgLayerRadianceHalfRes != nullptr &&
-        m_StablePlanesElementCount > 0;
+        m_DenoisingLayersElementCount > 0;
 }
 
 namespace
@@ -806,7 +810,7 @@ ITextureView* RTXPTRenderTargets::GetCombinedHistoryClampRelaxSRV() const
 bool RTXPTRenderTargets::HasRayReconstructionRenderTargets() const
 {
     return m_RayReconstructionResourcesRequested && HasPostProcessTargets() && HasRealtimeRenderTargets() &&
-        m_RRDiffuseAlbedo && m_RRSpecAlbedo && m_RRNormalsAndRoughness && m_RRDepth && m_RRMotionVectors;
+        m_RRDiffuseAlbedo && m_RRSpecAlbedo && m_RRNormalsAndRoughness && m_RRDepth && m_RRMotionVectors && m_RRSpecMotionVectors;
 }
 
 ITextureView* RTXPTRenderTargets::GetRRDiffuseAlbedoUAV() const { return GetTextureUAV(m_RRDiffuseAlbedo); }
@@ -819,14 +823,16 @@ ITextureView* RTXPTRenderTargets::GetRRDepthUAV() const { return GetTextureUAV(m
 ITextureView* RTXPTRenderTargets::GetRRDepthSRV() const { return GetTextureSRV(m_RRDepth); }
 ITextureView* RTXPTRenderTargets::GetRRMotionVectorsUAV() const { return GetTextureUAV(m_RRMotionVectors); }
 ITextureView* RTXPTRenderTargets::GetRRMotionVectorsSRV() const { return GetTextureSRV(m_RRMotionVectors); }
+ITextureView* RTXPTRenderTargets::GetRRSpecMotionVectorsUAV() const { return GetTextureUAV(m_RRSpecMotionVectors); }
+ITextureView* RTXPTRenderTargets::GetRRSpecMotionVectorsSRV() const { return GetTextureSRV(m_RRSpecMotionVectors); }
 
 ITextureView* RTXPTRenderTargets::GetStableRadianceUAV() const { return GetTextureUAV(m_StableRadiance); }
 ITextureView* RTXPTRenderTargets::GetStableRadianceSRV() const { return GetTextureSRV(m_StableRadiance); }
-ITextureView* RTXPTRenderTargets::GetStablePlanesHeaderUAV() const { return GetTextureUAV(m_StablePlanesHeader); }
-ITextureView* RTXPTRenderTargets::GetStablePlanesHeaderSRV() const { return GetTextureSRV(m_StablePlanesHeader); }
-IBufferView*  RTXPTRenderTargets::GetStablePlanesBufferUAV() const { return GetBufferUAV(m_StablePlanesBuffer); }
-IBufferView*  RTXPTRenderTargets::GetStablePlanesBufferSRV() const { return GetBufferSRV(m_StablePlanesBuffer); }
-IBuffer*      RTXPTRenderTargets::GetStablePlanesBuffer() const { return m_StablePlanesBuffer; }
+ITextureView* RTXPTRenderTargets::GetDenoisingLayersHeaderUAV() const { return GetTextureUAV(m_DenoisingLayersHeader); }
+ITextureView* RTXPTRenderTargets::GetDenoisingLayersHeaderSRV() const { return GetTextureSRV(m_DenoisingLayersHeader); }
+IBufferView*  RTXPTRenderTargets::GetDenoisingLayersBufferUAV() const { return GetBufferUAV(m_DenoisingLayersBuffer); }
+IBufferView*  RTXPTRenderTargets::GetDenoisingLayersBufferSRV() const { return GetBufferSRV(m_DenoisingLayersBuffer); }
+IBuffer*      RTXPTRenderTargets::GetDenoisingLayersBuffer() const { return m_DenoisingLayersBuffer; }
 ITextureView* RTXPTRenderTargets::GetThroughputUAV() const { return GetTextureUAV(m_Throughput); }
 ITextureView* RTXPTRenderTargets::GetThroughputSRV() const { return GetTextureSRV(m_Throughput); }
 ITextureView* RTXPTRenderTargets::GetSpecularHitTUAV() const { return GetTextureUAV(m_SpecularHitT); }

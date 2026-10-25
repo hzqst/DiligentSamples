@@ -11,13 +11,13 @@ namespace
 void CheckRRPrepareWrapper(IRenderDevice* Device, IDeviceContext* Context, IEngineFactory* Factory, const char* ShaderDirectory)
 {
     SampleConstants Frame;
-    Frame.ptConsts._activeStablePlaneCount = 3;
-    Frame.ptConsts.genericTSLineStride     = 8;
-    Frame.ptConsts.genericTSPlaneStride    = 64;
-    Frame.ptConsts.DLSSRRBrightnessClampK  = 0;
-    Frame.ptConsts.perPixelJitterAAScale   = 0;
-    Frame.ptConsts.camera.CameraW          = float3{0, 0, 1};
-    Frame.ptConsts.camera.FarZ             = 100;
+    Frame.ptConsts._activeDenoisingLayerCount = 3;
+    Frame.ptConsts.genericTSLineStride        = 8;
+    Frame.ptConsts.genericTSPlaneStride       = 64;
+    Frame.ptConsts.DLSSRRBrightnessClampK     = 0;
+    Frame.ptConsts.perPixelJitterAAScale      = 0;
+    Frame.ptConsts.camera.CameraW             = float3{0, 0, 1};
+    Frame.ptConsts.camera.FarZ                = 100;
     BufferDesc CBDesc;
     CBDesc.Size      = sizeof(Frame);
     CBDesc.BindFlags = BIND_UNIFORM_BUFFER;
@@ -49,9 +49,9 @@ void CheckRRPrepareWrapper(IRenderDevice* Device, IDeviceContext* Context, IEngi
     Upload(Targets.GetScreenMotionVectorsUAV(), Motion, sizeof(Motion));
     Upload(Targets.GetDepthUAV(), &Depth, sizeof(Depth));
     for (Uint32 Slice = 0; Slice < 4; ++Slice)
-        Upload(Targets.GetStablePlanesHeaderUAV(), &Header, sizeof(Header), Slice);
+        Upload(Targets.GetDenoisingLayersHeaderUAV(), &Header, sizeof(Header), Slice);
     std::array<Plane, 192> Planes = {};
-    Context->UpdateBuffer(Targets.GetStablePlanesBuffer(), 0, sizeof(Planes), Planes.data(), RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+    Context->UpdateBuffer(Targets.GetDenoisingLayersBuffer(), 0, sizeof(Planes), Planes.data(), RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
     for (int Iteration = 0; Iteration < 2; ++Iteration)
     {
         Require(Pass.RunDLSSRRDenoiserPrepareInputs(Context, Targets), "Production RR prepare dispatch failed");
@@ -140,7 +140,7 @@ void CheckRRResourceContract(IRenderDevice* Device, IDeviceContext* Context, con
             Execute.pSpecularHitDistanceSRV = Execute.pSpecularMotionVectorsSRV = Targets.GetOutputColorSRV();
         Require(RTXPTRayReconstructionInputs::MakeExecuteAttribs(Context, Targets, Desc, Frame, true, Execute), "RR execute adapter failed");
         Require(!Execute.pExposureSRV && !Execute.pRoughnessSRV && !Execute.pDiffuseHitDistanceSRV &&
-                    !Execute.pSpecularHitDistanceSRV && !Execute.pSpecularMotionVectorsSRV,
+                    !Execute.pSpecularHitDistanceSRV && Execute.pSpecularMotionVectorsSRV == Targets.GetRRSpecMotionVectorsSRV(),
                 "Optional guides retained previous bindings");
         Near(0.25f, Execute.JitterX);
         Near(-0.375f, Execute.JitterY);
@@ -154,10 +154,10 @@ void CheckRRResourceContract(IRenderDevice* Device, IDeviceContext* Context, con
             Near(Frame.view.MatWorldToView.Data()[Index], Execute.WorldToView[Index]);
             Near(Frame.view.MatViewToClip.Data()[Index], Execute.ViewToClip[Index]);
         }
-        const std::array<ITextureView*, 7>  Views   = {{Execute.pColorSRV, Execute.pDepthSRV, Execute.pMotionVectorsSRV,
-                                                     Execute.pDiffuseAlbedoSRV, Execute.pSpecularAlbedoSRV, Execute.pNormalsSRV, Execute.pOutputUAV}};
-        const std::array<TEXTURE_FORMAT, 7> Formats = {{TEX_FORMAT_RGBA16_FLOAT, TEX_FORMAT_R32_FLOAT, TEX_FORMAT_RG16_FLOAT,
-                                                        TEX_FORMAT_RGBA16_FLOAT, TEX_FORMAT_RGBA16_FLOAT, TEX_FORMAT_RGBA16_FLOAT, TEX_FORMAT_RGBA16_FLOAT}};
+        const std::array<ITextureView*, 8>  Views   = {{Execute.pColorSRV, Execute.pDepthSRV, Execute.pMotionVectorsSRV,
+                                                     Execute.pDiffuseAlbedoSRV, Execute.pSpecularAlbedoSRV, Execute.pNormalsSRV, Execute.pOutputUAV, Execute.pSpecularMotionVectorsSRV}};
+        const std::array<TEXTURE_FORMAT, 8> Formats = {{TEX_FORMAT_RGBA16_FLOAT, TEX_FORMAT_R32_FLOAT, TEX_FORMAT_RG16_FLOAT,
+                                                        TEX_FORMAT_RGBA16_FLOAT, TEX_FORMAT_RGBA16_FLOAT, TEX_FORMAT_RGBA16_FLOAT, TEX_FORMAT_RGBA16_FLOAT, TEX_FORMAT_RG16_FLOAT}};
         for (size_t Index = 0; Index < Views.size(); ++Index)
         {
             Require(Views[Index] != nullptr, "Missing required RR view");
@@ -194,7 +194,7 @@ void CheckRRResourceContract(IRenderDevice* Device, IDeviceContext* Context, con
             Require(Targets.Resize(Device, NrdInfo), "Switch to NRD resources failed");
             Require(!Targets.HasRayReconstructionRenderTargets() && !Targets.GetRRDepthSRV() &&
                         !Targets.GetRRDiffuseAlbedoSRV() && !Targets.GetRRSpecAlbedoSRV() &&
-                        !Targets.GetRRNormalsAndRoughnessSRV() && !Targets.GetRRMotionVectorsSRV(),
+                        !Targets.GetRRNormalsAndRoughnessSRV() && !Targets.GetRRMotionVectorsSRV() && !Targets.GetRRSpecMotionVectorsSRV(),
                     "RR resources retained after mode switch");
             if (NrdNormalSupported)
                 Require(Targets.HasRealtimeRenderTargets() &&

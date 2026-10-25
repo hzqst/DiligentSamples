@@ -1,0 +1,13 @@
+{
+  "models": [
+    "Models/ConvergenceTest/ConvergenceTest.gltf",
+    "Models/glTF-Sample-Models/2.0/BrainStem/glTF/BrainStem.gltf"
+  ],
+  "graph": [
+    { "name": "Room", "model": 0 },
+    { "name": "AnimatedSkin", "model": 1, "translation": [0, 0, 1], "scaling": 1.5 },
+    { "name": "Sun", "type": "DirectionalLight", "rotation": [-0.2305389, -0.1587917, -0.6890466, 0.6684698], "angularSize": 2.86478877, "color": [1, 1, 1], "irradiance": 2 },
+    { "name": "Sky", "type": "EnvironmentLight", "radianceScale": [1, 1, 1], "path": "EnvironmentMaps/20060807_wells6_hd.hdr" },
+    { "name": "Default", "type": "PerspectiveCameraEx", "translation": [0, 2, 8], "rotation": [0, 0, 0, 1], "verticalFov": 0.660595, "zNear": 0.001, "enableAutoExposure": false }
+  ]
+}

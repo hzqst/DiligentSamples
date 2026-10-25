@@ -33,10 +33,10 @@
 namespace Diligent
 {
 
-constexpr Uint32 kRTXPTStablePlaneCount           = 3;
-constexpr Uint32 kRTXPTStablePlaneMaxVertexIndex  = 15;
-constexpr Uint32 kRTXPTGenericTSTileSize          = 8;
-constexpr Uint32 kRTXPTRealtimeSamplesPerPixelMax = 64;
+constexpr Uint32 kRTXPTDenoisingLayerCount          = 3;
+constexpr Uint32 kRTXPTDenoisingLayerMaxVertexIndex = 15;
+constexpr Uint32 kRTXPTGenericTSTileSize            = 8;
+constexpr Uint32 kRTXPTRealtimeSamplesPerPixelMax   = 64;
 
 enum class RTXPTRealtimeAAMode : Uint32
 {
@@ -164,13 +164,13 @@ struct RTXPTRealtimeSettings
     float RealtimeFireflyFilterThreshold = 0.10f;
     float TexLODBias                     = -1.0f;
 
-    Int32 StablePlanesActiveCount                      = static_cast<Int32>(kRTXPTStablePlaneCount);
-    Int32 StablePlanesMaxVertexDepth                   = 9;
-    bool  AllowPrimarySurfaceReplacement               = true;
-    float StablePlanesSplitStopThreshold               = 0.95f;
-    bool  StablePlanesSuppressPrimaryIndirectSpecular  = true;
-    float StablePlanesSuppressPrimaryIndirectSpecularK = 0.6f;
-    float StablePlanesAntiAliasingFallthrough          = 0.6f;
+    Int32 DenoisingLayersActiveCount                      = static_cast<Int32>(kRTXPTDenoisingLayerCount);
+    Int32 DenoisingLayersMaxVertexDepth                   = 9;
+    bool  AllowPrimarySurfaceReplacement                  = true;
+    float DenoisingLayersSplitStopThreshold               = 0.95f;
+    bool  DenoisingLayersSuppressPrimaryIndirectSpecular  = true;
+    float DenoisingLayersSuppressPrimaryIndirectSpecularK = 0.6f;
+    float DenoisingLayersAntiAliasingFallthrough          = 0.6f;
 
     float DenoiserRadianceClampK = 8.0f;
 
@@ -224,15 +224,15 @@ inline void SanitizeRealtimeSettings(RTXPTRealtimeSettings& Settings)
     Settings.DenoisingGuideDebugView = static_cast<RTXPTDenoisingGuideDebugView>(GuideDebugView);
 
     Settings.RealtimeFireflyFilterThreshold = std::clamp(Settings.RealtimeFireflyFilterThreshold, 0.00001f, 1000.0f);
-    Settings.StablePlanesActiveCount =
-        std::clamp(Settings.StablePlanesActiveCount, Int32{1}, static_cast<Int32>(kRTXPTStablePlaneCount));
-    Settings.StablePlanesMaxVertexDepth =
-        std::clamp(Settings.StablePlanesMaxVertexDepth, Int32{2}, static_cast<Int32>(kRTXPTStablePlaneMaxVertexIndex));
-    Settings.StablePlanesSplitStopThreshold = std::clamp(Settings.StablePlanesSplitStopThreshold, 0.0f, 2.0f);
-    Settings.StablePlanesSuppressPrimaryIndirectSpecularK =
-        std::clamp(Settings.StablePlanesSuppressPrimaryIndirectSpecularK, 0.0f, 1.0f);
-    Settings.StablePlanesAntiAliasingFallthrough =
-        std::clamp(Settings.StablePlanesAntiAliasingFallthrough, 0.0f, 1.0f);
+    Settings.DenoisingLayersActiveCount =
+        std::clamp(Settings.DenoisingLayersActiveCount, Int32{1}, static_cast<Int32>(kRTXPTDenoisingLayerCount));
+    Settings.DenoisingLayersMaxVertexDepth =
+        std::clamp(Settings.DenoisingLayersMaxVertexDepth, Int32{2}, static_cast<Int32>(kRTXPTDenoisingLayerMaxVertexIndex));
+    Settings.DenoisingLayersSplitStopThreshold = std::clamp(Settings.DenoisingLayersSplitStopThreshold, 0.0f, 2.0f);
+    Settings.DenoisingLayersSuppressPrimaryIndirectSpecularK =
+        std::clamp(Settings.DenoisingLayersSuppressPrimaryIndirectSpecularK, 0.0f, 1.0f);
+    Settings.DenoisingLayersAntiAliasingFallthrough =
+        std::clamp(Settings.DenoisingLayersAntiAliasingFallthrough, 0.0f, 1.0f);
 
     Settings.DenoiserRadianceClampK            = std::max(Settings.DenoiserRadianceClampK, 0.0f);
     Settings.NRDDisocclusionThreshold          = std::max(Settings.NRDDisocclusionThreshold, 0.0f);

@@ -15,7 +15,7 @@ namespace Diligent
 static_assert(offsetof(PolymorphicLightInfo, ColorTypeAndFlags) == 12, "Light flags offset");
 static_assert(offsetof(PolymorphicLightInfo, Direction1) == 16, "Light direction offset");
 static_assert(offsetof(PolymorphicLightInfo, LogRadiance) == 28, "Light radiance offset");
-static_assert(offsetof(PolymorphicLightInfoEx, UniqueID) == 12, "Light identity offset");
+static_assert(offsetof(PolymorphicLightInfoEx, ClusterIndexAndCount) == 12, "Light identity offset");
 
 // CPU light authoring values. This type is never uploaded as a shader record.
 struct AnalyticLightData

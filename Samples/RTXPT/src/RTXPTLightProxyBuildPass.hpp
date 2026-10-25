@@ -69,7 +69,9 @@ public:
                Uint32          ProxyBudget,
                Uint32          ImportanceSamplingType,
                IBuffer*        pHistoryRemapCurrentToPast = nullptr,
-               const float4*   pFrustumPlanes             = nullptr);
+               const float4*   pFrustumPlanes             = nullptr,
+               Uint32          ClusterCount               = 0,
+               const float3*   pCameraPosition            = nullptr);
 
 private:
     bool CreatePSO(IRenderStateCache* pStateCache, IShader* pCS, const char* Name, RefCntAutoPtr<IPipelineState>& PSO, RefCntAutoPtr<IShaderResourceBinding>& SRB);
@@ -84,11 +86,13 @@ private:
 
     RefCntAutoPtr<IPipelineState>         m_ResetPSO;
     RefCntAutoPtr<IPipelineState>         m_WeightsPSO;
+    RefCntAutoPtr<IPipelineState>         m_ClustersPSO;
     RefCntAutoPtr<IPipelineState>         m_CountsPSO;
     RefCntAutoPtr<IPipelineState>         m_ScatterPSO;
     RefCntAutoPtr<IPipelineState>         m_FinalizePSO;
     RefCntAutoPtr<IShaderResourceBinding> m_ResetSRB;
     RefCntAutoPtr<IShaderResourceBinding> m_WeightsSRB;
+    RefCntAutoPtr<IShaderResourceBinding> m_ClustersSRB;
     RefCntAutoPtr<IShaderResourceBinding> m_CountsSRB;
     RefCntAutoPtr<IShaderResourceBinding> m_ScatterSRB;
     RefCntAutoPtr<IShaderResourceBinding> m_FinalizeSRB;

@@ -19,7 +19,7 @@ struct RTXPTLightSourceRange
     Uint32                Count = 0;
 };
 
-// Like upstream UniqueID, this hash is for debug coloring/validation only.
+// This hash is for debug coloring/validation only.
 // History matching must continue to compare the complete source key.
 inline Uint32 GetLightDebugID(const RTXPTLightSourceRange& Source, Uint32 PrimitiveIndex = 0)
 {

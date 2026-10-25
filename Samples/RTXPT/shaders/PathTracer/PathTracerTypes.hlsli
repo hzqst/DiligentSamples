@@ -3,10 +3,11 @@
 
 #include "Config.h"
 #include "PathTracerHelpers.hlsli"
-#include "Rendering/Materials/BxDF.hlsli"
+#include "BSDFs/BxDF.hlsli"
 #include "PathState.hlsli"
 #include "PathPayload.hlsli"
-#include "StablePlanes.hlsli"
+#include "DenoisingLayers.hlsli"
+#include "Surface/ShadingData.hlsli"
 
 static const uint cMaxDeltaLobes = 3;
 
@@ -43,56 +44,12 @@ struct BSDFSample
 
 namespace PathTracer
 {
-    struct StablePlaneMaterialState
-    {
-        uint flags;
-        uint nestedPriority;
-        uint activeLobes;
-        uint psdExclude;
-        uint psdBlockMotionVectorsAtSurface;
-        uint psdDominantDeltaLobeP1;
-
-        bool isPSDExclude() { return psdExclude != 0u; }
-        bool isPSDBlockMotionVectorsAtSurface() { return psdBlockMotionVectorsAtSurface != 0u; }
-        uint getPSDDominantDeltaLobeP1() { return psdDominantDeltaLobeP1; }
-        bool isThinSurface() { return (flags & kMaterialFlagThinSurface) != 0u; }
-        uint getNestedPriority() { return nestedPriority; }
-        uint getActiveLobes() { return activeLobes == 0u ? kLobeTypeAll : activeLobes; }
-    };
-
-    struct StablePlaneShadingData
-    {
-        float3 posW;
-        float3 N;
-        float3 V;
-        float3 T;
-        float3 B;
-        uint   materialID;
-        bool   frontFacing;
-        StablePlaneMaterialState mtl;
-        float3 faceNCorrected;
-        float3 vertexN;
-        float  shadowNoLFadeout;
-        float3 emission;
-
-        float3 computeNewRayOrigin(bool viewSide)
-        {
-            return ComputeRayOrigin(posW, viewSide ? N : -N);
-        }
-    };
-
-    struct StablePlaneBSDFData
-    {
-        lpfloat roughness;
-        lpfloat Roughness() { return roughness; }
-    };
 
     struct ActiveBSDF
     {
-        StablePlaneBSDFData data;
-        StandardBSDFData    standardData;
+        SurfaceBSDFData    standardData;
 
-        void evalDeltaLobes(StablePlaneShadingData shadingData,
+        void evalDeltaLobes(ShadingData shadingData,
                             out DeltaLobe deltaLobes[cMaxDeltaLobes],
                             out uint deltaLobeCount,
                             out float nonDeltaPart)
@@ -163,28 +120,26 @@ namespace PathTracer
         PathTracerConstants PtConsts;
 
 #if PATH_TRACER_MODE != PATH_TRACER_MODE_REFERENCE || defined(__INTELLISENSE__)
-        StablePlanesContext StablePlanes;
+        DenoisingLayersContext DenoisingLayers;
 #endif
     };
 
     struct SurfaceData
     {
-        StablePlaneShadingData shadingData;
+        ShadingData shadingData;
         ActiveBSDF             bsdf;
-#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_STABLE_PLANES
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
         float3 prevPosW;
 #endif
-        lpfloat interiorIoR;
         uint    neeTriangleLightIndex;
         uint    neeAnalyticLightIndex;
         float   emissiveLightPdf;
 
-        static SurfaceData make(StablePlaneShadingData shadingData,
+        static SurfaceData make(ShadingData shadingData,
                                 ActiveBSDF bsdf,
-#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_STABLE_PLANES
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
                                 float3 prevPosW,
 #endif
-                                lpfloat interiorIoR,
                                 uint neeTriangleLightIndex,
                                 uint neeAnalyticLightIndex,
                                 float emissiveLightPdf)
@@ -192,10 +147,9 @@ namespace PathTracer
             SurfaceData ret;
             ret.shadingData           = shadingData;
             ret.bsdf                  = bsdf;
-#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_STABLE_PLANES
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
             ret.prevPosW              = prevPosW;
 #endif
-            ret.interiorIoR           = interiorIoR;
             ret.neeTriangleLightIndex = neeTriangleLightIndex;
             ret.neeAnalyticLightIndex = neeAnalyticLightIndex;
             ret.emissiveLightPdf      = emissiveLightPdf;

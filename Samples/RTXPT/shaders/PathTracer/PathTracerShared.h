@@ -67,17 +67,17 @@ struct PathTracerConstants
     uint useReSTIRGI;
     uint resetAccumulation;
 
-    float stablePlanesSplitStopThreshold;
+    float denoisingLayersSplitStopThreshold;
     float _padding3;
     uint  _padding4;
-    float stablePlanesSuppressPrimaryIndirectSpecularK;
+    float denoisingLayersSuppressPrimaryIndirectSpecularK;
 
     float denoiserRadianceClampK;
     float DLSSRRBrightnessClampK; // RR input max-channel clamp; zero disables the user clamp.
-    float stablePlanesAntiAliasingFallthrough;
-    uint  _activeStablePlaneCount;
+    float denoisingLayersAntiAliasingFallthrough;
+    uint  _activeDenoisingLayerCount;
 
-    uint maxStablePlaneVertexDepth;
+    uint maxDenoisingLayerVertexDepth;
     uint allowPrimarySurfaceReplacement;
     uint genericTSLineStride;
     uint genericTSPlaneStride;
@@ -105,12 +105,12 @@ struct PathTracerConstants
     PathTracerCameraData camera;
     PathTracerCameraData prevCamera;
 
-    uint GetActiveStablePlaneCount()
+    uint GetActiveDenoisingLayerCount()
     {
-#if defined(RTXPT_ACTIVE_STABLE_PLANE_COUNT)
-        return RTXPT_ACTIVE_STABLE_PLANE_COUNT;
+#if defined(RTXPT_ACTIVE_DENOISING_LAYER_COUNT)
+        return RTXPT_ACTIVE_DENOISING_LAYER_COUNT;
 #else
-        return _activeStablePlaneCount;
+        return _activeDenoisingLayerCount;
 #endif
     }
 };

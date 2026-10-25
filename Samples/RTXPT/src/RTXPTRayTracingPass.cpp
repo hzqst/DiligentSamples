@@ -44,8 +44,10 @@ const char* GetVariantName(RTXPTPathTraceVariant Variant)
     switch (Variant)
     {
         case RTXPTPathTraceVariant::Reference: return "Reference";
-        case RTXPTPathTraceVariant::BuildStablePlanes: return "BuildStablePlanes";
-        case RTXPTPathTraceVariant::FillStablePlanes: return "FillStablePlanes";
+        case RTXPTPathTraceVariant::BuildDenoisingLayers: return "BuildDenoisingLayers";
+        case RTXPTPathTraceVariant::FillDenoisingLayers: return "FillDenoisingLayers";
+        case RTXPTPathTraceVariant::SharcTrain: return "SharcTrain";
+        case RTXPTPathTraceVariant::SharcFill: return "SharcFill";
         default: return "Unknown";
     }
 }
@@ -55,8 +57,9 @@ int GetVariantModeMacro(RTXPTPathTraceVariant Variant)
     switch (Variant)
     {
         case RTXPTPathTraceVariant::Reference: return 0;
-        case RTXPTPathTraceVariant::BuildStablePlanes: return 1;
-        case RTXPTPathTraceVariant::FillStablePlanes: return 2;
+        case RTXPTPathTraceVariant::BuildDenoisingLayers: return 1;
+        case RTXPTPathTraceVariant::FillDenoisingLayers: return 2;
+        case RTXPTPathTraceVariant::SharcFill: return 2;
         default: return 0;
     }
 }
@@ -84,6 +87,18 @@ void RTXPTRayTracingPass::Reset()
     m_TLAS.Release();
     m_IndexBufferView.Release();
     m_Stats = {};
+}
+
+void RTXPTRayTracingPass::UnbindSharcBuffers()
+{
+    for (auto Variant : {RTXPTPathTraceVariant::SharcTrain, RTXPTPathTraceVariant::SharcFill})
+    {
+        auto& State = m_Variants[GetVariantIndex(Variant)];
+        if (!State.SRB) continue;
+        for (auto Stage : {SHADER_TYPE_RAY_GEN, SHADER_TYPE_RAY_MISS, SHADER_TYPE_RAY_CLOSEST_HIT})
+            for (const char* Name : {"cbSharc", "u_SharcHash", "u_SharcAccumulation", "u_SharcResolved", "u_SharcPathState"})
+                if (auto* Var = State.SRB->GetVariableByName(Stage, Name)) Var->Set(nullptr);
+    }
 }
 
 bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
@@ -125,7 +140,8 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
                                      Uint32                NEEFullSamples,
                                      bool                  UseFp16Types,
                                      bool                  EnableHitObject,
-                                     bool                  EnableThreadReorder)
+                                     bool                  EnableThreadReorder,
+                                     bool                  EnableSharc)
 {
     Reset();
 
@@ -189,7 +205,7 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
     }
 
     RefCntAutoPtr<IShaderSourceInputStreamFactory> pShaderSourceFactory;
-    pEngineFactory->CreateDefaultShaderSourceStreamFactory("shaders;shaders\\PathTracer", &pShaderSourceFactory);
+    pEngineFactory->CreateDefaultShaderSourceStreamFactory("shaders;shaders/PathTracer;shaders/SHARC;" RTXPT_SHARC_SHADER_DIR, &pShaderSourceFactory);
     if (!pShaderSourceFactory)
     {
         DEV_ERROR("Failed to create RTXPT shader source factory");
@@ -201,8 +217,8 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
                                        (SHADER_TYPE_RAY_CLOSEST_HIT | SHADER_TYPE_RAY_ANY_HIT) :
                                        SHADER_TYPE_RAY_CLOSEST_HIT) |
         (UseHitObject ? SHADER_TYPE_RAY_GEN : SHADER_TYPE_UNKNOWN);
-    const SHADER_TYPE MaterialStages    = HitStages | SHADER_TYPE_RAY_GEN;
-    const SHADER_TYPE EnvStages         = SHADER_TYPE_RAY_GEN | HitStages |
+    const SHADER_TYPE MaterialStages = HitStages | SHADER_TYPE_RAY_GEN;
+    const SHADER_TYPE EnvStages      = SHADER_TYPE_RAY_GEN | HitStages |
         (!UseHitObject || !UseInlineVisibility ? SHADER_TYPE_RAY_MISS : SHADER_TYPE_UNKNOWN);
     const SHADER_TYPE ConstStages       = EnvStages | HitStages;
     const SHADER_TYPE DirectLightStages = ConstStages;
@@ -223,7 +239,7 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
     IDeviceObject* pMaterialsView = pMaterialBuffer != nullptr ? pMaterialBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
     IDeviceObject* pSubInstanceView =
         pSubInstanceBuffer != nullptr ? pSubInstanceBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
-    IDeviceObject* pLightsView = pLightBuffer != nullptr ? pLightBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
+    IDeviceObject* pLightsView   = pLightBuffer != nullptr ? pLightBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
     IDeviceObject* pLightsExView = pLightExBuffer != nullptr ? pLightExBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
     IDeviceObject* pLightingControlView =
         pLightingControlBuffer != nullptr ? pLightingControlBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
@@ -271,13 +287,17 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
         ShaderCI.SourceLanguage                  = SHADER_SOURCE_LANGUAGE_HLSL;
         ShaderCI.ShaderCompiler                  = SHADER_COMPILER_DXC;
         ShaderCI.CompileFlags                    = SHADER_COMPILE_FLAG_PACK_MATRIX_ROW_MAJOR;
-        if (UseFp16Types)
+        const bool SharcVariant                  = Variant == RTXPTPathTraceVariant::SharcTrain || Variant == RTXPTPathTraceVariant::SharcFill;
+        if (UseFp16Types || SharcVariant)
             ShaderCI.CompileFlags |= SHADER_COMPILE_FLAG_ENABLE_16BIT_TYPES;
-        ShaderCI.ShaderOptimizationLevel         = SHADER_OPTIMIZATION_LEVEL_3;
-        ShaderCI.HLSLVersion                     = SupportsHitObject ? ShaderVersion{6, 9} : ShaderVersion{6, 5};
-        ShaderCI.pShaderSourceStreamFactory      = pShaderSourceFactory;
+        ShaderCI.ShaderOptimizationLevel = SHADER_OPTIMIZATION_LEVEL_3;
+        ShaderCI.HLSLVersion             = SupportsHitObject ? ShaderVersion{6, 9} : ShaderVersion{6, 5};
+        if (SharcVariant && !SupportsHitObject) ShaderCI.HLSLVersion = {6, 6};
+        ShaderCI.pShaderSourceStreamFactory = pShaderSourceFactory;
 
         ShaderMacroHelper Macros;
+        Macros.Add("RTXPT_SHARC_TRAIN", Variant == RTXPTPathTraceVariant::SharcTrain ? 1 : 0);
+        Macros.Add("RTXPT_SHARC_CONSUME", Variant == RTXPTPathTraceVariant::SharcFill ? 1 : 0);
         Macros.Add("USE_DX_HIT_OBJECT_EXTENSION", UseHitObject ? 1 : 0);
         Macros.Add("USE_DX_MAYBE_REORDER_THREADS", UseThreadReorder ? 1 : 0);
         Macros.Add("RTXPT_LP_TYPES_USE_16BIT_PRECISION", UseFp16Types ? 1 : 0);
@@ -375,7 +395,7 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
             PSOCreateInfo.AddTriangleHitShader("PrimaryHit", pClosestHit);
         const bool TracesVisibilityFromHit =
             Variant == RTXPTPathTraceVariant::Reference ||
-            Variant == RTXPTPathTraceVariant::FillStablePlanes;
+            Variant == RTXPTPathTraceVariant::FillDenoisingLayers || SharcVariant;
         PSOCreateInfo.RayTracingPipeline.MaxRecursionDepth =
             TracesVisibilityFromHit && !UseInlineVisibility ? 2 : 1;
         PSOCreateInfo.RayTracingPipeline.ShaderRecordSize = 0;
@@ -384,6 +404,9 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
 
         PipelineResourceLayoutDescX ResourceLayout;
         ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE;
+        if (SharcVariant)
+            for (const char* Name : {"cbSharc", "u_SharcHash", "u_SharcAccumulation", "u_SharcResolved", "u_SharcPathState"})
+                ResourceLayout.AddVariable(ConstStages, Name, SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC);
         ResourceLayout
             .AddVariable(SHADER_TYPE_RAY_GEN, "u_Output", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
             .AddVariable(SHADER_TYPE_RAY_GEN, "u_ScreenMotionVectors", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
@@ -393,8 +416,8 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
             .AddVariable(DynamicStages, "u_Throughput", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
             .AddVariable(DynamicStages, "u_SpecularHitT", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
             .AddVariable(DynamicStages, "u_StableRadiance", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
-            .AddVariable(DynamicStages, "u_StablePlanesHeader", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
-            .AddVariable(DynamicStages, "u_StablePlanesBuffer", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC);
+            .AddVariable(DynamicStages, "u_DenoisingLayersHeader", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
+            .AddVariable(DynamicStages, "u_DenoisingLayersBuffer", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC);
 
         ResourceLayout
             .AddVariable(ConstStages, "g_Const", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
@@ -472,12 +495,12 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
             return Ok;
         };
 
-        const bool BuildStablePlanesVariant = Variant == RTXPTPathTraceVariant::BuildStablePlanes;
+        const bool BuildDenoisingLayersVariant = Variant == RTXPTPathTraceVariant::BuildDenoisingLayers;
         const bool FrameConstantsBound =
             SetStaticForStages(ConstStages, "g_Const", pFrameConstants, "frame constants");
         // BUILD always reads the current sub-sample from g_MiniConst. FILL may reflect it through
         // hit shaders, but some Fill PSO resource tables omit it, so bind opportunistically there.
-        const bool MiniConstantsRequired = BuildStablePlanesVariant;
+        const bool MiniConstantsRequired = BuildDenoisingLayersVariant;
         const bool MiniConstantsBound =
             SetStaticForStages(ConstStages | HitStages, "g_MiniConst", m_MiniConstantsCB, "mini constants", MiniConstantsRequired);
         const bool TLASBound =
@@ -528,7 +551,7 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
         EnvironmentBridgeReflectedAny           = EnvironmentBridgeReflectedAny || EnvironmentBridgeReflected;
         const bool EmissiveLightBridgeReflected = LightBridgeReflected;
         const bool EmissiveLightBridgeBound     = LightBridgeBound;
-        const bool VertexBufferBound = SetStaticForStages(HitStages, "t_VertexBuffer", pVertexView, "vertex buffer");
+        const bool VertexBufferBound            = SetStaticForStages(HitStages, "t_VertexBuffer", pVertexView, "vertex buffer");
         const bool SkinnedVertexBufferBound =
             SetStaticForStages(HitStages, "t_SkinnedVertexBuffer", pSkinnedVertexView, "skinned vertex buffer");
         const bool IndexBufferBound = SetStaticForStages(HitStages, "t_IndexBuffer", m_IndexBufferView, "index buffer");
@@ -612,8 +635,8 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
     const RTXPTPathTraceVariant Variants[] =
         {
             RTXPTPathTraceVariant::Reference,
-            RTXPTPathTraceVariant::BuildStablePlanes,
-            RTXPTPathTraceVariant::FillStablePlanes,
+            RTXPTPathTraceVariant::BuildDenoisingLayers,
+            RTXPTPathTraceVariant::FillDenoisingLayers,
         };
     for (RTXPTPathTraceVariant Variant : Variants)
     {
@@ -623,6 +646,9 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
             return false;
         }
     }
+
+    if (EnableSharc && (!CreateVariant(RTXPTPathTraceVariant::SharcTrain) || !CreateVariant(RTXPTPathTraceVariant::SharcFill)))
+        return false;
 
     m_Stats.EnvironmentBridgeBound = EnvironmentBridgeReflectedAny && m_Stats.EnvironmentBridgeBound;
     if (!UseTextures)
@@ -657,15 +683,16 @@ bool RTXPTRayTracingPass::Dispatch(IDeviceContext*                pContext,
     }
     if (pContext == nullptr)
         return false;
-    const bool ReferenceVariant         = Variant == RTXPTPathTraceVariant::Reference;
-    const bool BuildStablePlanesVariant = Variant == RTXPTPathTraceVariant::BuildStablePlanes;
-    const bool RealtimeVariant          = !ReferenceVariant;
-    const bool FinalOutputRequired      = ReferenceVariant;
-    const bool SurfaceExportsRequired   = ReferenceVariant || BuildStablePlanesVariant;
-    const bool ThroughputRequired       = BuildStablePlanesVariant;
-    const bool SpecularHitTRequired     = RealtimeVariant;
-    const bool StableRadianceRequired   = BuildStablePlanesVariant;
-    const bool StablePlanesRequired     = RealtimeVariant;
+    const bool TrainVariant                = Variant == RTXPTPathTraceVariant::SharcTrain;
+    const bool ReferenceVariant            = Variant == RTXPTPathTraceVariant::Reference || TrainVariant;
+    const bool BuildDenoisingLayersVariant = Variant == RTXPTPathTraceVariant::BuildDenoisingLayers;
+    const bool RealtimeVariant             = !ReferenceVariant;
+    const bool FinalOutputRequired         = ReferenceVariant && !TrainVariant;
+    const bool SurfaceExportsRequired      = (ReferenceVariant && !TrainVariant) || BuildDenoisingLayersVariant;
+    const bool ThroughputRequired          = BuildDenoisingLayersVariant;
+    const bool SpecularHitTRequired        = RealtimeVariant;
+    const bool StableRadianceRequired      = BuildDenoisingLayersVariant;
+    const bool DenoisingLayersRequired     = RealtimeVariant;
 
     if (DispatchInfo.Width == 0 || DispatchInfo.Height == 0)
         return false;
@@ -676,9 +703,9 @@ bool RTXPTRayTracingPass::Dispatch(IDeviceContext*                pContext,
         (ThroughputRequired && DispatchInfo.pThroughputUAV == nullptr) ||
         (SpecularHitTRequired && DispatchInfo.pSpecularHitTUAV == nullptr) ||
         (StableRadianceRequired && DispatchInfo.pStableRadianceUAV == nullptr) ||
-        (StablePlanesRequired &&
-         (DispatchInfo.pStablePlanesHeaderUAV == nullptr ||
-          DispatchInfo.pStablePlanesBufferUAV == nullptr)))
+        (DenoisingLayersRequired &&
+         (DispatchInfo.pDenoisingLayersHeaderUAV == nullptr ||
+          DispatchInfo.pDenoisingLayersBufferUAV == nullptr)))
         return false;
 
     auto SetDynamicForStages = [&](const char* Name, IDeviceObject* pObject, bool Required, bool* pFoundAny = nullptr) {
@@ -709,7 +736,7 @@ bool RTXPTRayTracingPass::Dispatch(IDeviceContext*                pContext,
 
         if (!FoundAny && Required)
         {
-            UNEXPECTED("RTXPT dynamic shader variable is missing: ", Name, " for variant: ", GetVariantName(Variant));
+            LOG_ERROR_MESSAGE("RTXPT dynamic shader variable is missing: ", Name, " for variant: ", GetVariantName(Variant));
             return false;
         }
 
@@ -734,6 +761,14 @@ bool RTXPTRayTracingPass::Dispatch(IDeviceContext*                pContext,
         return true;
     };
 
+    if (TrainVariant || Variant == RTXPTPathTraceVariant::SharcFill)
+    {
+        if (!SetDynamicForStages("cbSharc", DispatchInfo.pSharcConstants, true) ||
+            !SetDynamicForStages("u_SharcHash", DispatchInfo.pSharcHash, true) ||
+            !SetDynamicForStages("u_SharcResolved", DispatchInfo.pSharcResolved, true) ||
+            !SetDynamicForStages("u_SharcAccumulation", DispatchInfo.pSharcAccumulation, TrainVariant) ||
+            !SetDynamicForStages("u_SharcPathState", DispatchInfo.pSharcPathState, TrainVariant)) return false;
+    }
     const bool OutputBound =
         SetDynamicForNamePair("u_OutputColor", "u_Output", DispatchInfo.pOutputColorUAV, FinalOutputRequired);
     const bool DepthBound =
@@ -746,10 +781,10 @@ bool RTXPTRayTracingPass::Dispatch(IDeviceContext*                pContext,
         SetDynamicForStages("u_SpecularHitT", DispatchInfo.pSpecularHitTUAV, SpecularHitTRequired);
     const bool StableRadianceBound =
         SetDynamicForStages("u_StableRadiance", DispatchInfo.pStableRadianceUAV, StableRadianceRequired);
-    const bool StablePlanesHeaderBound =
-        SetDynamicForStages("u_StablePlanesHeader", DispatchInfo.pStablePlanesHeaderUAV, StablePlanesRequired);
-    const bool StablePlanesBufferBound =
-        SetDynamicForStages("u_StablePlanesBuffer", DispatchInfo.pStablePlanesBufferUAV, StablePlanesRequired);
+    const bool DenoisingLayersHeaderBound =
+        SetDynamicForStages("u_DenoisingLayersHeader", DispatchInfo.pDenoisingLayersHeaderUAV, DenoisingLayersRequired);
+    const bool DenoisingLayersBufferBound =
+        SetDynamicForStages("u_DenoisingLayersBuffer", DispatchInfo.pDenoisingLayersBufferUAV, DenoisingLayersRequired);
 
     if (!OutputBound ||
         !DepthBound ||
@@ -757,8 +792,8 @@ bool RTXPTRayTracingPass::Dispatch(IDeviceContext*                pContext,
         !ThroughputBound ||
         !SpecularHitTBound ||
         !StableRadianceBound ||
-        !StablePlanesHeaderBound ||
-        !StablePlanesBufferBound)
+        !DenoisingLayersHeaderBound ||
+        !DenoisingLayersBufferBound)
     {
         return false;
     }

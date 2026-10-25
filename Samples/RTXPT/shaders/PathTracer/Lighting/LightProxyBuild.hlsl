@@ -35,6 +35,8 @@ struct LightProxyBuildConstants
     uint HasFrustumPlanes;
     uint Padding;
     float4 FrustumPlanes[5];
+    float3 CameraPosition;
+    uint HasCameraPosition;
 };
 
 ConstantBuffer<LightProxyBuildConstants> g_LightProxyBuildConstants;
@@ -42,6 +44,8 @@ ConstantBuffer<LightProxyBuildConstants> g_LightProxyBuildConstants;
 RWStructuredBuffer<LightingControlData> u_LightingControl;     // GPU writes WeightsSumUINT/SamplingProxyCount/ProxyBuildTaskCount
 StructuredBuffer<PolymorphicLightInfo> t_Lights;
 StructuredBuffer<PolymorphicLightInfoEx> t_LightsEx;
+RWStructuredBuffer<PolymorphicLightInfo> u_Lights;
+RWStructuredBuffer<PolymorphicLightInfoEx> u_LightsEx;
 StructuredBuffer<uint> t_FeedbackCounts;
 StructuredBuffer<uint> t_HistoryRemapCurrentToPast;
 StructuredBuffer<float> t_HistoricLightWeights;
@@ -95,6 +99,7 @@ float ComputeLightWeight(uint lightIndex)
     packed.Base = t_Lights[lightIndex];
     packed.Extended = (PolymorphicLightInfoEx)0;
     const uint type = DecodeLightType(packed.Base);
+    if (type == kPolymorphicLightTypeCluster) return 0.0;
     if (type == kPolymorphicLightTypeEnvironment)
     {
         const float weight = pow(max(0.0, asfloat(packed.Base.Scalars)), 0.8);
@@ -171,7 +176,8 @@ void ComputeWeightsCS(uint groupThreadId : SV_GroupThreadID)
     [loop]
     for (uint lightIndex = from; lightIndex < to; ++lightIndex)
     {
-        const float weight       = ImportanceBooster(lightIndex, ComputeLightWeight(lightIndex));
+        const float weight = DecodeLightType(t_Lights[lightIndex]) == kPolymorphicLightTypeCluster ? 0.0 :
+            ImportanceBooster(lightIndex, ComputeLightWeight(lightIndex));
         u_LightWeights[lightIndex] = weight;
         sum += weight;
     }
@@ -190,6 +196,60 @@ void ComputeWeightsCS(uint groupThreadId : SV_GroupThreadID)
 }
 
 [numthreads(256, 1, 1)]
+void ProcessClustersCS(uint clusterOffset : SV_DispatchThreadID)
+{
+    const LightingControlData ctrl = u_LightingControl[0];
+    if (clusterOffset >= ctrl.LightClusterCount) return;
+    const uint clusterIndex = ctrl.TotalLightCount - ctrl.LightClusterCount + clusterOffset;
+    PolymorphicLightInfo cluster = u_Lights[clusterIndex];
+    const uint originalFrom = cluster.Direction2 & 0x7fffffu;
+    const uint originalCount = ((cluster.Direction2 >> 23) & 63u) + 1u;
+    float3 boundsMin = 3.402823466e+38.xxx, boundsMax = -3.402823466e+38.xxx;
+    float weight = 0.0;
+    for (uint i = originalFrom; i < originalFrom + originalCount; ++i)
+    {
+        PolymorphicLightInfo light = u_Lights[i];
+        light.ColorTypeAndFlags &= ~kPolymorphicLightIsInCluster;
+        u_Lights[i] = light;
+        u_LightsEx[i].ClusterIndexAndCount = RTXPT_INVALID_LIGHT_INDEX;
+        const EmissiveTriangle tri = UnpackTriangleLight(light);
+        boundsMin = min(boundsMin, min(tri.base.xyz, min(tri.base.xyz + tri.edge1.xyz, tri.base.xyz + tri.edge2.xyz)));
+        boundsMax = max(boundsMax, max(tri.base.xyz, max(tri.base.xyz + tri.edge1.xyz, tri.base.xyz + tri.edge2.xyz)));
+        weight += u_LightWeights[i];
+    }
+    cluster.Center = (boundsMin + boundsMax) * 0.5;
+    const float3 extents = (boundsMax - boundsMin) * 0.5;
+    const float3 cameraPosition = g_LightProxyBuildConstants.HasCameraPosition != 0u ?
+        g_LightProxyBuildConstants.CameraPosition : ctrl.BakerConstants.SceneCameraPos;
+    const float distance = length(cluster.Center - cameraPosition);
+    const float averageWeight = ctrl.WeightsSum() / max(1u, ctrl.TotalLightCount - ctrl.LightClusterCount);
+    const float brightness = weight / float(originalCount) / max(averageWeight, 1e-30);
+    bool active = g_LightProxyBuildConstants.ImportanceSamplingType != 0u &&
+        3000.0 * pow(length(extents) / max(distance, 1e-7), 2.0) * sqrt(max(0.1, brightness)) < 1.0;
+    const float threshold = 0.01 * weight / float(originalCount);
+    uint from = originalFrom, to = from + originalCount;
+    for (; to - from > 1u && u_LightWeights[from] <= threshold; ++from) weight -= u_LightWeights[from];
+    for (; to - from > 1u && u_LightWeights[to - 1u] <= threshold; --to) weight -= u_LightWeights[to - 1u];
+    uint significantCount = 0;
+    for (uint j = from; j < to; ++j) significantCount += u_LightWeights[j] > threshold ? 1u : 0u;
+    active = active && significantCount >= RTXPT_LIGHT_CLUSTER_MIN_TRIANGLES;
+    cluster.Direction1 = from | ((to - from - 1u) << 23) | (active ? 0x80000000u : 0u);
+    uint3 packedExtents = f32tof16(extents);
+    packedExtents += uint3(f16tof32(packedExtents) < extents);
+    cluster.Scalars = packedExtents.x | (packedExtents.y << 16);
+    cluster.LogRadiance = packedExtents.z;
+    u_Lights[clusterIndex] = cluster;
+    u_LightWeights[clusterIndex] = max(0.0, weight);
+    for (uint j = from; j < to; ++j)
+    {
+        // Retain membership even for inactive clusters: historical local tables
+        // may still select them, and their leaf PDFs must remain evaluable.
+        u_LightsEx[j].ClusterIndexAndCount = PolymorphicLightInfoEx::PackClusterIndexAndCount(clusterIndex, to - from);
+        if (active) u_Lights[j].ColorTypeAndFlags |= kPolymorphicLightIsInCluster;
+    }
+}
+
+[numthreads(256, 1, 1)]
 void ComputeProxyCountsCS(uint dispatchThreadId : SV_DispatchThreadID)
 {
     const uint lightIndex = dispatchThreadId;
@@ -199,14 +259,23 @@ void ComputeProxyCountsCS(uint dispatchThreadId : SV_DispatchThreadID)
     const uint  totalLights = g_LightProxyBuildConstants.TotalLightCount;
     const uint  budget      = g_LightProxyBuildConstants.ProxyBudget;
     // Reserve one proxy per light so the per-light counts (each rounded up) still sum to <= budget.
-    const uint  proxyPool   = (budget > totalLights) ? (budget - totalLights) : 0u;
+    const uint sampledLightCount = totalLights - u_LightingControl[0].LightClusterCount;
+    const uint  proxyPool   = (budget > sampledLightCount) ? (budget - sampledLightCount) : 0u;
     const float weightSum   = asfloat(u_LightingControl[0].WeightsSumUINT);
     float weight = u_LightWeights[lightIndex];
     const LightingControlData ctrl = u_LightingControl[0];
     if (ctrl.LastFrameTemporalFeedbackAvailable != 0u)
     {
         const uint validFeedbackCount = ctrl.TotalMaxFeedbackCount - t_FeedbackCounts[totalLights];
-        const float feedbackWeight = float(t_FeedbackCounts[lightIndex]) * weightSum / float(max(1u, validFeedbackCount));
+        uint feedbackCount = t_FeedbackCounts[lightIndex];
+        const PolymorphicLightInfo light = t_Lights[lightIndex];
+        if (DecodeLightType(light) == kPolymorphicLightTypeCluster)
+        {
+            const uint from = light.Direction1 & 0x7fffffu;
+            const uint count = ((light.Direction1 >> 23) & 63u) + 1u;
+            for (uint i = from; i < from + count; ++i) feedbackCount += t_FeedbackCounts[i];
+        }
+        const float feedbackWeight = float(feedbackCount) * weightSum / float(max(1u, validFeedbackCount));
         weight = lerp(weight, feedbackWeight, ctrl.GlobalFeedbackUseWeight);
     }
 
@@ -219,6 +288,10 @@ void ComputeProxyCountsCS(uint dispatchThreadId : SV_DispatchThreadID)
             proxyCount = (uint)ceil((float(proxyPool) * weight) / weightSum);
     }
     proxyCount = min(proxyCount, RTXPT_LIGHTING_MAX_SAMPLING_PROXIES_PER_LIGHT - 1u);
+    const PolymorphicLightInfo light = t_Lights[lightIndex];
+    if (light.IsPartOfLightCluster() ||
+        (DecodeLightType(light) == kPolymorphicLightTypeCluster && (light.Direction1 & 0x80000000u) == 0u))
+        proxyCount = 0u;
 
     u_LightProxyCounters[lightIndex] = proxyCount;
     if (proxyCount > 0u)

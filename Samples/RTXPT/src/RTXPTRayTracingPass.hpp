@@ -49,25 +49,32 @@ struct SampleMiniConstants;
 
 enum class RTXPTPathTraceVariant : Uint32
 {
-    Reference         = 0,
-    BuildStablePlanes = 1,
-    FillStablePlanes  = 2,
+    Reference            = 0,
+    BuildDenoisingLayers = 1,
+    FillDenoisingLayers  = 2,
+    SharcTrain,
+    SharcFill,
     Count
 };
 
 struct RTXPTRayTracingDispatch
 {
-    ITextureView*              pOutputColorUAV        = nullptr;
-    ITextureView*              pDepthUAV              = nullptr;
-    ITextureView*              pMotionVectorsUAV      = nullptr;
-    ITextureView*              pThroughputUAV         = nullptr;
-    ITextureView*              pSpecularHitTUAV       = nullptr;
-    ITextureView*              pStableRadianceUAV     = nullptr;
-    ITextureView*              pStablePlanesHeaderUAV = nullptr;
-    IBufferView*               pStablePlanesBufferUAV = nullptr;
-    const SampleMiniConstants* pMiniConstants         = nullptr;
-    Uint32                     Width                  = 0;
-    Uint32                     Height                 = 0;
+    IBuffer*                   pSharcConstants           = nullptr;
+    IBufferView*               pSharcHash                = nullptr;
+    IBufferView*               pSharcAccumulation        = nullptr;
+    IBufferView*               pSharcResolved            = nullptr;
+    IBufferView*               pSharcPathState           = nullptr;
+    ITextureView*              pOutputColorUAV           = nullptr;
+    ITextureView*              pDepthUAV                 = nullptr;
+    ITextureView*              pMotionVectorsUAV         = nullptr;
+    ITextureView*              pThroughputUAV            = nullptr;
+    ITextureView*              pSpecularHitTUAV          = nullptr;
+    ITextureView*              pStableRadianceUAV        = nullptr;
+    ITextureView*              pDenoisingLayersHeaderUAV = nullptr;
+    IBufferView*               pDenoisingLayersBufferUAV = nullptr;
+    const SampleMiniConstants* pMiniConstants            = nullptr;
+    Uint32                     Width                     = 0;
+    Uint32                     Height                    = 0;
 };
 
 struct RTXPTRayTracingVariantStats
@@ -103,6 +110,7 @@ class RTXPTRayTracingPass
 {
 public:
     void Reset();
+    void UnbindSharcBuffers();
 
     bool Initialize(IRenderDevice*        pDevice,
                     IDeviceContext*       pContext,
@@ -143,7 +151,8 @@ public:
                     Uint32                NEEFullSamples,
                     bool                  UseFp16Types,
                     bool                  EnableHitObject,
-                    bool                  EnableThreadReorder);
+                    bool                  EnableThreadReorder,
+                    bool                  EnableSharc = false);
 
     bool Dispatch(IDeviceContext*                pContext,
                   RTXPTPathTraceVariant          Variant,

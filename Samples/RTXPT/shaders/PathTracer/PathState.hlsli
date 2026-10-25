@@ -6,15 +6,15 @@
 #include "Config.h"
 #include "PathTracerHelpers.hlsli"
 #include "PathTracerShared.h"
-#include "Rendering/Materials/InteriorList.hlsli"
+#include "BSDFs/InteriorList.hlsli"
 #include "Utils/SampleGenerators.hlsli"
 
 static const uint kVertexIndexBitCount       = 10u;
 static const uint kVertexIndexBitMask        = (1u << kVertexIndexBitCount) - 1u;
 static const uint kPathFlagsBitCount         = 32u - kVertexIndexBitCount;
 static const uint kPathFlagsBitMask          = ((1u << kPathFlagsBitCount) - 1u) << kVertexIndexBitCount;
-static const uint kStablePlaneIndexBitOffset = 14u + kVertexIndexBitCount;
-static const uint kStablePlaneIndexBitMask   = ((1u << 2u) - 1u) << kStablePlaneIndexBitOffset;
+static const uint kDenoisingLayerIndexBitOffset = 14u + kVertexIndexBitCount;
+static const uint kDenoisingLayerIndexBitMask   = ((1u << 2u) - 1u) << kDenoisingLayerIndexBitOffset;
 
 enum class PathFlags
 {
@@ -31,20 +31,20 @@ enum class PathFlags
     deltaTransmissionPath           = (1 << 11),
     deltaOnlyPath                   = (1 << 12),
     deltaTreeExplorer               = (1 << 13),
-    stablePlaneIndexBit0            = (1 << 14),
-    stablePlaneIndexBit1            = (1 << 15),
-    stablePlaneOnPlane              = (1 << 16),
-    stablePlaneOnBranch             = (1 << 17),
-    stablePlaneBaseScatterDiff      = (1 << 18),
+    denoisingLayerIndexBit0            = (1 << 14),
+    denoisingLayerIndexBit1            = (1 << 15),
+    denoisingLayerOnPlane              = (1 << 16),
+    denoisingLayerOnBranch             = (1 << 17),
+    denoisingLayerBaseScatterDiff      = (1 << 18),
     exportSpecHitTQueued            = (1 << 19),
-    stablePlaneOnDominantBranch     = (1 << 20),
+    denoisingLayerOnDominantBranch     = (1 << 20),
 };
 
 enum class PackedCounters
 {
     DiffuseBounces         = 0,
     RejectedHits           = 1,
-    BouncesFromStablePlane = 2,
+    BouncesFromDenoisingLayer = 2,
 };
 
 struct PathState
@@ -53,7 +53,7 @@ struct PathState
     uint4 PackDirSceneLength;
 
     uint2 pack23;
-#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_STABLE_PLANES
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
     uint2 imageXformPacked;
 #else
     uint2 pack45;
@@ -82,7 +82,7 @@ struct PathState
     float GetSceneLength() { return asfloat(PackDirSceneLength.w); }
     void SetSceneLength(float sceneLength) { PackDirSceneLength.w = asuint(sceneLength); }
 
-#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_STABLE_PLANES
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
     float3x3 GetImageXform() { return UnpackOrthoMatrix(imageXformPacked); }
     void SetImageXform(float3x3 p) { imageXformPacked = PackOrthoMatrix(p); }
 
@@ -114,7 +114,7 @@ struct PathState
     }
     float3 GetThp() { return Fp16ToFp32(pack23).xyz; }
 
-#if PATH_TRACER_MODE != PATH_TRACER_MODE_BUILD_STABLE_PLANES
+#if PATH_TRACER_MODE != PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
     void SetL(float4 l)
     {
         pack45 = Fp32ToFp16NoClamp(clamp(l, 0.xxxx, HLF_MAX.xxxx));
@@ -202,11 +202,11 @@ struct PathState
         return Ray::make(GetOrigin(), GetDir(), 0.0, kMaxRayTravel);
     }
 
-    uint getStablePlaneIndex() { return (flagsAndVertexIndex & kStablePlaneIndexBitMask) >> kStablePlaneIndexBitOffset; }
-    void setStablePlaneIndex(uint index)
+    uint getDenoisingLayerIndex() { return (flagsAndVertexIndex & kDenoisingLayerIndexBitMask) >> kDenoisingLayerIndexBitOffset; }
+    void setDenoisingLayerIndex(uint index)
     {
-        flagsAndVertexIndex &= ~kStablePlaneIndexBitMask;
-        flagsAndVertexIndex |= index << kStablePlaneIndexBitOffset;
+        flagsAndVertexIndex &= ~kDenoisingLayerIndexBitMask;
+        flagsAndVertexIndex |= index << kDenoisingLayerIndexBitOffset;
     }
 };
 

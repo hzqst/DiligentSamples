@@ -77,7 +77,7 @@ try
     Require(History.Initialize(Device, Factory, nullptr), "Cannot initialize production history mapper");
     std::vector<Quad>   PreviousNodes;
     std::vector<Uint32> PreviousLookup;
-    constexpr Uint32 Resolution = 128, MipCount = 8;
+    constexpr Uint32    Resolution = 128, MipCount = 8;
     for (Uint32 Case = 0; Case < 3; ++Case)
     {
         std::vector<std::vector<float4>> Mips(MipCount);
@@ -221,11 +221,11 @@ try
         };
         std::vector<Quad> Base;
         for (Uint32 I = 0; I < 16; ++I) Base.push_back(Quad{I / 4, I % 4, 4, 0, {}});
-        Base = Split(Base, 24, 3);
+        Base = Split(Base, 20, 3);
         std::vector<Quad> Expected;
         for (const Quad& Q : Base)
         {
-            const auto Leaves = Split(std::vector<Quad>{Q}, 20, 0);
+            const auto Leaves = Split(std::vector<Quad>{Q}, 12, 0);
             Expected.insert(Expected.end(), Leaves.begin(), Leaves.end());
         }
         std::vector<Uint32> Coverage(Resolution * Resolution, 0);
@@ -303,7 +303,7 @@ try
             Require(History.Prepare(Context, ControlBuffer, Baker.GetLights(), Baker.GetLookupSRV()), "Map disabled environment");
             for (Uint32 Index : ReadMap(History.GetPastToCurrent())) Require(Index == ~0u, "Disabled environment must invalidate old node references");
         }
-        std::cout << "Environment case " << Case << ": all 5368 nodes, power/radiance and lookup coverage passed\n";
+        std::cout << "Environment case " << Case << ": all " << Actual.size() << " nodes, power/radiance and lookup coverage passed\n";
     }
     Require(Baker.CreateResources(Device, 0) && Baker.GetLightCount() == 0, "Disabled environment must have no light candidates");
     Require(Errors == 0, "Graphics validation errors");

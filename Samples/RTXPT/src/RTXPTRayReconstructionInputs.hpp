@@ -96,7 +96,7 @@ struct RTXPTRayReconstructionInputs
         Attribs.pExposureSRV              = nullptr;
         Attribs.pDiffuseHitDistanceSRV    = nullptr;
         Attribs.pSpecularHitDistanceSRV   = nullptr;
-        Attribs.pSpecularMotionVectorsSRV = nullptr;
+        Attribs.pSpecularMotionVectorsSRV = Targets.GetRRSpecMotionVectorsSRV();
         Attribs.JitterX                   = Frame.view.PixelOffset.x;
         Attribs.JitterY                   = Frame.view.PixelOffset.y;
         Attribs.MotionVectorScaleX        = 1;

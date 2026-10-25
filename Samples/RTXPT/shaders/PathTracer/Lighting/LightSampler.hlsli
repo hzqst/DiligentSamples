@@ -2,7 +2,7 @@
 #define __LIGHT_SAMPLER_HLSLI__
 
 #include "../PathTracerBridge.hlsli"
-#include "../Rendering/Materials/BxDF.hlsli"
+#include "../BSDFs/BxDF.hlsli"
 #include "../Utils/SampleGenerators.hlsli"
 #include "PolymorphicLight.hlsli"
 #include "LightSamplingMIS.hlsli"
@@ -76,14 +76,15 @@ struct NEEWeightedReservoirSampler
 uint SampleUniformLightIndex(float randomValue, out float pdf)
 {
     const LightingControlData ctrl = Bridge::getLightingControl();
-    if (ctrl.TotalLightCount == 0u)
+    const uint lightCount = ctrl.TotalLightCount - ctrl.LightClusterCount;
+    if (lightCount == 0u)
     {
         pdf = 0.0;
         return RTXPT_INVALID_LIGHT_INDEX;
     }
 
-    const uint lightIndex = min(uint(randomValue * float(ctrl.TotalLightCount)), ctrl.TotalLightCount - 1u);
-    pdf                   = 1.0 / float(ctrl.TotalLightCount);
+    const uint lightIndex = min(uint(randomValue * float(lightCount)), lightCount - 1u);
+    pdf                   = 1.0 / float(lightCount);
     return lightIndex;
 }
 
@@ -153,7 +154,7 @@ float SampleGlobalPDF(uint lightIndex)
         return 0.0;
 
     if (ctrl.ImportanceSamplingType == 0u)
-        return 1.0 / float(ctrl.TotalLightCount);
+        return lightIndex < ctrl.TotalLightCount - ctrl.LightClusterCount ? 1.0 / float(ctrl.TotalLightCount - ctrl.LightClusterCount) : 0.0;
 
     if (ctrl.SamplingProxyCount == 0u)
         return 0.0;
@@ -161,7 +162,14 @@ float SampleGlobalPDF(uint lightIndex)
     // Match RTXPT-fork LightSampler::SampleGlobalPDF: use the real per-light proxy count (no max(1u, ...)).
     // A zero-proxy light (sub-threshold weight) is never selected by NEE, so it must report pdf 0 here;
     // otherwise the BSDF-hit MIS weight is wrongly reduced and dim emitters lose energy (darkening).
-    return float(t_LightProxyCounters[lightIndex]) / float(ctrl.SamplingProxyCount);
+    float scale = 1.0;
+    if (ctrl.LightClusterCount != 0u && t_Lights[lightIndex].IsPartOfLightCluster())
+    {
+        const uint membership = t_LightsEx[lightIndex].ClusterIndexAndCount;
+        scale = 1.0 / float(PolymorphicLightInfoEx::UnpackClusterLightCount(membership));
+        lightIndex = PolymorphicLightInfoEx::UnpackClusterIndex(membership);
+    }
+    return scale * float(t_LightProxyCounters[lightIndex]) / float(ctrl.SamplingProxyCount);
 }
 
 float SampleLocalPDF(uint2 pixelPos, uint lightIndex)
@@ -173,7 +181,18 @@ float SampleLocalPDF(uint2 pixelPos, uint lightIndex)
     const uint2 tilePos = min(GetLocalTilePos(pixelPos), ctrl.LocalSamplingResolution - 1u);
     const uint   base   = LLSB_ComputeBaseAddress(tilePos, ctrl.LocalSamplingResolution);
     const uint packed = LocalLightBinarySearch(t_LocalSamplingBuffer, base, lightIndex);
-    return packed == RTXPT_INVALID_LIGHT_INDEX ? 0.0 : float(UnpackMiniListCount(packed)) / float(RTXPT_LIGHTING_LOCAL_PROXY_COUNT);
+    float count = packed == RTXPT_INVALID_LIGHT_INDEX ? 0.0 : float(UnpackMiniListCount(packed));
+    if (ctrl.LightClusterCount != 0u && lightIndex < ctrl.TotalLightCount - ctrl.LightClusterCount)
+    {
+        const uint membership = t_LightsEx[lightIndex].ClusterIndexAndCount;
+        if (membership != RTXPT_INVALID_LIGHT_INDEX)
+        {
+            const uint clusterPacked = LocalLightBinarySearch(t_LocalSamplingBuffer, base, PolymorphicLightInfoEx::UnpackClusterIndex(membership));
+            if (clusterPacked != RTXPT_INVALID_LIGHT_INDEX)
+                count += float(UnpackMiniListCount(clusterPacked)) / float(PolymorphicLightInfoEx::UnpackClusterLightCount(membership));
+        }
+    }
+    return count / float(RTXPT_LIGHTING_LOCAL_PROXY_COUNT);
 }
 
 bool UseApproximateLightMIS()
@@ -239,6 +258,19 @@ DirectLightSample GenerateDirectLightCandidate(float3 hitPos,
 
     if (lightIndex == RTXPT_INVALID_LIGHT_INDEX || selectionPdf <= 0.0)
         return sample;
+    if (ctrl.LightClusterCount != 0u)
+    {
+        const PolymorphicLightInfo selected = t_Lights[lightIndex];
+        if (DecodeLightType(selected) == kPolymorphicLightTypeCluster)
+        {
+            const uint count = ((selected.Direction1 >> 23) & 63u) + 1u;
+            lightIndex = (selected.Direction1 & 0x7fffffu) + min(uint(sampleNext1D(sg) * count), count - 1u);
+        }
+        // Local history can contain both a cluster and a direct leaf. Evaluate
+        // their combined probability, including after an LOD activation change.
+        selectionPdf = fromLocalDistribution ? SampleLocalPDF(pixelPos, lightIndex) : SampleGlobalPDF(lightIndex);
+        if (selectionPdf <= 0.0) return sample;
+    }
     sample.selectionPdf = selectionPdf;
     sample.fromLocalDistribution = fromLocalDistribution;
 
@@ -330,19 +362,26 @@ void InsertFeedbackFromNEE(uint2 pixelPos, uint lightIndex, float3 contribution,
     if (ctrl.TemporalFeedbackRequired == 0u || lightIndex == RTXPT_INVALID_LIGHT_INDEX)
         return;
 
-    const float avgContribution = max(0.0, Average(contribution));
-    if (avgContribution <= 0.0)
+    const float luminance = max(0.0, dot(contribution, float3(0.2126, 0.7152, 0.0722)));
+    if (luminance <= 0.0)
         return;
 
-    float feedbackWeight = avgContribution;
-    const float globalPdf = SampleGlobalPDF(lightIndex);
+    float feedbackWeight = luminance;
+    float globalPdf = SampleGlobalPDF(lightIndex);
+    if (ctrl.LightClusterCount != 0u && t_Lights[lightIndex].IsPartOfLightCluster())
+    {
+        const uint membership = t_LightsEx[lightIndex].ClusterIndexAndCount;
+        // The proposal PDF remains the sampled triangle's PDF after unwrapping.
+        // Only the feedback destination changes to the active cluster.
+        lightIndex = PolymorphicLightInfoEx::UnpackClusterIndex(membership);
+    }
     feedbackWeight = globalPdf > 0.0 ? feedbackWeight / pow(globalPdf, 0.65) : LFR_MAX_WEIGHT;
 
     LightFeedbackReservoir reservoir = LightFeedbackReservoir::make(pixelPos, u_FeedbackTotalWeight, u_FeedbackCandidates);
     reservoir.Add(randomValue, lightIndex, feedbackWeight, coherent);
 }
 
-float EvalDirectLightCandidateWeight(DirectLightSample sample, StandardBSDFData bsdfData, float3 wo)
+float EvalDirectLightCandidateWeight(DirectLightSample sample, SurfaceBSDFData bsdfData, float3 wo)
 {
     if (!sample.Valid())
         return 0.0;

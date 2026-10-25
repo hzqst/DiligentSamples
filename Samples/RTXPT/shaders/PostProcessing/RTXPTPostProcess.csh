@@ -4,7 +4,7 @@
 #define RTXPT_POST_PROCESS_MODE 0
 #endif
 
-#define RTXPT_POST_PROCESS_STABLE_PLANES_DEBUG_VIZ  3
+#define RTXPT_POST_PROCESS_DENOISING_LAYERS_DEBUG_VIZ  3
 #define RTXPT_POST_PROCESS_RELAX_PREPARE_INPUTS     4
 #define RTXPT_POST_PROCESS_REBLUR_PREPARE_INPUTS    5
 #define RTXPT_POST_PROCESS_RELAX_FINAL_MERGE        6
@@ -25,7 +25,8 @@
 
 #include "../PathTracer/PathTracerShared.h"
 #include "../PathTracer/PathTracerHelpers.hlsli"
-#include "../PathTracer/StablePlanes.hlsli"
+#include "../PathTracer/PathTracerCamera.hlsli"
+#include "../PathTracer/DenoisingLayers.hlsli"
 #include "RTXPTDenoiserNRD.hlsli"
 
 cbuffer g_Const
@@ -49,8 +50,8 @@ Texture2D<float>        t_DenoiserDisocclusionThresholdMix;
 
 VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4>      u_OutputColor;
 VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4>      u_StableRadiance;
-VK_IMAGE_FORMAT("r32ui")  RWTexture2DArray<uint>    u_StablePlanesHeader;
-RWStructuredBuffer<StablePlane>                     u_StablePlanesBuffer;
+VK_IMAGE_FORMAT("r32ui")  RWTexture2DArray<uint>    u_DenoisingLayersHeader;
+RWStructuredBuffer<DenoisingLayer>                     u_DenoisingLayersBuffer;
 VK_IMAGE_FORMAT("r32f")   RWTexture2D<float>        u_DenoiserViewspaceZ;
 VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4>      u_DenoiserMotionVectors;
 VK_IMAGE_FORMAT("rgb10_a2") RWTexture2D<float4>     u_DenoiserNormalRoughness;
@@ -60,123 +61,7 @@ VK_IMAGE_FORMAT("r8")      RWTexture2D<float>       u_DenoiserDisocclusionThresh
 VK_IMAGE_FORMAT("r8")      RWTexture2D<float>       u_CombinedHistoryClampRelax;
 
 #if RTXPT_POST_PROCESS_MODE == RTXPT_POST_PROCESS_DLSS_RR_PREPARE_INPUTS
-#include "../PathTracer/PathTracerCamera.hlsli"
-VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4> u_RRDiffuseAlbedo;
-VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4> u_RRSpecAlbedo;
-VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4> u_RRNormalsAndRoughness;
-VK_IMAGE_FORMAT("r32f") RWTexture2D<float> u_RRDepth;
-VK_IMAGE_FORMAT("rg16f") RWTexture2D<float2> u_RRMotionVectors;
-
-// Sanitize before arithmetic: fp16 transport may contain overflow or invalid values.
-float RRFiniteNonNegative(float value)
-{
-    return isnan(value) ? 0.0 : clamp(value, 0.0, HLF_MAX);
-}
-
-float3 RRFiniteNonNegative(float3 value)
-{
-    return float3(RRFiniteNonNegative(value.x), RRFiniteNonNegative(value.y), RRFiniteNonNegative(value.z));
-}
-
-void DLSSRRDenoiserPrepareInputs(uint2 pixelPos)
-{
-    // BUILD uses mini-constant sample offset zero. Depth is the dominant path's
-    // virtual ray distance, not hardware depth or linear view Z.
-    const CameraRay cameraRay = ComputePathTracerCameraRay(g_Frame.ptConsts, pixelPos, g_Frame.ptConsts.sampleBaseIndex);
-    const float rayDistance = t_Depth[pixelPos];
-    const float3 virtualWorldPos = cameraRay.origin + cameraRay.dir * rayDistance;
-    const float viewZ = mul(float4(virtualWorldPos, 1.0), g_Frame.view.MatWorldToView).z;
-    const float kSkyViewZ = kEnvironmentMapSceneDistance;
-    u_RRDepth[pixelPos] = isfinite(rayDistance) && rayDistance > 0.0 && isfinite(viewZ) && viewZ > 0.0 ? viewZ : kSkyViewZ;
-    const float2 motion = t_MotionVectors[pixelPos].xy;
-    u_RRMotionVectors[pixelPos] = all(isfinite(motion)) ? clamp(motion, -HLF_MAX, HLF_MAX) : 0.0.xx;
-
-    StablePlanesContext stablePlanes = StablePlanesContext::make(
-        u_StablePlanesHeader, u_StablePlanesBuffer, u_StableRadiance, g_Frame.ptConsts);
-    const uint activeCount = min(g_Frame.ptConsts.GetActiveStablePlaneCount(), cStablePlaneCount);
-    const uint dominantIndex = stablePlanes.LoadDominantIndex(pixelPos);
-
-    float3 combinedRadiance = RRFiniteNonNegative(stablePlanes.LoadStableRadiance(pixelPos));
-    const float stableMax = max(combinedRadiance.x, max(combinedRadiance.y, combinedRadiance.z));
-    const float3 stableAlbedo = sqrt(combinedRadiance / (1.0 + stableMax)); // ReinhardMax
-    const float stableAlbedoAvg = Average(stableAlbedo);
-
-    // RTXPT-fork's active default: throughput + equalization + dominant-plane bias.
-    const float kThroughputWeight = 0.2;
-    const float kEqualizationWeight = 0.01;
-    const float kDominantWeight = 0.05;
-    float3 available = 0.0.xxx;
-    float3 throughputWeights = float3(1, 0, 0);
-    for (uint planeIndex = 0; planeIndex < activeCount; ++planeIndex)
-    {
-        if (stablePlanes.GetBranchID(pixelPos, planeIndex) == cStablePlaneInvalidBranchID)
-            continue;
-        available[planeIndex] = 1.0;
-        if (planeIndex != 0)
-        {
-            StablePlane sp = stablePlanes.LoadStablePlane(pixelPos, planeIndex);
-            float3 throughput, motionVectors;
-            UnpackTwoFp32ToFp16(sp.PackedThpAndMVs, throughput, motionVectors);
-            const float weight = saturate(Average(RRFiniteNonNegative(throughput)));
-            throughputWeights[planeIndex] = weight;
-            throughputWeights[0] = saturate(throughputWeights[0] - weight);
-        }
-    }
-    float3 spWeights = throughputWeights * kThroughputWeight + kEqualizationWeight;
-    if (dominantIndex < activeCount)
-        spWeights[dominantIndex] += kDominantWeight;
-    spWeights *= available;
-    const float weightSum = spWeights.x + spWeights.y + spWeights.z;
-    spWeights /= max(weightSum, 1e-7);
-
-    float3 guideNormals = float3(0, 0, 1e-6);
-    float3 diffAlbedo = 0.0.xxx;
-    float3 specAlbedo = 0.0.xxx;
-    float roughness = 0.0;
-    for (uint planeIndex = 0; planeIndex < activeCount; ++planeIndex)
-    {
-        if (available[planeIndex] == 0.0)
-            continue;
-        StablePlane sp = stablePlanes.LoadStablePlane(pixelPos, planeIndex);
-        if (!isfinite(sp.SceneLength))
-            continue; // Sky/emission already belongs to StableRadiance.
-        combinedRadiance += RRFiniteNonNegative(sp.GetNoisyRadiance());
-        const float weight = spWeights[planeIndex];
-        if (weight > 1e-6)
-        {
-            float3 diffBSDFEstimate, specBSDFEstimate;
-            UnpackTwoFp32ToFp16(sp.DenoiserPackedBSDFEstimate, diffBSDFEstimate, specBSDFEstimate);
-            guideNormals += weight * sp.GetNormal();
-            roughness += weight * saturate(RRFiniteNonNegative(sp.GetRoughness()));
-            diffAlbedo += weight * saturate(RRFiniteNonNegative(diffBSDFEstimate));
-            specAlbedo += weight * saturate(RRFiniteNonNegative(specBSDFEstimate));
-        }
-    }
-
-    const float3 stableAlbedoGreyMix = lerp(stableAlbedo, 0.5.xxx, 0.2);
-    diffAlbedo = lerp(diffAlbedo, stableAlbedoGreyMix,
-        stableAlbedoAvg / (Average(diffAlbedo) + sqrt(stableAlbedoAvg) + 1e-7));
-    const float normalLength = length(guideNormals);
-    guideNormals = isfinite(normalLength) && normalLength >= 1e-5 ?
-        guideNormals / normalLength : float3(0, 0, 1);
-    const float kMinAlbedo = 0.05;
-    if (Average(diffAlbedo + specAlbedo) < kMinAlbedo)
-        diffAlbedo += kMinAlbedo;
-
-    // Color is scene-linear, not pre-exposed. CPU supplies the clamp threshold;
-    // PreExposure and ExposureScale at the RR consumer must both be 1.
-    const float maxRadiance = max(combinedRadiance.x, max(combinedRadiance.y, combinedRadiance.z));
-    const float brightnessClamp = g_Frame.ptConsts.DLSSRRBrightnessClampK;
-    const float clampMax = isfinite(brightnessClamp) && brightnessClamp > 0.0 ?
-        min(brightnessClamp, HLF_MAX) : HLF_MAX;
-    if (maxRadiance > clampMax)
-        combinedRadiance *= clampMax / maxRadiance;
-
-    u_OutputColor[pixelPos] = float4(combinedRadiance, 1);
-    u_RRDiffuseAlbedo[pixelPos] = float4(saturate(diffAlbedo), 1);
-    u_RRSpecAlbedo[pixelPos] = float4(saturate(specAlbedo), 1);
-    u_RRNormalsAndRoughness[pixelPos] = float4(guideNormals, saturate(roughness));
-}
+#include "../PathTracer/DenoisingGuidesRR.hlsli"
 #endif
 
 float RTXPTLuminance(float3 Color)
@@ -193,37 +78,37 @@ void RTXPTClampRadiance(inout float3 Radiance, float RangeK)
         Radiance *= ClampMax / Lum;
 }
 
-float RTXPTComputeNeighbourDisocclusionRelaxation(StablePlanesContext StablePlanes,
+float RTXPTComputeNeighbourDisocclusionRelaxation(DenoisingLayersContext DenoisingLayers,
                                                   int2 PixelPos,
                                                   int2 ImageSize,
-                                                  uint StablePlaneIndex,
+                                                  uint DenoisingLayerIndex,
                                                   float3 RayDirC,
                                                   int2 Offset)
 {
     const float kEdge     = 0.02;
     uint2       PixelPosN = clamp(PixelPos + Offset, int2(0, 0), ImageSize - 1.xx);
-    uint        BranchID  = StablePlanes.GetBranchID(PixelPosN, StablePlaneIndex);
-    if (BranchID == cStablePlaneInvalidBranchID)
+    uint        BranchID  = DenoisingLayers.GetBranchID(PixelPosN, DenoisingLayerIndex);
+    if (BranchID == cDenoisingLayerInvalidBranchID)
         return kEdge;
 
-    StablePlane SP      = StablePlanes.LoadStablePlane(PixelPosN, StablePlaneIndex);
+    DenoisingLayer SP      = DenoisingLayers.LoadDenoisingLayer(PixelPosN, DenoisingLayerIndex);
     float3      RayDirN = SP.GetNormal();
     return 1.0 - dot(RayDirC, RayDirN);
 }
 
-float RTXPTComputeDisocclusionRelaxation(StablePlanesContext StablePlanes,
+float RTXPTComputeDisocclusionRelaxation(DenoisingLayersContext DenoisingLayers,
                                          uint2 PixelPos,
-                                         uint StablePlaneIndex,
-                                         StablePlane SP)
+                                         uint DenoisingLayerIndex,
+                                         DenoisingLayer SP)
 {
     const int2   ImageSize = int2(g_Frame.ptConsts.imageWidth, g_Frame.ptConsts.imageHeight);
     const float3 RayDirC   = SP.GetNormal();
     float        Relax     = 0.0;
 
-    Relax += RTXPTComputeNeighbourDisocclusionRelaxation(StablePlanes, PixelPos, ImageSize, StablePlaneIndex, RayDirC, int2(-1, 0));
-    Relax += RTXPTComputeNeighbourDisocclusionRelaxation(StablePlanes, PixelPos, ImageSize, StablePlaneIndex, RayDirC, int2(1, 0));
-    Relax += RTXPTComputeNeighbourDisocclusionRelaxation(StablePlanes, PixelPos, ImageSize, StablePlaneIndex, RayDirC, int2(0, -1));
-    Relax += RTXPTComputeNeighbourDisocclusionRelaxation(StablePlanes, PixelPos, ImageSize, StablePlaneIndex, RayDirC, int2(0, 1));
+    Relax += RTXPTComputeNeighbourDisocclusionRelaxation(DenoisingLayers, PixelPos, ImageSize, DenoisingLayerIndex, RayDirC, int2(-1, 0));
+    Relax += RTXPTComputeNeighbourDisocclusionRelaxation(DenoisingLayers, PixelPos, ImageSize, DenoisingLayerIndex, RayDirC, int2(1, 0));
+    Relax += RTXPTComputeNeighbourDisocclusionRelaxation(DenoisingLayers, PixelPos, ImageSize, DenoisingLayerIndex, RayDirC, int2(0, -1));
+    Relax += RTXPTComputeNeighbourDisocclusionRelaxation(DenoisingLayers, PixelPos, ImageSize, DenoisingLayerIndex, RayDirC, int2(0, 1));
     return saturate((Relax - 0.00002) * 25.0);
 }
 
@@ -239,26 +124,26 @@ void main(uint3 DispatchThreadID : SV_DispatchThreadID)
 #endif
 
 #if RTXPT_POST_PROCESS_MODE == RTXPT_POST_PROCESS_RELAX_PREPARE_INPUTS || RTXPT_POST_PROCESS_MODE == RTXPT_POST_PROCESS_REBLUR_PREPARE_INPUTS
-    const uint StablePlaneIndex       = g_Mini.params.x;
+    const uint DenoisingLayerIndex       = g_Mini.params.x;
     const bool InitWithStableRadiance = g_Mini.params.y != 0;
-    const uint ActiveStablePlaneCount = min(g_Frame.ptConsts.GetActiveStablePlaneCount(), cStablePlaneCount);
-    if (StablePlaneIndex >= ActiveStablePlaneCount)
+    const uint ActiveDenoisingLayerCount = min(g_Frame.ptConsts.GetActiveDenoisingLayerCount(), cDenoisingLayerCount);
+    if (DenoisingLayerIndex >= ActiveDenoisingLayerCount)
         return;
 
-    StablePlanesContext StablePlanes = StablePlanesContext::make(
-        u_StablePlanesHeader, u_StablePlanesBuffer, u_StableRadiance, g_Frame.ptConsts);
+    DenoisingLayersContext DenoisingLayers = DenoisingLayersContext::make(
+        u_DenoisingLayersHeader, u_DenoisingLayersBuffer, u_StableRadiance, g_Frame.ptConsts);
 
     if (InitWithStableRadiance)
     {
-        u_OutputColor[PixelPos]               = float4(StablePlanes.LoadStableRadiance(PixelPos), 1.0);
+        u_OutputColor[PixelPos]               = float4(DenoisingLayers.LoadStableRadiance(PixelPos), 1.0);
         u_CombinedHistoryClampRelax[PixelPos] = 0.0;
     }
 
     bool HasSurface = false;
-    uint BranchID   = StablePlanes.GetBranchID(PixelPos, StablePlaneIndex);
-    if (BranchID != cStablePlaneInvalidBranchID)
+    uint BranchID   = DenoisingLayers.GetBranchID(PixelPos, DenoisingLayerIndex);
+    if (BranchID != cDenoisingLayerInvalidBranchID)
     {
-        StablePlane SP         = StablePlanes.LoadStablePlane(PixelPos, StablePlaneIndex);
+        DenoisingLayer SP         = DenoisingLayers.LoadDenoisingLayer(PixelPos, DenoisingLayerIndex);
         const bool  HitSurface = isfinite(SP.SceneLength);
         if (HitSurface)
         {
@@ -267,8 +152,8 @@ void main(uint3 DispatchThreadID : SV_DispatchThreadID)
             float3 DiffBSDFEstimate;
             float3 SpecBSDFEstimate;
             UnpackTwoFp32ToFp16(SP.DenoiserPackedBSDFEstimate, DiffBSDFEstimate, SpecBSDFEstimate);
-            DiffBSDFEstimate = max(DiffBSDFEstimate, 1e-4.xxx);
-            SpecBSDFEstimate = max(SpecBSDFEstimate, 1e-4.xxx);
+            DiffBSDFEstimate = max(DiffBSDFEstimate, 0.04.xxx);
+            SpecBSDFEstimate = max(SpecBSDFEstimate, 0.04.xxx);
 
             float3 Throughput;
             float3 MotionVectors;
@@ -278,11 +163,12 @@ void main(uint3 DispatchThreadID : SV_DispatchThreadID)
             const float3 VirtualWorldPos  = PrimaryCameraRay.origin + PrimaryCameraRay.dir * SP.SceneLength;
             const float4 ViewPos         = mul(float4(VirtualWorldPos, 1.0), g_Frame.view.MatWorldToView);
             const float  VirtualViewZ    = ViewPos.z;
+            MotionVectors = ComputePathTracerMotionVector(VirtualWorldPos, VirtualWorldPos + MotionVectors, g_Frame.view, g_Frame.previousView);
 
             float FinalRoughness     = max(0.2, SP.GetRoughness());
             float DisocclusionRelax  = 0.0;
-            if (StablePlanesVertexIndexFromBranchID(BranchID) > 1)
-                DisocclusionRelax = RTXPTComputeDisocclusionRelaxation(StablePlanes, PixelPos, StablePlaneIndex, SP);
+            if (DenoisingLayersVertexIndexFromBranchID(BranchID) > 1)
+                DisocclusionRelax = RTXPTComputeDisocclusionRelaxation(DenoisingLayers, PixelPos, DenoisingLayerIndex, SP);
 
             u_DenoiserViewspaceZ[PixelPos]               = VirtualViewZ;
             u_DenoiserMotionVectors[PixelPos]            = float4(MotionVectors, 0.0);
@@ -294,21 +180,21 @@ void main(uint3 DispatchThreadID : SV_DispatchThreadID)
             float3 DenoiserDiffRadiance = SP.GetNoisyDiffRadiance() / DiffBSDFEstimate;
             float3 DenoiserSpecRadiance = SP.GetNoisySpecRadiance() / SpecBSDFEstimate;
 
-            if (StablePlaneIndex == 0 &&
-                g_Frame.ptConsts.stablePlanesSuppressPrimaryIndirectSpecularK != 0.0 &&
-                g_Frame.ptConsts.GetActiveStablePlaneCount() > 1)
+            if (DenoisingLayerIndex == 0 &&
+                g_Frame.ptConsts.denoisingLayersSuppressPrimaryIndirectSpecularK != 0.0 &&
+                g_Frame.ptConsts.GetActiveDenoisingLayerCount() > 1)
             {
                 bool ShouldSuppress = true;
-                for (uint Plane = 1; Plane < g_Frame.ptConsts.GetActiveStablePlaneCount(); ++Plane)
-                    ShouldSuppress = ShouldSuppress && StablePlanes.GetBranchID(PixelPos, Plane) != cStablePlaneInvalidBranchID;
-                DenoiserSpecRadiance *= ShouldSuppress ? saturate(1.0 - g_Frame.ptConsts.stablePlanesSuppressPrimaryIndirectSpecularK) : 1.0;
+                for (uint Plane = 1; Plane < g_Frame.ptConsts.GetActiveDenoisingLayerCount(); ++Plane)
+                    ShouldSuppress = ShouldSuppress && DenoisingLayers.GetBranchID(PixelPos, Plane) != cDenoisingLayerInvalidBranchID;
+                DenoiserSpecRadiance *= ShouldSuppress ? saturate(1.0 - g_Frame.ptConsts.denoisingLayersSuppressPrimaryIndirectSpecularK) : 1.0;
             }
 
             RTXPTClampRadiance(DenoiserDiffRadiance, g_Frame.ptConsts.denoiserRadianceClampK * 16.0);
             RTXPTClampRadiance(DenoiserSpecRadiance, g_Frame.ptConsts.denoiserRadianceClampK * 16.0);
 
             float SpecHitT = 0.0;
-            if (StablePlanes.LoadDominantIndex(PixelPos) == StablePlaneIndex)
+            if (DenoisingLayers.LoadDominantIndex(PixelPos) == DenoisingLayerIndex)
                 SpecHitT = t_SpecularHitT[PixelPos];
 
             u_DenoiserNormalRoughness[PixelPos] = RTXPTDenoiserPackNormalAndRoughness(SP.GetNormal(), FinalRoughness);
@@ -330,15 +216,15 @@ void main(uint3 DispatchThreadID : SV_DispatchThreadID)
 #endif
 
 #if RTXPT_POST_PROCESS_MODE == RTXPT_POST_PROCESS_RELAX_FINAL_MERGE || RTXPT_POST_PROCESS_MODE == RTXPT_POST_PROCESS_REBLUR_FINAL_MERGE
-    const uint StablePlaneIndex = g_Mini.params.x;
+    const uint DenoisingLayerIndex = g_Mini.params.x;
     const bool HasValidation    = g_Mini.params.y != 0;
-    const uint ActiveStablePlaneCount = min(g_Frame.ptConsts.GetActiveStablePlaneCount(), cStablePlaneCount);
-    if (StablePlaneIndex >= ActiveStablePlaneCount)
+    const uint ActiveDenoisingLayerCount = min(g_Frame.ptConsts.GetActiveDenoisingLayerCount(), cDenoisingLayerCount);
+    if (DenoisingLayerIndex >= ActiveDenoisingLayerCount)
         return;
 
     const bool HasSurface = t_DenoiserViewspaceZ[PixelPos] != RTXPT_VIEWZ_SKY_MARKER;
     const uint SPAddress  = GenericTSPixelToAddress(PixelPos,
-                                                    StablePlaneIndex,
+                                                    DenoisingLayerIndex,
                                                     g_Frame.ptConsts.genericTSLineStride,
                                                     g_Frame.ptConsts.genericTSPlaneStride);
 
@@ -349,7 +235,9 @@ void main(uint3 DispatchThreadID : SV_DispatchThreadID)
     {
         float3 DiffBSDFEstimate;
         float3 SpecBSDFEstimate;
-        UnpackTwoFp32ToFp16(u_StablePlanesBuffer[SPAddress].DenoiserPackedBSDFEstimate, DiffBSDFEstimate, SpecBSDFEstimate);
+        UnpackTwoFp32ToFp16(u_DenoisingLayersBuffer[SPAddress].DenoiserPackedBSDFEstimate, DiffBSDFEstimate, SpecBSDFEstimate);
+        DiffBSDFEstimate = max(DiffBSDFEstimate, 0.04.xxx);
+        SpecBSDFEstimate = max(SpecBSDFEstimate, 0.04.xxx);
 
         DiffRadiance = t_DenoiserOutDiffRadianceHitDist[PixelPos];
         SpecRadiance = t_DenoiserOutSpecRadianceHitDist[PixelPos];
@@ -367,25 +255,25 @@ void main(uint3 DispatchThreadID : SV_DispatchThreadID)
 #endif
 
 #if RTXPT_POST_PROCESS_MODE == RTXPT_POST_PROCESS_NO_DENOISER_FINAL_MERGE
-    StablePlanesContext StablePlanes = StablePlanesContext::make(
-        u_StablePlanesHeader, u_StablePlanesBuffer, u_StableRadiance, g_Frame.ptConsts);
-    u_OutputColor[PixelPos] = float4(StablePlanes.GetAllRadiance(PixelPos), 1.0);
+    DenoisingLayersContext DenoisingLayers = DenoisingLayersContext::make(
+        u_DenoisingLayersHeader, u_DenoisingLayersBuffer, u_StableRadiance, g_Frame.ptConsts);
+    u_OutputColor[PixelPos] = float4(DenoisingLayers.GetAllRadiance(PixelPos), 1.0);
 #endif
 
-#if RTXPT_POST_PROCESS_MODE == RTXPT_POST_PROCESS_STABLE_PLANES_DEBUG_VIZ
+#if RTXPT_POST_PROCESS_MODE == RTXPT_POST_PROCESS_DENOISING_LAYERS_DEBUG_VIZ
     const int   DebugPlaneIndex = int(g_Mini.params.x) - 1;
-    const uint3 DebugCoord      = StablePlaneDebugVizFourWaySplitCoord(DebugPlaneIndex, PixelPos, uint2(g_Frame.ptConsts.imageWidth, g_Frame.ptConsts.imageHeight));
+    const uint3 DebugCoord      = DenoisingLayerDebugVizFourWaySplitCoord(DebugPlaneIndex, PixelPos, uint2(g_Frame.ptConsts.imageWidth, g_Frame.ptConsts.imageHeight));
 
-    StablePlanesContext StablePlanes = StablePlanesContext::make(
-        u_StablePlanesHeader, u_StablePlanesBuffer, u_StableRadiance, g_Frame.ptConsts);
+    DenoisingLayersContext DenoisingLayers = DenoisingLayersContext::make(
+        u_DenoisingLayersHeader, u_DenoisingLayersBuffer, u_StableRadiance, g_Frame.ptConsts);
 
     float3 Color = 0.0.xxx;
-    if (DebugCoord.z < g_Frame.ptConsts.GetActiveStablePlaneCount())
+    if (DebugCoord.z < g_Frame.ptConsts.GetActiveDenoisingLayerCount())
     {
-        const uint BranchID = StablePlanes.GetBranchID(DebugCoord.xy, DebugCoord.z);
-        Color = BranchID == cStablePlaneInvalidBranchID ?
+        const uint BranchID = DenoisingLayers.GetBranchID(DebugCoord.xy, DebugCoord.z);
+        Color = BranchID == cDenoisingLayerInvalidBranchID ?
             float3(((PixelPos.x + PixelPos.y) & 1u) != 0u, 0.0, 0.0) :
-            StablePlaneDebugVizColor(DebugCoord.z);
+            DenoisingLayerDebugVizColor(DebugCoord.z);
     }
 
     u_OutputColor[PixelPos] = float4(Color, 1.0);

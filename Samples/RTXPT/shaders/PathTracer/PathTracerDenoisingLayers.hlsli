@@ -1,8 +1,8 @@
-#ifndef __PATH_TRACER_STABLE_PLANES_HLSLI__
-#define __PATH_TRACER_STABLE_PLANES_HLSLI__
+#ifndef __PATH_TRACER_DENOISING_LAYERS_HLSLI__
+#define __PATH_TRACER_DENOISING_LAYERS_HLSLI__
 
 #include "PathTracerTypes.hlsli"
-#include "StablePlanes.hlsli"
+#include "DenoisingLayers.hlsli"
 
 static const float kSpecularRoughnessThreshold = 0.25;
 
@@ -13,7 +13,7 @@ namespace PathTracer
         path.SetSceneLength(min(path.GetSceneLength() + rayTCurrent, kMaxRayTravel));
     }
 
-#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_STABLE_PLANES || defined(__INTELLISENSE__)
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS || defined(__INTELLISENSE__)
     inline PathState SplitDeltaPath(const PathState oldPath,
                                     const float3 rayDir,
                                     const SurfaceData surfaceData,
@@ -22,12 +22,12 @@ namespace PathTracer
                                     const bool verifyDominantFlag,
                                     const WorkingContext workingContext)
     {
-        const StablePlaneShadingData shadingData = surfaceData.shadingData;
+        const ShadingData shadingData = surfaceData.shadingData;
         PathState newPath                       = oldPath;
         newPath.SetDir(lobe.dir);
         newPath.SetThp(newPath.GetThp() * lobe.thp);
         newPath.SetOrigin(shadingData.computeNewRayOrigin(lobe.transmission == 0));
-        newPath.stableBranchID = StablePlanesAdvanceBranchID(oldPath.stableBranchID, deltaLobeIndex);
+        newPath.stableBranchID = DenoisingLayersAdvanceBranchID(oldPath.stableBranchID, deltaLobeIndex);
         newPath.setScatterDelta();
 
         if (lobe.transmission == 0)
@@ -64,11 +64,11 @@ namespace PathTracer
             newPath.SetImageXform(mul(newPath.GetImageXform(), localT));
         }
 
-        if (verifyDominantFlag && newPath.hasFlag(PathFlags::stablePlaneOnDominantBranch))
+        if (verifyDominantFlag && newPath.hasFlag(PathFlags::denoisingLayerOnDominantBranch))
         {
             int psdDominantDeltaLobeIndex = int(shadingData.mtl.getPSDDominantDeltaLobeP1()) - 1;
             if (deltaLobeIndex != psdDominantDeltaLobeIndex)
-                newPath.setFlag(PathFlags::stablePlaneOnDominantBranch, false);
+                newPath.setFlag(PathFlags::denoisingLayerOnDominantBranch, false);
         }
 
         return newPath;
@@ -76,7 +76,7 @@ namespace PathTracer
 #endif
 
 #if PATH_TRACER_MODE != PATH_TRACER_MODE_REFERENCE
-    inline void StablePlanesHandleHit(inout PathState path,
+    inline void DenoisingLayersHandleHit(inout PathState path,
                                       const float3 rayOrigin,
                                       const float3 rayDir,
                                       const float rayTCurrent,
@@ -86,9 +86,9 @@ namespace PathTracer
                                       float3 surfaceEmission,
                                       bool pathStopping)
     {
-#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_STABLE_PLANES || defined(__INTELLISENSE__)
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS || defined(__INTELLISENSE__)
         const uint  vertexIndex    = path.getVertexIndex();
-        const uint  currentSPIndex = path.getStablePlaneIndex();
+        const uint  currentSPIndex = path.getDenoisingLayerIndex();
         const uint2 pixelPos       = path.GetPixelPos();
 
         if (surfaceData.shadingData.mtl.isPSDBlockMotionVectorsAtSurface() &&
@@ -98,11 +98,11 @@ namespace PathTracer
         }
 
         if (vertexIndex == 1)
-            workingContext.StablePlanes.StoreFirstHitRayLengthAndClearDominantToZero(pixelPos, path.GetSceneLength());
+            workingContext.DenoisingLayers.StoreFirstHitRayLengthAndClearDominantToZero(pixelPos, path.GetSceneLength());
 
         bool  setAsBase          = true;
         float passthroughOverride = 0.0;
-        if ((vertexIndex < workingContext.PtConsts.maxStablePlaneVertexDepth) && !pathStopping)
+        if ((vertexIndex < workingContext.PtConsts.maxDenoisingLayerVertexDepth) && !pathStopping)
         {
             DeltaLobe deltaLobes[cMaxDeltaLobes];
             uint      deltaLobeCount;
@@ -146,8 +146,8 @@ namespace PathTracer
                 canReuseExisting &= !hasNonDeltaLobes;
 
                 int availablePlaneCount = 0;
-                int availablePlanes[cStablePlaneCount];
-                workingContext.StablePlanes.GetAvailableEmptyPlanes(pixelPos, availablePlaneCount, availablePlanes);
+                int availablePlanes[cDenoisingLayerCount];
+                workingContext.DenoisingLayers.GetAvailableEmptyPlanes(pixelPos, availablePlaneCount, availablePlanes);
 
                 canReuseExisting &= (currentSPIndex == 0) ||
                     (surfaceData.shadingData.mtl.getPSDDominantDeltaLobeP1() > 0);
@@ -165,9 +165,9 @@ namespace PathTracer
                     const int lobeToExplore = nonZeroDeltaLobes[i];
                     PathState splitPath = PathTracer::SplitDeltaPath(
                         path, rayDir, surfaceData, deltaLobes[lobeToExplore], lobeToExplore, true, workingContext);
-                    splitPath.setStablePlaneIndex(availablePlanes[i]);
+                    splitPath.setDenoisingLayerIndex(availablePlanes[i]);
                     PathPayload splitPayload = PathPayload::pack(splitPath);
-                    workingContext.StablePlanes.StoreExplorationStart(
+                    workingContext.DenoisingLayers.StoreExplorationStart(
                         pixelPos, availablePlanes[i], splitPayload.packed);
                 }
 
@@ -192,7 +192,7 @@ namespace PathTracer
             float3 virtualWorldMotion = mul(imageXform, worldMotion);
             float3 motionVectors      = Bridge::computeMotionVector(virtualWorldPos, virtualWorldPos + virtualWorldMotion);
 
-            float roughness    = saturate(surfaceData.bsdf.data.Roughness());
+            float roughness    = saturate(surfaceData.bsdf.standardData.Roughness());
             float3 worldNormal = normalize(mul((float3x3)imageXform, surfaceData.shadingData.N));
 
             float3 diffBSDFEstimate;
@@ -203,8 +203,8 @@ namespace PathTracer
             if (blockedAtSurface)
                 roughness *= kSpecularRoughnessThreshold * 0.95;
 
-            bool isDominant = path.hasFlag(PathFlags::stablePlaneOnDominantBranch);
-            workingContext.StablePlanes.StoreStablePlane(pixelPos,
+            bool isDominant = path.hasFlag(PathFlags::denoisingLayerOnDominantBranch);
+            workingContext.DenoisingLayers.StoreDenoisingLayer(pixelPos,
                                                          currentSPIndex,
                                                          vertexIndex,
                                                          rayOrigin,
@@ -213,7 +213,7 @@ namespace PathTracer
                                                          path.GetSceneLength(),
                                                          rayTCurrent,
                                                          path.GetThp(),
-                                                         motionVectors,
+                                                         virtualWorldMotion,
                                                          roughness,
                                                          worldNormal,
                                                          diffBSDFEstimate,
@@ -230,59 +230,59 @@ namespace PathTracer
 #endif
     }
 
-#if PATH_TRACER_MODE == PATH_TRACER_MODE_FILL_STABLE_PLANES || defined(__INTELLISENSE__)
-    inline void StablePlanesOnScatter(inout PathState path, const BSDFSample bs, const WorkingContext workingContext)
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_FILL_DENOISING_LAYERS || defined(__INTELLISENSE__)
+    inline void DenoisingLayersOnScatter(inout PathState path, const BSDFSample bs, const WorkingContext workingContext)
     {
         const uint2 pixelPos = path.GetPixelPos();
-        const bool wasOnStablePlane = path.hasFlag(PathFlags::stablePlaneOnPlane);
-        if (wasOnStablePlane)
-            path.setFlag(PathFlags::stablePlaneBaseScatterDiff,
+        const bool wasOnDenoisingLayer = path.hasFlag(PathFlags::denoisingLayerOnPlane);
+        if (wasOnDenoisingLayer)
+            path.setFlag(PathFlags::denoisingLayerBaseScatterDiff,
                          (bs.lobe & (kBSDFLobeDiffuseReflection | kBSDFLobeDiffuseTransmission)) != 0);
-        path.setFlag(PathFlags::stablePlaneOnPlane, false);
+        path.setFlag(PathFlags::denoisingLayerOnPlane, false);
 
         const uint nextVertexIndex = path.getVertexIndex() + 1;
-        if (path.hasFlag(PathFlags::stablePlaneOnBranch) && nextVertexIndex <= cStablePlaneMaxVertexIndex)
+        if (path.hasFlag(PathFlags::denoisingLayerOnBranch) && nextVertexIndex <= cDenoisingLayerMaxVertexIndex)
         {
-            path.stableBranchID = StablePlanesAdvanceBranchID(path.stableBranchID, bs.getDeltaLobeIndex());
+            path.stableBranchID = DenoisingLayersAdvanceBranchID(path.stableBranchID, bs.getDeltaLobeIndex());
             bool onStablePath   = false;
-            for (uint spi = 0; spi < cStablePlaneCount; spi++)
+            for (uint spi = 0; spi < cDenoisingLayerCount; spi++)
             {
-                const uint planeBranchID = workingContext.StablePlanes.GetBranchID(pixelPos, spi);
-                if (planeBranchID == cStablePlaneInvalidBranchID)
+                const uint planeBranchID = workingContext.DenoisingLayers.GetBranchID(pixelPos, spi);
+                if (planeBranchID == cDenoisingLayerInvalidBranchID)
                     continue;
 
-                if (StablePlaneIsOnPlane(planeBranchID, path.stableBranchID))
+                if (DenoisingLayerIsOnPlane(planeBranchID, path.stableBranchID))
                 {
-                    workingContext.StablePlanes.CommitDenoiserRadiance(path);
-                    path.setStablePlaneIndex(spi);
-                    path.setFlag(PathFlags::stablePlaneOnDominantBranch,
-                                 spi == workingContext.StablePlanes.LoadDominantIndex(pixelPos));
-                    path.setFlag(PathFlags::stablePlaneOnPlane, true);
-                    path.setCounter(PackedCounters::BouncesFromStablePlane, 0);
+                    workingContext.DenoisingLayers.CommitDenoiserRadiance(path);
+                    path.setDenoisingLayerIndex(spi);
+                    path.setFlag(PathFlags::denoisingLayerOnDominantBranch,
+                                 spi == workingContext.DenoisingLayers.LoadDominantIndex(pixelPos));
+                    path.setFlag(PathFlags::denoisingLayerOnPlane, true);
+                    path.setCounter(PackedCounters::BouncesFromDenoisingLayer, 0);
                     onStablePath = true;
                     break;
                 }
 
-                onStablePath |= StablePlaneIsOnStablePath(planeBranchID,
-                                                          StablePlanesVertexIndexFromBranchID(planeBranchID),
+                onStablePath |= DenoisingLayerIsOnStablePath(planeBranchID,
+                                                          DenoisingLayersVertexIndexFromBranchID(planeBranchID),
                                                           path.stableBranchID,
                                                           nextVertexIndex);
             }
-            path.setFlag(PathFlags::stablePlaneOnBranch, onStablePath);
+            path.setFlag(PathFlags::denoisingLayerOnBranch, onStablePath);
         }
         else
         {
-            path.stableBranchID = cStablePlaneInvalidBranchID;
-            path.setFlag(PathFlags::stablePlaneOnBranch, false);
-            path.incrementCounter(PackedCounters::BouncesFromStablePlane);
+            path.stableBranchID = cDenoisingLayerInvalidBranchID;
+            path.setFlag(PathFlags::denoisingLayerOnBranch, false);
+            path.incrementCounter(PackedCounters::BouncesFromDenoisingLayer);
         }
 
-        if (!path.hasFlag(PathFlags::stablePlaneOnPlane))
-            path.incrementCounter(PackedCounters::BouncesFromStablePlane);
+        if (!path.hasFlag(PathFlags::denoisingLayerOnPlane))
+            path.incrementCounter(PackedCounters::BouncesFromDenoisingLayer);
     }
 #endif
 
-    inline void StablePlanesHandleMiss(inout PathState path,
+    inline void DenoisingLayersHandleMiss(inout PathState path,
                                        float3 emission,
                                        const float3 rayOrigin,
                                        const float3 rayDir,
@@ -290,10 +290,10 @@ namespace PathTracer
                                        const WorkingContext workingContext)
     {
         const uint2 pixelPos = path.GetPixelPos();
-#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_STABLE_PLANES || defined(__INTELLISENSE__)
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS || defined(__INTELLISENSE__)
         const uint vertexIndex = path.getVertexIndex();
         if (vertexIndex == 1)
-            workingContext.StablePlanes.StoreFirstHitRayLengthAndClearDominantToZero(pixelPos, kMaxRayTravel);
+            workingContext.DenoisingLayers.StoreFirstHitRayLengthAndClearDominantToZero(pixelPos, kMaxRayTravel);
 
         const Ray cameraRay = Bridge::computeCameraRay(pixelPos);
         const bool blockedAtSurface = path.GetMotionVectorSceneLength() != 0;
@@ -303,12 +303,12 @@ namespace PathTracer
         const float3 virtualWorldPos = cameraRay.origin + cameraRay.dir * sceneLengthForMVs;
         float3 motionVectors = Bridge::computeMotionVector(virtualWorldPos, virtualWorldPos);
 
-        bool isDominant = path.hasFlag(PathFlags::stablePlaneOnDominantBranch);
+        bool isDominant = path.hasFlag(PathFlags::denoisingLayerOnDominantBranch);
         float3 skyAlbedo = sqrt(ReinhardMax(emission));
         const float missSceneLength = blockedAtSurface ? sceneLengthForMVs : asfloat(0x7f800000);
 
-        workingContext.StablePlanes.StoreStablePlane(pixelPos,
-                                                     path.getStablePlaneIndex(),
+        workingContext.DenoisingLayers.StoreDenoisingLayer(pixelPos,
+                                                     path.getDenoisingLayerIndex(),
                                                      vertexIndex,
                                                      rayOrigin,
                                                      rayDir,
@@ -316,7 +316,7 @@ namespace PathTracer
                                                      missSceneLength,
                                                      0.0,
                                                      path.GetThp(),
-                                                     motionVectors,
+                                                     0.0.xxx,
                                                      blockedAtSurface ? 0.1 : 1.0,
                                                      -rayDir,
                                                      skyAlbedo,
@@ -332,4 +332,4 @@ namespace PathTracer
 #endif
 }
 
-#endif // __PATH_TRACER_STABLE_PLANES_HLSLI__
+#endif // __PATH_TRACER_DENOISING_LAYERS_HLSLI__

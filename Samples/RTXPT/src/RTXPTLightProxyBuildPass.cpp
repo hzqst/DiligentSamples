@@ -49,8 +49,10 @@ struct LightProxyBuildConstantsCPU
     Uint32 HasFrustumPlanes       = 0;
     Uint32 Padding                = 0;
     float4 FrustumPlanes[5]       = {};
+    float3 CameraPosition         = {};
+    Uint32 HasCameraPosition      = 0;
 };
-static_assert(sizeof(LightProxyBuildConstantsCPU) == 112, "LightProxyBuildConstants must match LightProxyBuild.hlsl");
+static_assert(sizeof(LightProxyBuildConstantsCPU) == 128, "LightProxyBuildConstants must match LightProxyBuild.hlsl");
 
 constexpr Uint32 kProxyBuildThreads = 256u;
 
@@ -72,11 +74,13 @@ void RTXPTLightProxyBuildPass::Reset()
 {
     m_ResetPSO.Release();
     m_WeightsPSO.Release();
+    m_ClustersPSO.Release();
     m_CountsPSO.Release();
     m_ScatterPSO.Release();
     m_FinalizePSO.Release();
     m_ResetSRB.Release();
     m_WeightsSRB.Release();
+    m_ClustersSRB.Release();
     m_CountsSRB.Release();
     m_ScatterSRB.Release();
     m_FinalizeSRB.Release();
@@ -160,12 +164,13 @@ bool RTXPTLightProxyBuildPass::Initialize(IRenderDevice* pDevice, IEngineFactory
         return pCS;
     };
 
-    RefCntAutoPtr<IShader> pResetCS   = CreateCS("ResetProxyBuildCS", "RTXPT light proxy reset");
-    RefCntAutoPtr<IShader> pWeightsCS = CreateCS("ComputeWeightsCS", "RTXPT light proxy weights");
-    RefCntAutoPtr<IShader> pCountsCS  = CreateCS("ComputeProxyCountsCS", "RTXPT light proxy counts");
-    RefCntAutoPtr<IShader> pScatterCS = CreateCS("ScatterProxiesCS", "RTXPT light proxy scatter");
+    RefCntAutoPtr<IShader> pResetCS    = CreateCS("ResetProxyBuildCS", "RTXPT light proxy reset");
+    RefCntAutoPtr<IShader> pWeightsCS  = CreateCS("ComputeWeightsCS", "RTXPT light proxy weights");
+    RefCntAutoPtr<IShader> pClustersCS = CreateCS("ProcessClustersCS", "RTXPT light clusters");
+    RefCntAutoPtr<IShader> pCountsCS   = CreateCS("ComputeProxyCountsCS", "RTXPT light proxy counts");
+    RefCntAutoPtr<IShader> pScatterCS  = CreateCS("ScatterProxiesCS", "RTXPT light proxy scatter");
     RefCntAutoPtr<IShader> pFinalizeCS = CreateCS("FinalizeProxyJobsCS", "RTXPT light proxy jobs");
-    if (!pResetCS || !pWeightsCS || !pCountsCS || !pScatterCS || !pFinalizeCS)
+    if (!pResetCS || !pWeightsCS || !pClustersCS || !pCountsCS || !pScatterCS || !pFinalizeCS)
     {
         UNEXPECTED("Failed to create RTXPT light proxy build shaders");
         return false;
@@ -187,6 +192,7 @@ bool RTXPTLightProxyBuildPass::Initialize(IRenderDevice* pDevice, IEngineFactory
     const bool Ok =
         CreatePSO(pStateCache, pResetCS, "RTXPT light proxy reset PSO", m_ResetPSO, m_ResetSRB) &&
         CreatePSO(pStateCache, pWeightsCS, "RTXPT light proxy weights PSO", m_WeightsPSO, m_WeightsSRB) &&
+        CreatePSO(pStateCache, pClustersCS, "RTXPT light clusters PSO", m_ClustersPSO, m_ClustersSRB) &&
         CreatePSO(pStateCache, pCountsCS, "RTXPT light proxy counts PSO", m_CountsPSO, m_CountsSRB) &&
         CreatePSO(pStateCache, pFinalizeCS, "RTXPT light proxy jobs PSO", m_FinalizePSO, m_FinalizeSRB) &&
         CreatePSO(pStateCache, pScatterCS, "RTXPT light proxy scatter PSO", m_ScatterPSO, m_ScatterSRB);
@@ -219,6 +225,8 @@ bool RTXPTLightProxyBuildPass::BindResources(IShaderResourceBinding* pSRB,
     };
 
     return SetVar("g_LightProxyBuildConstants", m_Constants) &&
+        (pSRB->GetVariableByName(SHADER_TYPE_COMPUTE, "u_Lights") == nullptr || SetVar("u_Lights", pLights->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS))) &&
+        (pSRB->GetVariableByName(SHADER_TYPE_COMPUTE, "u_LightsEx") == nullptr || SetVar("u_LightsEx", pLightsEx->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS))) &&
         SetVar("u_LightingControl", pControl->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS)) &&
         SetVar("t_Lights", pLights->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE)) &&
         SetVar("t_LightsEx", pLightsEx->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE)) &&
@@ -245,7 +253,9 @@ bool RTXPTLightProxyBuildPass::Build(IDeviceContext* pContext,
                                      Uint32          ProxyBudget,
                                      Uint32          ImportanceSamplingType,
                                      IBuffer*        pHistoryRemapCurrentToPast,
-                                     const float4*   pFrustumPlanes)
+                                     const float4*   pFrustumPlanes,
+                                     Uint32          ClusterCount,
+                                     const float3*   pCameraPosition)
 {
     if (!m_Ready || pContext == nullptr || TotalLightCount == 0u)
         return false;
@@ -276,6 +286,8 @@ bool RTXPTLightProxyBuildPass::Build(IDeviceContext* pContext,
         Mapped->HistoricWeightCount    = m_HistoricWeightCount;
         Mapped->HasHistoryRemap        = m_HistoryRemap ? 1u : 0u;
         Mapped->HasFrustumPlanes       = pFrustumPlanes ? 1u : 0u;
+        Mapped->HasCameraPosition      = pCameraPosition ? 1u : 0u;
+        Mapped->CameraPosition         = pCameraPosition ? *pCameraPosition : float3{};
         if (pFrustumPlanes) std::copy(pFrustumPlanes, pFrustumPlanes + 5, Mapped->FrustumPlanes);
     }
 
@@ -338,6 +350,19 @@ bool RTXPTLightProxyBuildPass::Build(IDeviceContext* pContext,
     pContext->DispatchCompute(SingleGroup);
     InsertBufferUAVBarrier(pContext, pControl);
     InsertBufferUAVBarrier(pContext, pLightWeights);
+
+    if (ClusterCount != 0u)
+    {
+        if (!BindResources(m_ClustersSRB, pControl, pLights, pLightsEx, pFeedbackCounts, pLightWeights, pLightProxyCounters, pLightSamplingProxies)) return false;
+        pContext->SetPipelineState(m_ClustersPSO);
+        pContext->CommitShaderResources(m_ClustersSRB, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+        DispatchComputeAttribs ClustersDispatch;
+        ClustersDispatch.ThreadGroupCountX = (ClusterCount + kProxyBuildThreads - 1u) / kProxyBuildThreads;
+        pContext->DispatchCompute(ClustersDispatch);
+        InsertBufferUAVBarrier(pContext, pLights);
+        InsertBufferUAVBarrier(pContext, pLightsEx);
+        InsertBufferUAVBarrier(pContext, pLightWeights);
+    }
 
     // Per-light proxy counts (proportional to weight) + atomic total proxy count.
     pContext->SetPipelineState(m_CountsPSO);

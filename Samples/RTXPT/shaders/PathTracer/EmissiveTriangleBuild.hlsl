@@ -21,7 +21,7 @@ Buffer<uint>                         t_IndexBuffer;
 RWStructuredBuffer<PolymorphicLightInfo> u_EmissiveTriangles;
 
 #ifdef ENABLE_MATERIAL_TEXTURES
-// One Texture2DArray per loaded GLTF texture, mirroring Rendering/Materials/MaterialBridge.hlsli.
+// One Texture2DArray per loaded GLTF texture, mirroring BSDFs/MaterialBridge.hlsli.
 // MATERIAL_TEXTURE_COUNT is supplied at compile time and equals RTXPTMaterials::GetTextureCount().
 Texture2DArray t_BindlessTextures[MATERIAL_TEXTURE_COUNT];
 SamplerState   s_MaterialSampler;

@@ -1,8 +1,8 @@
 #ifndef __PATH_TRACER_NESTED_DIELECTRICS_HLSLI__
 #define __PATH_TRACER_NESTED_DIELECTRICS_HLSLI__
 
-#include "Rendering/Materials/MaterialBridge.hlsli"
-#include "Rendering/Materials/InteriorList.hlsli"
+#include "BSDFs/MaterialBridge.hlsli"
+#include "BSDFs/InteriorList.hlsli"
 
 namespace PathTracer
 {

@@ -2,7 +2,7 @@
 #define __PATH_TRACER_VISIBILITY_HLSLI__
 
 #include "PathTracerBridge.hlsli"
-#include "Rendering/Materials/MaterialBridge.hlsli"
+#include "BSDFs/MaterialBridge.hlsli"
 
 namespace Bridge
 {

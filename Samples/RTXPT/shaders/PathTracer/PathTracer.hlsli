@@ -7,16 +7,17 @@
 #include "PathTracerHelpers.hlsli"
 #include "Lighting/EnvMap.hlsli"
 #include "Lighting/LightSampler.hlsli"
-#include "Rendering/Materials/BxDF.hlsli"
+#include "BSDFs/BxDF.hlsli"
 #include "Utils/StatelessSampleGenerators.hlsli"
 #include "Rendering/Volumes/HomogeneousVolumeSampler.hlsli"
 #include "PathTracerNestedDielectrics.hlsli"
 
 #include "PathState.hlsli"
 #include "PathPayload.hlsli"
+#include "PathTracerSHaRC.hlsli"
 
 #if PATH_TRACER_MODE != PATH_TRACER_MODE_REFERENCE || defined(__INTELLISENSE__)
-#    include "PathTracerStablePlanes.hlsli"
+#    include "PathTracerDenoisingLayers.hlsli"
 #endif
 
 static const float kVisibilityRayTMin = 0.0;
@@ -43,7 +44,7 @@ namespace PathTracer
         PathState visibilityPath = EmptyPathInitialize(pixelPos, 0.0);
         visibilityPath.setActive();
         visibilityPath.clearHit();
-#if PATH_TRACER_MODE != PATH_TRACER_MODE_BUILD_STABLE_PLANES
+#if PATH_TRACER_MODE != PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
         visibilityPath.SetL(float4(0.0, 0.0, 0.0, 0.0));
 #endif
         visibilityPath.SetThp(float3(0.0, 0.0, 0.0));
@@ -78,10 +79,10 @@ namespace PathTracer
 #endif
     }
 
-    float3 MakeVisibilityOrigin(float3 hitPos, float3 faceNormal, float3 shadingNormal, float3 dir)
+    float3 MakeVisibilityOrigin(float3 hitPos, float3 faceNormal, float3 shadingNormal, float3 dir, float posErrorScale)
     {
         const float side = dot(shadingNormal, dir) >= 0.0 ? 1.0 : -1.0;
-        return ComputeRayOrigin(hitPos, faceNormal * side);
+        return ComputeRayOrigin(hitPos, faceNormal * side, posErrorScale);
     }
 
     float ComputeShadowNoLFadeout(float3 lightDir, float3 vertexNormal, float shadowNoLFadeout)
@@ -91,7 +92,7 @@ namespace PathTracer
             1.0;
     }
 
-#if PATH_TRACER_MODE != PATH_TRACER_MODE_BUILD_STABLE_PLANES
+#if PATH_TRACER_MODE != PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
     float ComputeLightVsBSDFMISForLightSample(DirectLightSample sample, uint fullSamples, uint candidates, float thisPdf, float otherPdf, float bsdfPdf)
     {
         if (!sample.sampleableByBSDF || bsdfPdf <= 0.0)
@@ -103,7 +104,7 @@ namespace PathTracer
         return EvalLightSamplingMIS(1.0, lightPdf, 1.0, bsdfPdf);
     }
 
-    DirectLightSample GenerateDirectLightSample(StandardBSDFData bsdfData, float3 hitPos, float3 wo,
+    DirectLightSample GenerateDirectLightSample(SurfaceBSDFData bsdfData, float3 hitPos, float3 wo,
                                                 uint2 pixelPos, bool coherent, uint candidateSamples, inout SampleGenerator sg)
     {
         uint localCount, globalCount;
@@ -128,8 +129,8 @@ namespace PathTracer
         return picked;
     }
 
-    float3 SampleDirectLightNEE(StandardBSDFData bsdfData, float3 hitPos, float3 faceNormal, float3 vertexNormal,
-                                float shadowNoLFadeout, float3 wo, uint2 pixelPos, inout SampleGenerator sg,
+    float3 SampleDirectLightNEE(SurfaceBSDFData bsdfData, float3 hitPos, float3 faceNormal, float3 vertexNormal,
+                                float posErrorScale, float shadowNoLFadeout, float3 wo, uint2 pixelPos, inout SampleGenerator sg,
                                 float fireflyFilterK, bool coherent, float3 pathThroughput, out float specularRadianceAvg)
     {
         specularRadianceAvg = 0.0;
@@ -150,7 +151,7 @@ namespace PathTracer
             const bool isEmissiveTriangle = picked.index >= ctrl.EnvmapQuadNodeCount + ctrl.AnalyticLightCount;
             const float visibilityDistance =
                 isEmissiveTriangle ? picked.distance * 0.9985 : picked.distance;
-            const float3 visibilityOrigin = MakeVisibilityOrigin(hitPos, faceNormal, bsdfData.N, picked.dir);
+            const float3 visibilityOrigin = MakeVisibilityOrigin(hitPos, faceNormal, bsdfData.N, picked.dir, posErrorScale);
             const bool visible = TraceVisibilityRay(visibilityOrigin, picked.dir, visibilityDistance);
             if (!visible)
                 continue;
@@ -164,7 +165,7 @@ namespace PathTracer
             // Recompute the selected PDF after visibility, as in RTXPT-fork ProcessLightSample.
             const float bsdfPdf = EvalBSDFPdf(bsdfData, wo, picked.dir);
             const float misWeight  = ComputeLightVsBSDFMISForLightSample(picked, fullSamples, candidateSamples, thisPdf, otherPdf, bsdfPdf);
-            const float fadeOut    = ComputeShadowNoLFadeout(picked.dir, vertexNormal, shadowNoLFadeout);
+            const float fadeOut    = ComputeShadowNoLFadeout(picked.dir, faceNormal, shadowNoLFadeout);
             const float4 bsdfValue = EvalBSDFValue(bsdfData, wo, picked.dir);
             const float3 incidentRadiance = picked.radianceOverPdf * (fadeOut * wrsScale * misWeight / float(fullSamples));
             float3 contribution = bsdfValue.rgb * incidentRadiance;
@@ -203,7 +204,7 @@ namespace PathTracer
 
     inline float3 ApplyEmissionFireflyFilter(float3 radiance, const PathState path, const WorkingContext workingContext)
     {
-#if PATH_TRACER_MODE != PATH_TRACER_MODE_BUILD_STABLE_PLANES
+#if PATH_TRACER_MODE != PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
         const float ffThreshold = workingContext.PtConsts.fireflyFilterThreshold;
         if (ffThreshold != 0.0)
             radiance = FireflyFilter(radiance, ffThreshold, path.GetFireflyFilterK());
@@ -238,11 +239,11 @@ namespace PathTracer
         path.setDeltaOnlyPath(true);
         path.rayCone = RayCone::make(0.0, pixelConeSpreadAngle);
 
-#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_STABLE_PLANES
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
         path.SetImageXform(float3x3(1.0, 0.0, 0.0,
                                     0.0, 1.0, 0.0,
                                     0.0, 0.0, 1.0));
-        path.setFlag(PathFlags::stablePlaneOnDominantBranch, true);
+        path.setFlag(PathFlags::denoisingLayerOnDominantBranch, true);
         path.SetMotionVectorSceneLength(0.0);
 #else
         path.SetL(float4(0.0, 0.0, 0.0, 0.0));
@@ -250,7 +251,7 @@ namespace PathTracer
         path.SetPackedMISInfo_ThpRuRuCorrection(NEEBSDFMISInfo::empty().Pack16bit(), 1.0);
 #endif
 
-        path.setStablePlaneIndex(0);
+        path.setDenoisingLayerIndex(0);
         path.stableBranchID = 1u;
 
         if (HasFinishedSurfaceBounces(path.getVertexIndex() + 1,
@@ -263,10 +264,10 @@ namespace PathTracer
     inline void StartPixel(const PathState path, const WorkingContext workingContext)
     {
 #if PATH_TRACER_MODE != PATH_TRACER_MODE_REFERENCE || defined(__INTELLISENSE__)
-        workingContext.StablePlanes.StartPixel(path.GetPixelPos());
+        workingContext.DenoisingLayers.StartPixel(path.GetPixelPos());
 #endif
 
-#if PATH_TRACER_MODE == PATH_TRACER_MODE_REFERENCE || PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_STABLE_PLANES
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_REFERENCE || PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
         Bridge::ExportSurfaceInit(path.GetPixelPos());
 #endif
     }
@@ -290,7 +291,8 @@ namespace PathTracer
     inline void UpdateSurfaceOutsideIoR(inout SurfaceData surfaceData, const float outsideIoR)
     {
         const float safeOutsideIoR  = max(outsideIoR, 1.0);
-        const float safeInteriorIoR = max(surfaceData.interiorIoR, 1.0);
+        surfaceData.shadingData.exteriorIoR = lpfloat(safeOutsideIoR);
+        const float safeInteriorIoR = max(surfaceData.shadingData.interiorIoR, 1.0);
         surfaceData.bsdf.standardData.SetEta(surfaceData.shadingData.frontFacing ?
                                                  safeOutsideIoR / safeInteriorIoR :
                                                  safeInteriorIoR / safeOutsideIoR);
@@ -319,8 +321,7 @@ namespace PathTracer
                     path.interiorList.handleIntersection(surfaceData.shadingData.materialID,
                                                          nestedPriority,
                                                          surfaceData.shadingData.frontFacing);
-                    path.SetOrigin(ComputeRayOrigin(surfaceData.shadingData.posW,
-                                                    -surfaceData.shadingData.faceNCorrected));
+                    path.SetOrigin(surfaceData.shadingData.computeNewRayOrigin(false));
                     path.decrementVertexIndex();
                     return false;
                 }
@@ -339,14 +340,14 @@ namespace PathTracer
         return true;
     }
 
-#if PATH_TRACER_MODE != PATH_TRACER_MODE_BUILD_STABLE_PLANES || defined(__INTELLISENSE__)
+#if PATH_TRACER_MODE != PATH_TRACER_MODE_BUILD_DENOISING_LAYERS || defined(__INTELLISENSE__)
     inline BSDFSample MakeBSDFSample(uint lobe, float pdf, float lobeP, float3 weight, float3 wi)
     {
         BSDFSample bs;
         bs.lobe           = lobe;
         // Match upstream IBSDF::getDeltaLobeIndex(): a NON-delta lobe must map to the invalid sentinel
-        // (0xFFFFFFFF), not 0. StablePlanesOnScatter feeds this into StablePlanesAdvanceBranchID on every
-        // FILL scatter; for a non-delta bounce the advanced branchID must become cStablePlaneInvalidBranchID
+        // (0xFFFFFFFF), not 0. DenoisingLayersOnScatter feeds this into DenoisingLayersAdvanceBranchID on every
+        // FILL scatter; for a non-delta bounce the advanced branchID must become cDenoisingLayerInvalidBranchID
         // so the path cleanly leaves the stable-plane branch. The previous value (0) produced a valid-looking
         // branchID on non-delta scatters, corrupting FILL branch tracking so transmission radiance was
         // committed onto a mis-tracked plane and dropped (black glass).
@@ -359,7 +360,7 @@ namespace PathTracer
         return bs;
     }
 
-    inline void UpdateNestedDielectricsOnScatterTransmission(const StablePlaneShadingData shadingData,
+    inline void UpdateNestedDielectricsOnScatterTransmission(const ShadingData shadingData,
                                                              inout PathState path,
                                                              const WorkingContext workingContext)
     {
@@ -403,6 +404,7 @@ namespace PathTracer
                                                      surfaceData.shadingData.posW,
                                                      surfaceData.shadingData.faceNCorrected,
                                                      surfaceData.shadingData.vertexN,
+                                                     surfaceData.shadingData.posErrorScale,
                                                      surfaceData.shadingData.shadowNoLFadeout,
                                                      wo,
                                                      preScatterPath.GetPixelPos(),
@@ -430,8 +432,7 @@ namespace PathTracer
         const float pdf            = bs.pdf;
         const float lobeP          = bs.lobeP;
         const bool  isTransmission = (lobe & kBSDFLobeTransmission) != 0u;
-        const float3 scatterOrigin = ComputeRayOrigin(surfaceData.shadingData.posW,
-                                                      isTransmission ? -surfaceData.shadingData.faceNCorrected : surfaceData.shadingData.faceNCorrected);
+        const float3 scatterOrigin = surfaceData.shadingData.computeNewRayOrigin(!isTransmission);
 
         path.clearScatterEventFlags();
         path.SetOrigin(scatterOrigin);
@@ -448,7 +449,7 @@ namespace PathTracer
 
         const bool isDiffuseBounce =
             ((lobe & (kBSDFLobeDiffuseReflection | kBSDFLobeDiffuseTransmission)) != 0u) ||
-            surfaceData.bsdf.standardData.roughness > kSpecularRoughnessThreshold;
+            surfaceData.bsdf.standardData.Roughness() > kSpecularRoughnessThreshold;
         if (isDiffuseBounce &&
             !(((lobe & kBSDFLobeDiffuseTransmission) != 0u) && ((path.getVertexIndex() % 2u) == 1u)))
             path.incrementCounter(PackedCounters::DiffuseBounces);
@@ -461,11 +462,11 @@ namespace PathTracer
                                              6.28318530717958647692));
         }
 
-#if PATH_TRACER_MODE == PATH_TRACER_MODE_FILL_STABLE_PLANES || defined(__INTELLISENSE__)
-        const bool onDominantDenoisingLayer = path.hasFlag(PathFlags::stablePlaneOnDominantBranch);
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_FILL_DENOISING_LAYERS || defined(__INTELLISENSE__)
+        const bool onDominantDenoisingLayer = path.hasFlag(PathFlags::denoisingLayerOnDominantBranch);
         const bool isDiffuseForSpecHitT =
             ((lobe & (kBSDFLobeDiffuseReflection | kBSDFLobeDiffuseTransmission)) != 0u) ||
-            surfaceData.bsdf.standardData.roughness > 0.35;
+            surfaceData.bsdf.standardData.Roughness() > 0.35;
         if (onDominantDenoisingLayer && !isDiffuseForSpecHitT)
         {
             if (!surfaceData.shadingData.mtl.isPSDBlockMotionVectorsAtSurface())
@@ -477,18 +478,18 @@ namespace PathTracer
         else if (path.hasFlag(PathFlags::exportSpecHitTQueued))
         {
             const bool hasNonDeltaLobes =
-                (surfaceData.bsdf.standardData.diffuseTransmission > 0.0) ||
-                any(surfaceData.bsdf.standardData.diffuse > 0.0) ||
-                surfaceData.bsdf.standardData.roughness > 0.0;
+                (surfaceData.bsdf.standardData.DiffuseTransmission() > 0.0) ||
+                any(surfaceData.bsdf.standardData.Diffuse() > 0.0) ||
+                surfaceData.bsdf.standardData.Roughness() > 0.0;
             const int maxHitTSpecBounces = 4;
-            if (hasNonDeltaLobes || path.getCounter(PackedCounters::BouncesFromStablePlane) > maxHitTSpecBounces)
+            if (hasNonDeltaLobes || path.getCounter(PackedCounters::BouncesFromDenoisingLayer) > maxHitTSpecBounces)
             {
                 Bridge::ExportSpecHitTStop(path);
                 path.setFlag(PathFlags::exportSpecHitTQueued, false);
             }
         }
 
-        StablePlanesOnScatter(path, bs, workingContext);
+        DenoisingLayersOnScatter(path, bs, workingContext);
 #endif
         path.setFlag(PathFlags::enableThreadReorder, true);
 
@@ -532,17 +533,17 @@ namespace PathTracer
                                        inout PathState path,
                                        float3 radiance,
                                        const float specularRadianceAvg,
-                                       bool stablePlaneOnBranch,
+                                       bool denoisingLayerOnBranch,
                                        bool collectGISecondaryRadiance)
     {
-#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_STABLE_PLANES
-        workingContext.StablePlanes.AccumulateStableRadiance(path.GetPixelPos(), radiance);
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
+        workingContext.DenoisingLayers.AccumulateStableRadiance(path.GetPixelPos(), radiance);
 #elif PATH_TRACER_MODE == PATH_TRACER_MODE_REFERENCE
         float4 newL = path.GetL();
         newL.rgb += radiance;
         path.SetL(newL);
-#elif PATH_TRACER_MODE == PATH_TRACER_MODE_FILL_STABLE_PLANES
-        if (!stablePlaneOnBranch)
+#elif PATH_TRACER_MODE == PATH_TRACER_MODE_FILL_DENOISING_LAYERS
+        if (!denoisingLayerOnBranch)
         {
             float4 newL = float4(radiance, specularRadianceAvg) * Bridge::getNoisyRadianceAttenuation();
             path.SetL(path.GetL() + newL);
@@ -560,12 +561,12 @@ namespace PathTracer
         float4 neeRadianceAndSpecAvg = neeResult.GetRadianceAndSpecAvg();
         if (any(neeRadianceAndSpecAvg > 0.0))
         {
-            const int bouncesFromStablePlane = preScatterPath.getCounter(PackedCounters::BouncesFromStablePlane) + 1;
+            const int bouncesFromDenoisingLayer = preScatterPath.getCounter(PackedCounters::BouncesFromDenoisingLayer) + 1;
             float specRadianceAvg = 0.0;
-            if (!preScatterPath.hasFlag(PathFlags::stablePlaneBaseScatterDiff))
+            if (!preScatterPath.hasFlag(PathFlags::denoisingLayerBaseScatterDiff))
             {
                 const bool pathIsDeltaOnlyPath = preScatterPath.isDeltaOnlyPath();
-                const bool specialCondition = (bouncesFromStablePlane == 1) || (pathIsDeltaOnlyPath && bouncesFromStablePlane <= 3);
+                const bool specialCondition = (bouncesFromDenoisingLayer == 1) || (pathIsDeltaOnlyPath && bouncesFromDenoisingLayer <= 3);
                 specRadianceAvg = specialCondition ? neeRadianceAndSpecAvg.w : Average(neeRadianceAndSpecAvg.rgb);
             }
 
@@ -580,12 +581,12 @@ namespace PathTracer
 
     inline void CommitPixel(const PathState path, const WorkingContext workingContext)
     {
-#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_STABLE_PLANES
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
         // Stable radiance and stable-plane data are committed incrementally while tracing.
 #elif PATH_TRACER_MODE == PATH_TRACER_MODE_REFERENCE
         workingContext.OutputColor[path.GetPixelPos()] = float4(path.GetL().rgb, 1.0);
-#elif PATH_TRACER_MODE == PATH_TRACER_MODE_FILL_STABLE_PLANES
-        workingContext.StablePlanes.CommitDenoiserRadiance(path);
+#elif PATH_TRACER_MODE == PATH_TRACER_MODE_FILL_DENOISING_LAYERS
+        workingContext.DenoisingLayers.CommitDenoiserRadiance(path);
 #else
 #    error Unsupported PATH_TRACER_MODE.
 #endif
@@ -644,7 +645,7 @@ namespace PathTracer
     {
         UpdatePathTravelled(path, rayOrigin, rayDir, rayTCurrent, workingContext);
 
-#if PATH_TRACER_MODE == PATH_TRACER_MODE_FILL_STABLE_PLANES
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_FILL_DENOISING_LAYERS
         if (path.hasFlag(PathFlags::exportSpecHitTQueued))
         {
             Bridge::ExportSpecHitTStop(path);
@@ -657,7 +658,7 @@ namespace PathTracer
         const float environmentMip = path.getCounter(PackedCounters::DiffuseBounces) > 1u ? 2.0 : 0.0;
         float3 environmentEmission = envSampler.Eval(rayDir, environmentMip);
 
-#if PATH_TRACER_MODE != PATH_TRACER_MODE_BUILD_STABLE_PLANES
+#if PATH_TRACER_MODE != PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
         const NEEBSDFMISInfo prevMISInfo = NEEBSDFMISInfo::Unpack16bit(path.GetPackedMISInfo());
         const bool didEnvNEE =
             prevMISInfo.LightSamplingEnabled &&
@@ -681,21 +682,27 @@ namespace PathTracer
 #endif
 
 #if PATH_TRACER_MODE != PATH_TRACER_MODE_REFERENCE || defined(__INTELLISENSE__)
-        StablePlanesHandleMiss(path, environmentEmission, rayOrigin, rayDir, rayTCurrent, workingContext);
+        DenoisingLayersHandleMiss(path, environmentEmission, rayOrigin, rayDir, rayTCurrent, workingContext);
 #else
+#if !RTXPT_SHARC_TRAIN
         Bridge::ExportNonSurface(path, rayOrigin + rayDir * rayTCurrent, float3(0.0, 0.0, 0.0));
 #endif
+#endif
 
+#if RTXPT_SHARC_TRAIN
+        SharcThroughputCheckpoint(path);
+        SharcBackPropagate(environmentEmission);
+#endif
         if (any(environmentEmission > 0.0))
         {
             const float3 radiance = path.GetThp() * environmentEmission;
             const float specRadianceAvg =
-                path.hasFlag(PathFlags::stablePlaneBaseScatterDiff) ? 0.0 : Average(radiance);
+                path.hasFlag(PathFlags::denoisingLayerBaseScatterDiff) ? 0.0 : Average(radiance);
             AccumulatePathRadiance(workingContext,
                                    path,
                                    radiance,
                                    specRadianceAvg,
-                                   path.hasFlag(PathFlags::stablePlaneOnBranch),
+                                   path.hasFlag(PathFlags::denoisingLayerOnBranch),
                                    ShouldCollectGISecondaryRadiance(path));
         }
 
@@ -703,150 +710,8 @@ namespace PathTracer
         path.terminate();
     }
 
-    inline void HandleHit(inout PathState path,
-                          SurfaceData surfaceData,
-                          const float3 surfaceEmission,
-                          const float3 rayOrigin,
-                          const float3 rayDir,
-                          const float rayTCurrent,
-                          const WorkingContext workingContext)
-    {
-        UpdatePathTravelled(path, rayOrigin, rayDir, rayTCurrent, workingContext);
-
-        float volumeAbsorption = 0.0;
-#if RTXPT_NESTED_DIELECTRICS_QUALITY > 0 || defined(__INTELLISENSE__)
-        if (!path.interiorList.isEmpty())
-        {
-            const HomogeneousVolumeData volume = Bridge::loadHomogeneousVolumeData(path.interiorList.getTopMaterialID());
-            const float3 transmittance = HomogeneousVolumeSampler::evalTransmittance(volume, rayTCurrent);
-            volumeAbsorption = 1.0 - luminance(transmittance);
-            UpdatePathThroughput(path, transmittance);
-        }
-#endif
-
-        const bool rejectedFalseHit = !HandleNestedDielectrics(surfaceData, path, workingContext);
-        if (rejectedFalseHit)
-        {
-#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_STABLE_PLANES
-            if (path.isTerminated())
-                StablePlanesHandleMiss(path, 0.0.xxx, rayOrigin, rayDir, rayTCurrent, workingContext);
-#endif
-            return;
-        }
-
-        float3 referenceSurfaceEmission = surfaceEmission;
-#if PATH_TRACER_MODE != PATH_TRACER_MODE_BUILD_STABLE_PLANES
-        const NEEBSDFMISInfo prevMISInfo = NEEBSDFMISInfo::Unpack16bit(path.GetPackedMISInfo());
-        const bool didEmissiveNEE =
-            prevMISInfo.LightSamplingEnabled &&
-            prevMISInfo.FullSamples > 0u &&
-            Bridge::getEmissiveTriangleCount() > 0u;
-        if (didEmissiveNEE && path.GetBsdfScatterPdf() > 0.0)
-        {
-            referenceSurfaceEmission *= ComputeLightVsBSDFMISForBSDF(path.GetPixelPos(),
-                                                                          surfaceData.neeTriangleLightIndex,
-                                                                          path.GetBsdfScatterPdf(),
-                                                                          surfaceData.emissiveLightPdf,
-                                                                          prevMISInfo.CandidateSamples,
-                                                                          prevMISInfo.FullSamples,
-                                                                          prevMISInfo.LightSamplingIsSSC);
-        }
-        referenceSurfaceEmission = ApplyEmissionFireflyFilter(referenceSurfaceEmission, path, workingContext);
-#endif
-
-        if (any(referenceSurfaceEmission > 0.0))
-        {
-            const float3 radiance = path.GetThp() * referenceSurfaceEmission;
-            const float specRadianceAvg =
-                path.hasFlag(PathFlags::stablePlaneBaseScatterDiff) ? 0.0 : Average(radiance);
-            AccumulatePathRadiance(workingContext,
-                                   path,
-                                   radiance,
-                                   specRadianceAvg,
-                                   path.hasFlag(PathFlags::stablePlaneOnBranch),
-                                   ShouldCollectGISecondaryRadiance(path));
-        }
-        const bool pathStopping = path.isTerminatingAtNextBounce();
-#if PATH_TRACER_MODE == PATH_TRACER_MODE_REFERENCE
-        Bridge::ExportSurface(path, surfaceData, path.GetSceneLength(), float3(0.0, 0.0, 0.0));
-#endif
-#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_STABLE_PLANES
-        StablePlanesHandleHit(path,
-                              rayOrigin,
-                              rayDir,
-                              rayTCurrent,
-                              workingContext,
-                              surfaceData,
-                              volumeAbsorption,
-                              surfaceEmission,
-                              pathStopping);
-#endif
-
-        if (pathStopping || !path.isActive())
-        {
-#if PATH_TRACER_MODE == PATH_TRACER_MODE_FILL_STABLE_PLANES
-            if (pathStopping && path.isActive())
-            {
-                const PathState preScatterPath = path;
-                SampleGenerator sgDirect = SampleGenerator_makeStateless(preScatterPath.GetPixelPos(),
-                                                                         preScatterPath.getVertexIndex(),
-                                                                         Bridge::getSampleIndex(),
-                                                                         kSampleEffect_NEELightSampler);
-                const NEEResult neeResult = HandleNEE(preScatterPath, surfaceData, sgDirect, workingContext);
-                AccumulateNEERadiance(workingContext, path, preScatterPath, neeResult);
-            }
-#endif
-#if PATH_TRACER_MODE == PATH_TRACER_MODE_FILL_STABLE_PLANES
-            if (path.hasFlag(PathFlags::exportSpecHitTQueued))
-            {
-                Bridge::ExportSpecHitTStop(path);
-                path.setFlag(PathFlags::exportSpecHitTQueued, false);
-            }
-#endif
-            path.terminate();
-            return;
-        }
-
-#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_STABLE_PLANES
-        return;
-#else
-        const PathState preScatterPath = path;
-        BSDFSample bs;
-        const bool scatterValid = GenerateScatterRay(surfaceData, path, workingContext, bs);
-
-        SampleGenerator sgDirect = SampleGenerator_makeStateless(preScatterPath.GetPixelPos(),
-                                                                 preScatterPath.getVertexIndex(),
-                                                                 Bridge::getSampleIndex(),
-                                                                 kSampleEffect_NEELightSampler);
-        NEEResult neeResult = HandleNEE(preScatterPath, surfaceData, sgDirect, workingContext);
-        path.SetPackedMISInfo_ThpRuRuCorrection(neeResult.BSDFMISInfo.Pack16bit(), path.GetThpRuRuCorrection());
-        AccumulateNEERadiance(workingContext, path, preScatterPath, neeResult);
-
-        if (!scatterValid)
-        {
-#if PATH_TRACER_MODE == PATH_TRACER_MODE_FILL_STABLE_PLANES
-            if (path.hasFlag(PathFlags::exportSpecHitTQueued))
-            {
-                Bridge::ExportSpecHitTStop(path);
-                path.setFlag(PathFlags::exportSpecHitTQueued, false);
-            }
-#endif
-            path.terminate();
-            return;
-        }
-
-        const bool shouldTerminate = HasFinishedSurfaceBounces(path.getVertexIndex() + 1,
-                                                               path.getCounter(PackedCounters::DiffuseBounces));
-        if (shouldTerminate)
-        {
-            path.setTerminateAtNextBounce();
-        }
-        else if (!HandleRussianRoulette(path, preScatterPath, workingContext))
-        {
-            return;
-        }
-#endif
-    }
 } // namespace PathTracer
+
+#include "PathTracerHandleHit.hlsli"
 
 #endif // __PATH_TRACER_HLSLI__
