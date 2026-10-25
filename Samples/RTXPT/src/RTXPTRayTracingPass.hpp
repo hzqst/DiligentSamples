@@ -59,6 +59,7 @@ enum class RTXPTPathTraceVariant : Uint32
 
 struct RTXPTRayTracingDispatch
 {
+    IBufferView*               pSubSamplingPixelList     = nullptr;
     IBuffer*                   pSharcConstants           = nullptr;
     IBufferView*               pSharcHash                = nullptr;
     IBufferView*               pSharcAccumulation        = nullptr;

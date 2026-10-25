@@ -148,10 +148,13 @@ struct RTXPTNrdRelaxUiSettings
 
 struct RTXPTRealtimeSettings
 {
-    bool                RealtimeMode            = true;
-    Int32               RealtimeSamplesPerPixel = 1;
-    RTXPTRealtimeAAMode RealtimeAA              = RTXPTRealtimeAAMode::Disabled;
-    bool                StandaloneDenoiser      = true;
+    bool                RealtimeMode                 = true;
+    Int32               RealtimeSamplesPerPixel      = 1;
+    Int32               RealtimeSubSamplingMode      = 0; // 0: full, 1: 3/4, 2: 1/2, 3: 1/4.
+    Int32               RealtimeSubSamplingPattern   = 3; // Block jitter, compacted, stratified, Sobol.
+    Int32               RealtimeSubSamplingBlockSize = 8;
+    RTXPTRealtimeAAMode RealtimeAA                   = RTXPTRealtimeAAMode::Disabled;
+    bool                StandaloneDenoiser           = true;
 
     // Super resolution provider/quality selection (active when RealtimeAA == SuperResolution).
     // SuperResolutionVariantIdx indexes the full provider list reported by the pass; the
@@ -197,10 +200,17 @@ struct RTXPTRealtimeSettings
     {
         return RealtimeMode ? static_cast<Uint32>(std::max(RealtimeSamplesPerPixel, 1)) : 1u;
     }
+    Int32 ActualSubSamplingMode() const
+    {
+        return RealtimeMode && ActualSamplesPerPixel() == 1 ? std::clamp(RealtimeSubSamplingMode, 0, 3) : 0;
+    }
 };
 
 inline void SanitizeRealtimeSettings(RTXPTRealtimeSettings& Settings)
 {
+    Settings.RealtimeSubSamplingMode      = std::clamp(Settings.RealtimeSubSamplingMode, 0, 3);
+    Settings.RealtimeSubSamplingPattern   = std::clamp(Settings.RealtimeSubSamplingPattern, 0, 3);
+    Settings.RealtimeSubSamplingBlockSize = Settings.RealtimeSubSamplingBlockSize <= 4 ? 4 : (Settings.RealtimeSubSamplingBlockSize <= 8 ? 8 : 16);
     Settings.RealtimeSamplesPerPixel =
         std::clamp(Settings.RealtimeSamplesPerPixel, Int32{1}, static_cast<Int32>(kRTXPTRealtimeSamplesPerPixelMax));
 

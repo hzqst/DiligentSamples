@@ -404,6 +404,8 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
 
         PipelineResourceLayoutDescX ResourceLayout;
         ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE;
+        if (Variant == RTXPTPathTraceVariant::FillDenoisingLayers || Variant == RTXPTPathTraceVariant::SharcFill)
+            ResourceLayout.AddVariable(ConstStages, "u_SubSamplingPixelList", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC);
         if (SharcVariant)
             for (const char* Name : {"cbSharc", "u_SharcHash", "u_SharcAccumulation", "u_SharcResolved", "u_SharcPathState"})
                 ResourceLayout.AddVariable(ConstStages, Name, SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC);
@@ -769,6 +771,8 @@ bool RTXPTRayTracingPass::Dispatch(IDeviceContext*                pContext,
             !SetDynamicForStages("u_SharcAccumulation", DispatchInfo.pSharcAccumulation, TrainVariant) ||
             !SetDynamicForStages("u_SharcPathState", DispatchInfo.pSharcPathState, TrainVariant)) return false;
     }
+    if (Variant == RTXPTPathTraceVariant::FillDenoisingLayers || Variant == RTXPTPathTraceVariant::SharcFill)
+        if (!SetDynamicForStages("u_SubSamplingPixelList", DispatchInfo.pSubSamplingPixelList, true)) return false;
     const bool OutputBound =
         SetDynamicForNamePair("u_OutputColor", "u_Output", DispatchInfo.pOutputColorUAV, FinalOutputRequired);
     const bool DepthBound =

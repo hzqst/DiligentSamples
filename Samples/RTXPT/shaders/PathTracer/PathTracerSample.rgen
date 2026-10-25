@@ -46,7 +46,8 @@ float2 FirstHitFromVBuffer(inout PathState path,
     path.setFlag(PathFlags::denoisingLayerOnBranch, true);
     path.setDenoisingLayerIndex(basePlaneIndex);
     path.stableBranchID = stableBranchID;
-    path.SetThp(thp);
+    // Only stochastic continuation is weighted; BUILD radiance and guidance stay full resolution.
+    path.SetThp(thp * (float(max(g_MiniConst.params1.z, 1u)) / max(g_MiniConst.params1.w, 1u)));
     path.SetL(float4(0.0, 0.0, 0.0, 0.0));
 
     const uint dominantSPIndex = workingContext.DenoisingLayers.LoadDominantIndex(pixelPos);
@@ -138,7 +139,10 @@ void ValidateNaNs(inout PathState path, PathTracer::WorkingContext workingContex
 [shader("raygeneration")]
 void main()
 {
-    uint2 pixelPos = DispatchRaysIndex().xy;
+    uint2 pixelPos = Bridge::getPixelPosition();
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_FILL_DENOISING_LAYERS
+    if (any(pixelPos >= g_Const.ptConsts.camera.ViewportSize)) return;
+#endif
 #if RTXPT_SHARC_TRAIN
     uint scale = g_Sharc.DownscaleFactor;
     uint random = Hash32Combine(Hash32(pixelPos.x + pixelPos.y * DispatchRaysDimensions().x), Bridge::getSampleIndex());

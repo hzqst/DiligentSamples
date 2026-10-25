@@ -17,6 +17,8 @@ public:
     std::string Path;
     Uint32      StartFrame = 256;
     Uint32      FrameCount = 64;
+    bool        Processed  = false; // Capture reconstruction output before bloom/tone mapping.
+    bool        Sequence   = false; // Write individual linear frames for temporal validation.
     void        Capture(IRenderDevice* Device, IDeviceContext* Context, ITexture* Texture, Uint32 Frame)
     {
         if (Path.empty() || m_Done || Frame < StartFrame || !Texture) return;
@@ -76,18 +78,22 @@ public:
                 }
         }
         Context->UnmapTextureSubresource(Staging, 0, 0);
-        if (++m_Count >= std::max(FrameCount, 1u))
+        ++m_Count;
+        if (Sequence || m_Count >= std::max(FrameCount, 1u))
         {
-            std::ofstream File{Path, std::ios::binary};
+            const std::string OutputPath = Sequence ? Path + "." + std::to_string(Frame) + ".pfm" : Path;
+            std::ofstream     File{OutputPath, std::ios::binary};
             File << "PF\n"
                  << Desc.Width << ' ' << Desc.Height << "\n-1.0\n";
-            for (auto& Value : m_Sum) Value /= float(m_Count);
+            if (!Sequence)
+                for (auto& Value : m_Sum) Value /= float(m_Count);
             for (Uint32 Y = Desc.Height; Y-- > 0;)
                 File.write(reinterpret_cast<const char*>(m_Sum.data() + size_t{Y} * Desc.Width * 3), Desc.Width * 3 * sizeof(float));
-            if (!File) LOG_ERROR_MESSAGE("HDR capture write failed: ", Path);
+            if (!File) LOG_ERROR_MESSAGE("HDR capture write failed: ", OutputPath);
             else
-                LOG_INFO_MESSAGE("HDR capture saved: ", Path, " (", m_Count, " frames)");
-            m_Done = true;
+                LOG_INFO_MESSAGE("HDR capture saved: ", OutputPath, " (", Sequence ? 1u : m_Count, " frames)");
+            m_Done = m_Count >= std::max(FrameCount, 1u);
+            if (Sequence) std::fill(m_Sum.begin(), m_Sum.end(), 0.f);
         }
     }
 

@@ -23,6 +23,7 @@ set(SOURCE
     src/RTXPTNrdIntegration.cpp
     src/RTXPTRayTracingPass.cpp
     src/SharcIntegration.cpp
+    src/AdaptiveSampling.cpp
     src/RTXPTDenoisingGuidesBaker.cpp
     src/RTXPTEmissiveTrianglePass.cpp
     src/RTXPTComputePass.cpp
@@ -63,6 +64,7 @@ set(INCLUDE
     src/RTXPTNrdIntegration.hpp
     src/RTXPTRayTracingPass.hpp
     src/SharcIntegration.hpp
+    src/AdaptiveSampling.hpp
     src/RTXPTDenoisingGuidesBaker.hpp
     src/RTXPTEmissiveTrianglePass.hpp
     src/RTXPTComputePass.hpp
@@ -77,6 +79,7 @@ set(INCLUDE
     RTXPT_FORK_MAPPING.md
     tests/RRSceneValidation.hpp
     tests/HDRValidationCapture.hpp
+    tests/SubSamplingSceneValidation.hpp
 )
 
 set(SHADERS
@@ -87,6 +90,9 @@ set(SHADERS
     shaders/PathTracer/SharcBindings.hlsli
     shaders/PathTracer/SharcConstants.h
     shaders/PathTracer/SharcResolve.hlsl
+    shaders/PathTracer/SubSampling.h
+    shaders/PathTracer/SubSamplingCompaction.hlsl
+    shaders/PathTracer/Utils/MicroRng.hlsli
     shaders/PathTracer/Config.h
     shaders/PathTracer/PathTracerHelpers.hlsli
     shaders/PathTracer/PathTracerShared.h

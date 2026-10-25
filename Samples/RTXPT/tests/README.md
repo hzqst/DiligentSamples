@@ -1,5 +1,87 @@
 # RR input and resource contract GPU regression
 
+## Sub-sampling validation (issue #26)
+
+Run `tests/build_subsampling_test.bat` from a VS 2022 x64 Native Tools prompt.
+Then run `%TEMP%/SubSamplingTest/SubSamplingTest.exe D3D12|Vk <engine-DLL>
+<absolute-shader-root>`. The production mapping and compaction shaders are
+tested on the GPU, with independent bounds, duplicate-pixel, exact block-rate,
+full-rate identity and Sobol cycle/energy assertions. A scalar coin-flip oracle
+checks every compacted pixel and guards detect list overruns. The 100 cases span
+1x1, 3x2, 13x9 and 32x32, all four rates/patterns and block sizes 4/8/16. CPU
+checks cover invalid settings and Reference/multi-spp fallback.
+
+`--subsampling_validation true --exit_after_frames 672` exercises ten stages
+each for NRD and native RR: continuous camera motion, a revealing camera cut,
+history reset, rate/pattern changes, 641x361 / 639x359 resize and return to 1 spp.
+Use D3D12 for this full sequence. The existing Vulkan non-RR RGB10A2 allocation
+limitation remains; Vulkan's available RR path is tested separately.
+
+`--hdr_capture_processed true` selects reconstructed linear HDR before bloom
+and tone mapping; default captures OutputColor (NRD merge output or RR input).
+`--hdr_capture_sequence true` writes individual frames as `<path>.<frame>.pfm`
+instead of averaging, for motion/reset inspection. These synchronous readbacks
+must not be included in GPU performance runs. The profiler has a separate
+`SubSampling_ms` column; FILL excludes compaction and measures the entire SPP loop.
+
+Results on RTX 5060 / Windows (2026-10-26), under ignored
+`build/rtxpt-v190/subsampling-*`:
+
+| Check | Result / evidence |
+| --- | --- |
+| Debug / Release | Both builds exit 0 (`subsampling-build-{debug,release}-final.log`). |
+| Shader variants | 72 Reference/BUILD/FILL, FP16/FP32, inline/TraceRay visibility DXIL/SPIR-V variants compile with O3 (`subsampling-shaders.log`). |
+| GPU mapping / compaction | D3D12 and Vulkan Debug engines each pass all 100 cases without graphics errors (`subsampling-gpu-{d3d12,vk}.log`). |
+| Debug scene | 641x361, quarter-rate stochastic compaction, 32-frame finite HDR; exit 0 and no graphics errors (`subsampling-debug-final.log`, `.pfm`). |
+| Other patterns | Block jitter, compaction and stratification each render 3/4 rate at 641x361, with finite HDR and no graphics errors (`subsampling-pattern-{0,1,2}.log`, `.pfm`). Sobol is used in the paired comparisons below. |
+| NRD/RR transitions | Four 20-stage runs all report failures=0 (`subsampling-motion-{nrd,rr}-{0,3}.log`). These include continuous motion, disocclusion/cut, history reset, all fractional rates, pattern changes, odd resize and full-rate restoration. |
+| Existing integration | The 19-stage RR sequence reports failures=0, 448 RR executions, 6 creates and 13 history resets (`subsampling-transitions.log`). It additionally exercises Reference and TAA/SR switching. |
+| Vulkan RR | Quarter-rate compacted sampling at 641x361 exits 0; 128 actual RR executions, no graphics errors (`subsampling-vulkan.log`). Vulkan standalone NRD remains unvalidated due to the existing RGB10A2 allocation limitation; it is not counted as passing. |
+| Other paths | SHaRC + HitObject/SER and the multi-spp fallback with FP32/TraceRay shadows each exit 0 without graphics errors (`subsampling-sharc.log`, `subsampling-spp-fallback.log`). |
+| Formatting | clang-format 10 reports no replacements in changed C++ files; whitespace checks pass. |
+
+The first Debug scene exposed a repeated-initialization bug in the new adapter:
+creating its constant buffer twice overwrote a live smart-pointer reference.
+It now reuses that buffer. The failing diagnostic is retained in
+`subsampling-release-quarter.log`; the final Debug and scene runs above are the
+post-fix evidence. Exiting successfully alone is not sufficient: logs were also
+checked for graphics errors.
+
+Fixed scene: `convergence-test.scene.json`, 640x360, TraceRay scatter, no NRD/AA,
+Sobol 8x8, 1 base spp. HDR averages frames 256..319. Separate timing runs use
+2048 frames, exclude frames <=240, and contain 1805 or 1806 valid timing samples.
+
+| Rate | FILL pixel paths/frame | Mean linear luminance | Total GPU ms | FILL GPU ms |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 230,400 | 0.447093 | 3.573 | 3.061 |
+| 3/4 | 172,800 | 0.447307 | 3.435 | 2.910 |
+| 1/2 | 115,200 | 0.447306 | 2.312 | 1.804 |
+| 1/4 | 57,600 | 0.447553 | 1.492 | 0.981 |
+
+These full-block path counts follow the GPU-tested mapping and exact launch
+dimensions; they are not total BVH ray/bounce counts. BUILD remains full screen
+(about 0.142 ms). Quarter rate reduces total GPU time by about 58% in this scene,
+while raw mean luminance differs by +0.103%. Raw RGB RMSE against the stochastic
+1-spp average is 0.0954 / 0.1168 / 0.1683 for 3/4, 1/2 and 1/4. These comparisons
+are not a converged ground-truth bias bound. Timing/quality data are recorded in
+`subsampling-metrics.json` and the paired PFM/CSV files.
+
+Reconstruction has measurable quality costs. At quarter rate, REBLUR's averaged
+linear luminance changes from 0.423062 to 0.415482 (-1.79%), with RGB RMSE 0.04544;
+native RR preset E changes from 0.446014 to 0.431499 (-3.25%), with RGB RMSE 0.08147.
+The sparse estimator's energy preservation does not imply an unbiased denoiser.
+
+Temporal validation captures 64 individual processed-HDR frames for each NRD/RR
+and 1/quarter-rate pair (256 finite images total), covering motion and the cut.
+In the stationary recovery tail, adjacent-frame luminance MAE is 0.001220 vs
+0.001873 for NRD and 0.001820 vs 0.001766 for RR. These are descriptive temporal
+variation measurements, not a proof of zero flicker or ghosting. Contact sheets
+and paired GIFs (`subsampling-motion-{nrd,rr}-contact.png`, `.gif`) show increased
+NRD residual noise/patterning and softer RR details at quarter rate. Both recover
+after the explicit cut; no stale whole-frame image or uninitialized region was
+observed in these runs. Long trajectories, other scenes and Vulkan NRD remain
+unvalidated. Full sampling is the default and remains the quality fallback.
+
 ## SHaRC validation (issue #23)
 
 All path-tracing and SHaRC shaders explicitly request DXC O3, including Debug.

@@ -48,6 +48,11 @@ VK_IMAGE_FORMAT("r32ui")   RWTexture2DArray<uint>    u_DenoisingLayersHeader;
 RWStructuredBuffer<DenoisingLayer>                      u_DenoisingLayersBuffer;
 #endif
 
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_FILL_DENOISING_LAYERS
+RWByteAddressBuffer u_SubSamplingPixelList;
+#include "SubSampling.h"
+#endif
+
 namespace Bridge
 {
     uint getSampleIndex()
@@ -62,7 +67,15 @@ namespace Bridge
 
     uint2 getPixelPosition()
     {
-        return DispatchRaysIndex().xy;
+        uint2 pixelPos = DispatchRaysIndex().xy;
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_FILL_DENOISING_LAYERS
+        if (g_MiniConst.params1.z > 1 &&
+            !SubSampling_ThreadToPixel(pixelPos, g_MiniConst.params1.xy, g_MiniConst.params1.w,
+                g_MiniConst.params2.x, g_MiniConst.params2.y, SubSampling_FrameSeed(),
+                g_Const.ptConsts.camera.ViewportSize, pixelPos))
+            return uint2(0xFFFFFFFF, 0xFFFFFFFF);
+#endif
+        return pixelPos;
     }
 
 #ifdef ENABLE_HIT_BRIDGE

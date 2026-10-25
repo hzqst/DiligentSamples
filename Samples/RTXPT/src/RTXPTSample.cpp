@@ -79,7 +79,7 @@ constexpr Uint32 kRTXPTRealtimeNoisePeriod = 8192u;
 
 // Disk file used to persist the render state cache (compiled shaders + pipeline states)
 // across runs. Resolved relative to the working directory set in Initialize().
-constexpr char kStateCachePath[] = "RTXPTCache_016.bin";
+constexpr char kStateCachePath[] = "RTXPTCache_017.bin";
 
 bool IsStandaloneNrdAvailable()
 {
@@ -653,6 +653,10 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
     Args.Parse("thread_reorder", m_EnableThreadReorder);
     Args.Parse("fp16", m_ReferenceUI.UseFp16Types);
     Args.Parse("sharc", m_SharcSettings.Enabled);
+    Args.Parse("spp", m_RealtimeUI.RealtimeSamplesPerPixel);
+    Args.Parse("subsampling", m_RealtimeUI.RealtimeSubSamplingMode);
+    Args.Parse("subsampling_pattern", m_RealtimeUI.RealtimeSubSamplingPattern);
+    Args.Parse("subsampling_block_size", m_RealtimeUI.RealtimeSubSamplingBlockSize);
     Args.Parse("sharc_capacity_log2", m_SharcSettings.CapacityLog2);
     Args.Parse("sharc_downscale", m_SharcSettings.DownscaleFactor);
     Args.Parse("sharc_debug", m_SharcSettings.DebugMode);
@@ -661,6 +665,9 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
     Args.Parse("hdr_capture_path", m_HDRCapture.Path);
     Args.Parse("hdr_capture_start", m_HDRCapture.StartFrame);
     Args.Parse("hdr_capture_count", m_HDRCapture.FrameCount);
+    Args.Parse("hdr_capture_processed", m_HDRCapture.Processed);
+    Args.Parse("hdr_capture_sequence", m_HDRCapture.Sequence);
+    Args.Parse("subsampling_validation", m_ValidateSubSampling);
     Args.Parse("exit_after_frames", m_ExitAfterFrames);
     Args.Parse("bounces", m_MaxBounces);
     m_MaxBounces = std::clamp(m_MaxBounces, 1u, static_cast<Uint32>(kMaxBounceSliderValue));
@@ -1331,6 +1338,8 @@ void RTXPTSample::CreateSceneIndependentPasses()
 
 void RTXPTSample::CreateSceneDependentPasses()
 {
+    if (!m_AdaptiveSampling.Initialize(m_pDevice, m_pEngineFactory, m_pStateCache, m_FrameConstantsCB))
+        LOG_ERROR_MESSAGE("SubSampling initialization failed");
     m_Sharc.Invalidate();
     const bool EnableSharc = m_SharcSettings.Enabled && SharcIntegration::IsSupported(m_pDevice);
     if (m_SharcSettings.Enabled && !EnableSharc)
@@ -1626,11 +1635,22 @@ bool RTXPTSample::PathTrace()
 
 bool RTXPTSample::DispatchPathTraceLoop(bool UseDenoisingLayers, const RTXPTRayTracingDispatch& BaseDispatch)
 {
-    RTXPTGpuProfiler::Scope     Timing{&m_GpuProfiler, m_pImmediateContext, RTXPTGpuProfiler::Stage::Fill};
     const Uint32                SPP = std::max(m_RealtimeUI.ActualSamplesPerPixel(), 1u);
     const RTXPTPathTraceVariant Variant =
         UseDenoisingLayers ? (m_SharcActive ? RTXPTPathTraceVariant::SharcFill : RTXPTPathTraceVariant::FillDenoisingLayers) : RTXPTPathTraceVariant::Reference;
 
+    RTXPTRayTracingDispatch PreparedDispatch = BaseDispatch;
+    SampleMiniConstants     PreparedMini     = {};
+    if (UseDenoisingLayers)
+    {
+        RTXPTGpuProfiler::Scope Timing{&m_GpuProfiler, m_pImmediateContext, RTXPTGpuProfiler::Stage::SubSampling};
+        if (!m_AdaptiveSampling.PrepareSubSampling(m_pDevice, m_pImmediateContext, m_RealtimeUI, PreparedMini, PreparedDispatch))
+        {
+            LOG_ERROR_MESSAGE("SubSampling preparation failed");
+            return false;
+        }
+    }
+    RTXPTGpuProfiler::Scope Timing{&m_GpuProfiler, m_pImmediateContext, RTXPTGpuProfiler::Stage::Fill};
     for (Uint32 SubSampleIndex = 0; SubSampleIndex < SPP; ++SubSampleIndex)
     {
         if (UseDenoisingLayers)
@@ -1639,10 +1659,10 @@ bool RTXPTSample::DispatchPathTraceLoop(bool UseDenoisingLayers, const RTXPTRayT
             RTXPTRayTracingPass::InsertUAVBarrier(m_pImmediateContext, m_RenderTargets.GetSpecularHitTUAV());
         }
 
-        SampleMiniConstants MiniConstants = {};
+        SampleMiniConstants MiniConstants = PreparedMini;
         MiniConstants.params.x            = SubSampleIndex;
 
-        RTXPTRayTracingDispatch Dispatch = BaseDispatch;
+        RTXPTRayTracingDispatch Dispatch = PreparedDispatch;
         Dispatch.pMiniConstants          = &MiniConstants;
         if (m_SharcActive) m_Sharc.Bind(Dispatch);
 
@@ -1885,6 +1905,9 @@ bool RTXPTSample::PresentRealtimeFinalOutput()
             return false;
     }
 
+    if (m_HDRCapture.Processed)
+        m_HDRCapture.Capture(m_pDevice, m_pImmediateContext, m_RenderTargets.GetProcessedOutputColorSRV()->GetTexture(), m_FrameIndex);
+
     RTXPTBloomParameters BloomParams;
     BloomParams.Enabled   = m_ReferenceUI.EnableBloom;
     BloomParams.Radius    = std::clamp(m_ReferenceUI.BloomRadius, 0.0f, 64.0f);
@@ -2078,7 +2101,8 @@ bool RTXPTSample::RunRealtimePathTraceOnly()
         return false;
     }
 
-    m_HDRCapture.Capture(m_pDevice, m_pImmediateContext, m_RenderTargets.GetOutputColorSRV()->GetTexture(), m_FrameIndex);
+    if (!m_HDRCapture.Processed)
+        m_HDRCapture.Capture(m_pDevice, m_pImmediateContext, m_RenderTargets.GetOutputColorSRV()->GetTexture(), m_FrameIndex);
 
     return true;
 }
@@ -2135,6 +2159,7 @@ void RTXPTSample::Render()
 void RTXPTSample::Update(double CurrTime, double ElapsedTime, bool DoUpdateUI)
 {
     RunRayReconstructionValidation(CurrTime);
+    RunSubSamplingValidation();
     SampleBase::Update(CurrTime, ElapsedTime, DoUpdateUI);
 
     m_Camera.Update(m_InputController, static_cast<float>(ElapsedTime));
@@ -2378,6 +2403,13 @@ void RTXPTSample::UpdateUI()
                     std::clamp(m_RealtimeUI.RealtimeSamplesPerPixel, Int32{1}, static_cast<Int32>(kRTXPTRealtimeSamplesPerPixelMax));
                 if (ImGui::IsItemHovered())
                     ImGui::SetTooltip("Full paths per pixel per realtime frame; camera ray anti-aliasing is handled by the selected AA/SR mode.");
+                ImGui::BeginDisabled(m_RealtimeUI.ActualSamplesPerPixel() != 1);
+                ResetRealtimeOnChange(ImGui::Combo("Sub-sampling rate", &m_RealtimeUI.RealtimeSubSamplingMode, "1 spp\0Three quarters\0Half\0Quarter\0"), "Sub-sampling rate changed");
+                ResetRealtimeOnChange(ImGui::Combo("Sub-sampling pattern", &m_RealtimeUI.RealtimeSubSamplingPattern, "Random per block\0Stochastic compacted\0Block stratified\0Sobol block\0"), "Sub-sampling pattern changed");
+                int BlockIndex = m_RealtimeUI.RealtimeSubSamplingBlockSize <= 4 ? 0 : (m_RealtimeUI.RealtimeSubSamplingBlockSize <= 8 ? 1 : 2);
+                if (ResetRealtimeOnChange(ImGui::Combo("Sub-sampling block size", &BlockIndex, "4\0 8\0 16\0"), "Sub-sampling block size changed"))
+                    m_RealtimeUI.RealtimeSubSamplingBlockSize = 4 << BlockIndex;
+                ImGui::EndDisabled();
             }
             else
             {
@@ -3325,5 +3357,6 @@ void RTXPTSample::InvalidatePreviousFrameConstants()
 }
 
 #include "../tests/RRSceneValidation.hpp"
+#include "../tests/SubSamplingSceneValidation.hpp"
 
 } // namespace Diligent

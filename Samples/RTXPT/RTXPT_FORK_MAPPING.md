@@ -1,5 +1,48 @@
 # RTXPT Fork Mapping
 
+## Sub-sampling / sub-1spp (#26, 2026-10-26)
+
+Reference remains RTXPT-fork `9503910839f013f7ee0a2590a1131d84160ca712`.
+`SubSampling.h`, `Utils/MicroRng.hlsli` and `SubSamplingCompaction.hlsl` preserve
+the four upstream patterns: block jitter, stochastic compaction, block
+stratification and Owen-scrambled Sobol blocks. Rates are 1, 3/4, 1/2 and 1/4;
+stratified/Sobol blocks are 4, 8 or 16. Default rate is 1, default pattern Sobol 8.
+
+BUILD still runs at full resolution and clears each valid layer's noisy radiance
+every frame. FILL maps dispatch threads to actual pixel positions and multiplies
+only the restored stochastic path throughput by the inverse selection rate.
+Stable radiance, material guidance and world-space motion are not scaled.
+Unselected pixels have this frame's zero noisy radiance and complete BUILD
+guidance; they never retain a previous frame's noisy sample. NRD and RR consume
+the full-resolution fields, including the existing SpecularHitT filter. There
+is no radiance expansion/copy-to-neighbor pass in this fixed upstream version.
+The compacted list is expanded to actual pixel addresses in FILL raygen.
+
+`AdaptiveSampling` owns the raw pixel list and compute pass. Reset-copy,
+compaction and raygen consumption are ordered with transitions/UAV barriers.
+The 16-byte header and packed 16-bit coordinates match upstream. Pixel selection
+uses the same `sampleBaseIndex + subSampleIndex` seed in compaction and FILL,
+including non-inline visibility's pixel addressing. SHaRC training is separate;
+SHaRC FILL receives the same sub-sampling mapping and weighting.
+
+Preserved local differences: the existing 64-byte mini constants carry scale,
+rate, pattern and block size dynamically, avoiding PSO rebuilds on a UI change.
+The stochastic pattern launches a full-viewport upper bound and exits surplus
+threads before tracing. This guarantees every selected pixel is processed,
+instead of relying on upstream's probabilistic `mean + 8 sigma + 256` bound.
+Pattern changes release obsolete list bindings; resize reallocates the list.
+Reference, multi-spp and dimensions above 65535 use full sampling. Runtime rate,
+pattern and block changes invalidate image histories through the existing reset
+path. No dependency, third-party source or engine API changes are required.
+
+Controls: `--subsampling 0..3`, `--subsampling_pattern 0..3`,
+`--subsampling_block_size 4|8|16`, `--spp 1..64`, and corresponding realtime UI.
+`--subsampling_validation true` runs the opt-in NRD/RR motion, disocclusion,
+rate/pattern switches, history-reset and odd-resize sequence. The shader/PSO
+cache is now `RTXPTCache_017.bin`; all RT and compaction shaders use O3.
+See [validation results](tests/README.md#sub-sampling-validation-issue-26) for
+backend support, measured work and quality/performance limitations.
+
 ## SHaRC integration (#23, 2026-10-26)
 
 Reference: RTXPT-fork `9503910839f013f7ee0a2590a1131d84160ca712` and its

@@ -46,6 +46,7 @@
 #include "RTXPTMaterials.hpp"
 #include "RTXPTRayTracingPass.hpp"
 #include "SharcIntegration.hpp"
+#include "AdaptiveSampling.hpp"
 #include "../tests/HDRValidationCapture.hpp"
 #include "RTXPTDenoisingGuidesBaker.hpp"
 #include "RTXPTNrdIntegration.hpp"
@@ -163,6 +164,7 @@ private:
     bool RunRealtimePathTraceOnly();
     bool PathTrace();
     void RunRayReconstructionValidation(double CurrTime);
+    void RunSubSamplingValidation();
     bool BakeDenoisingGuides();
     bool PresentRealtimeGuideDebug();
     bool DispatchPathTracePrePass(const RTXPTRayTracingDispatch& BaseDispatch);
@@ -193,6 +195,7 @@ private:
     RTXPTRenderTargets                                         m_RenderTargets;
     RTXPTRayTracingPass                                        m_RayTracingPass;
     SharcIntegration                                           m_Sharc;
+    AdaptiveSampling                                           m_AdaptiveSampling;
     SharcSettings                                              m_SharcSettings;
     bool                                                       m_SharcActive = false;
     HDRValidationCapture                                       m_HDRCapture;
@@ -220,6 +223,10 @@ private:
     RTXPTRayReconstructionSettings m_RayReconstructionSettings;
     bool                           m_RayReconstructionFrameReady           = false;
     bool                           m_ValidateRayReconstruction             = false;
+    bool                           m_ValidateSubSampling                   = false;
+    Uint32                         m_SubSamplingValidationFrame            = 0;
+    Uint32                         m_SubSamplingValidationFailures         = 0;
+    Int32                          m_SubSamplingValidationInitialMode      = 0;
     bool                           m_EnableVulkanRayReconstruction         = true;
     bool                           m_LastFrameSucceeded                    = false;
     double                         m_RayReconstructionValidationStageStart = 0;
