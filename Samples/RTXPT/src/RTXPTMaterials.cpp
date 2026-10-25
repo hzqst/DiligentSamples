@@ -91,7 +91,7 @@ void FillMaterialPTDataFromGLTF(const GLTF::Material& Material, MaterialPTData& 
     {
         Data.flags |= kMaterialFlag_HasBaseColorTexture;
         Data.baseColorTextureIndex = static_cast<Uint32>(BaseColorTextureId);
-        Data.baseColorTextureSlice = Material.GetTextureAttrib(GLTF::DefaultBaseColorTextureAttribId).TextureSlice;
+        Data.baseColorTextureSlice = Material.GetTextureAttrib(GLTF::DefaultBaseColorTextureAttribId).ShaderAttribs.TextureSlice;
     }
 
     const int EmissiveTextureId = Material.GetTextureId(GLTF::DefaultEmissiveTextureAttribId);
@@ -99,7 +99,7 @@ void FillMaterialPTDataFromGLTF(const GLTF::Material& Material, MaterialPTData& 
     {
         Data.flags |= kMaterialFlag_HasEmissiveTexture;
         Data.emissiveTextureIndex = static_cast<Uint32>(EmissiveTextureId);
-        Data.emissiveTextureSlice = Material.GetTextureAttrib(GLTF::DefaultEmissiveTextureAttribId).TextureSlice;
+        Data.emissiveTextureSlice = Material.GetTextureAttrib(GLTF::DefaultEmissiveTextureAttribId).ShaderAttribs.TextureSlice;
     }
 
     const int MetallicRoughnessTextureId = Material.GetTextureId(GLTF::DefaultMetallicRoughnessTextureAttribId);
@@ -107,7 +107,7 @@ void FillMaterialPTDataFromGLTF(const GLTF::Material& Material, MaterialPTData& 
     {
         Data.flags |= kMaterialFlag_HasMetallicRoughnessTexture;
         Data.metallicRoughnessTextureIndex = static_cast<Uint32>(MetallicRoughnessTextureId);
-        Data.metallicRoughnessTextureSlice = Material.GetTextureAttrib(GLTF::DefaultMetallicRoughnessTextureAttribId).TextureSlice;
+        Data.metallicRoughnessTextureSlice = Material.GetTextureAttrib(GLTF::DefaultMetallicRoughnessTextureAttribId).ShaderAttribs.TextureSlice;
     }
 
     const int NormalTextureId = Material.GetTextureId(GLTF::DefaultNormalTextureAttribId);
@@ -115,7 +115,7 @@ void FillMaterialPTDataFromGLTF(const GLTF::Material& Material, MaterialPTData& 
     {
         Data.flags |= kMaterialFlag_HasNormalTexture;
         Data.normalTextureIndex = static_cast<Uint32>(NormalTextureId);
-        Data.normalTextureSlice = Material.GetTextureAttrib(GLTF::DefaultNormalTextureAttribId).TextureSlice;
+        Data.normalTextureSlice = Material.GetTextureAttrib(GLTF::DefaultNormalTextureAttribId).ShaderAttribs.TextureSlice;
     }
 
     Data.ior = 1.5f;
@@ -131,7 +131,7 @@ void FillMaterialPTDataFromGLTF(const GLTF::Material& Material, MaterialPTData& 
         {
             Data.flags |= kMaterialFlag_HasTransmissionTexture;
             Data.transmissionTextureIndex = static_cast<Uint32>(TransmissionTextureId);
-            Data.transmissionTextureSlice = Material.GetTextureAttrib(GLTF::DefaultTransmissionTextureAttribId).TextureSlice;
+            Data.transmissionTextureSlice = Material.GetTextureAttrib(GLTF::DefaultTransmissionTextureAttribId).ShaderAttribs.TextureSlice;
         }
     }
 
@@ -147,7 +147,7 @@ void FillMaterialPTDataFromGLTF(const GLTF::Material& Material, MaterialPTData& 
         {
             Data.flags |= kMaterialFlag_HasThicknessTexture;
             Data.thicknessTextureIndex = static_cast<Uint32>(ThicknessTextureId);
-            Data.thicknessTextureSlice = Material.GetTextureAttrib(GLTF::DefaultThicknessTextureAttribId).TextureSlice;
+            Data.thicknessTextureSlice = Material.GetTextureAttrib(GLTF::DefaultThicknessTextureAttribId).ShaderAttribs.TextureSlice;
         }
     }
 

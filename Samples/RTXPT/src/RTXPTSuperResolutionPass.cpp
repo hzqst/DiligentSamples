@@ -153,7 +153,9 @@ bool RTXPTSuperResolutionPass::Initialize(IRenderDevice* pDevice, IRenderStateCa
 
     m_Device = pDevice;
 
-    LoadAndCreateSuperResolutionFactory(pDevice, &m_Factory);
+    SuperResolutionFactoryCreateInfo FactoryCI;
+    FactoryCI.pDevice = pDevice;
+    LoadAndCreateSuperResolutionFactory(FactoryCI, &m_Factory);
 
     m_Stats.FactoryReady = m_Factory != nullptr;
 
