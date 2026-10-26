@@ -116,10 +116,14 @@ float3 computeTriangleRadiance(MaterialPTData material, float2 uv0, float2 uv1, 
 [numthreads(64, 1, 1)]
 void main(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
-    if (dispatchThreadId.x >= g_EmissiveTriangleBuildConstants.SubInstanceCount)
+    const uint subInstanceCount = g_EmissiveTriangleBuildConstants.SubInstanceCount;
+    if (dispatchThreadId.x >= subInstanceCount)
         return;
 
-    const uint           subInstanceIndex = dispatchThreadId.x;
+    // Keep even a speculated descriptor load in bounds on Vulkan devices without robust buffer access: the NVIDIA
+    // driver (Vulkan 1.4) also executes the dependent t_SubInstanceData -> t_PTMaterialData loads for guarded-out
+    // lanes, and a MaterialID read past the sub-instance buffer faults the device.
+    const uint           subInstanceIndex = min(dispatchThreadId.x, max(1u, subInstanceCount) - 1u);
     const SubInstanceData subInstance     = t_SubInstanceData[subInstanceIndex];
     const MaterialPTData  material        = t_PTMaterialData[subInstance.MaterialID];
     if ((material.flags & kMaterialFlagEmissiveAreaLight) == 0u)
