@@ -200,7 +200,10 @@ void ProcessClustersCS(uint clusterOffset : SV_DispatchThreadID)
 {
     const LightingControlData ctrl = u_LightingControl[0];
     if (clusterOffset >= ctrl.LightClusterCount) return;
-    const uint clusterIndex = ctrl.TotalLightCount - ctrl.LightClusterCount + clusterOffset;
+    // Keep even a speculated descriptor load in bounds on Vulkan devices without robust buffer access:
+    // the cluster's member range read below feeds further u_Lights / u_LightWeights loads.
+    const uint safeClusterOffset = min(clusterOffset, max(1u, ctrl.LightClusterCount) - 1u);
+    const uint clusterIndex = ctrl.TotalLightCount - ctrl.LightClusterCount + safeClusterOffset;
     PolymorphicLightInfo cluster = u_Lights[clusterIndex];
     const uint originalFrom = cluster.Direction2 & 0x7fffffu;
     const uint originalCount = ((cluster.Direction2 >> 23) & 63u) + 1u;
@@ -252,11 +255,13 @@ void ProcessClustersCS(uint clusterOffset : SV_DispatchThreadID)
 [numthreads(256, 1, 1)]
 void ComputeProxyCountsCS(uint dispatchThreadId : SV_DispatchThreadID)
 {
-    const uint lightIndex = dispatchThreadId;
-    if (lightIndex >= g_LightProxyBuildConstants.TotalLightCount)
+    const uint  totalLights = g_LightProxyBuildConstants.TotalLightCount;
+    if (dispatchThreadId >= totalLights)
         return;
 
-    const uint  totalLights = g_LightProxyBuildConstants.TotalLightCount;
+    // Keep even a speculated descriptor load in bounds on Vulkan devices without robust buffer access:
+    // a cluster's Direction1 range read from t_Lights feeds further t_FeedbackCounts loads.
+    const uint lightIndex = min(dispatchThreadId, max(1u, totalLights) - 1u);
     const uint  budget      = g_LightProxyBuildConstants.ProxyBudget;
     // Reserve one proxy per light so the per-light counts (each rounded up) still sum to <= budget.
     const uint sampledLightCount = totalLights - u_LightingControl[0].LightClusterCount;
@@ -309,8 +314,11 @@ void ComputeProxyCountsCS(uint dispatchThreadId : SV_DispatchThreadID)
 void ScatterProxiesCS(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
 {
     const uint index = groupId.x + groupId.y * 65535u;
-    if (index >= u_LightingControl[0].ProxyBuildTaskCount) return;
-    const uint4 job = u_ProxyJobs[index];
+    const uint taskCount = u_LightingControl[0].ProxyBuildTaskCount;
+    if (index >= taskCount) return;
+    // Keep even a speculated descriptor load in bounds: trailing groups of a two-dimensional dispatch
+    // would otherwise read up to 65534 jobs past the end of u_ProxyJobs.
+    const uint4 job = u_ProxyJobs[min(index, max(1u, taskCount) - 1u)];
     if (lane < job.z) u_LightSamplingProxies[job.y + lane] = job.x;
 }
 

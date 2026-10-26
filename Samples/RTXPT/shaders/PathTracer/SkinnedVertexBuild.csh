@@ -20,7 +20,9 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
     if (localVertex >= g_VertexCount)
         return;
 
-    const uint               sourceIndex = g_SourceVertexBase + localVertex;
+    // Keep even a speculated descriptor load in bounds on Vulkan devices without robust buffer access:
+    // skin joints read past this mesh would otherwise index t_JointMatrices with garbage.
+    const uint               sourceIndex = g_SourceVertexBase + min(localVertex, max(1u, g_VertexCount) - 1u);
     const GeometryVertexData src         = UnpackGeometryVertex(t_SourceVertices[sourceIndex]);
     const SkinVertexData     skin        = t_SourceSkinData[sourceIndex];
 
