@@ -1,5 +1,52 @@
 # RTXPT Fork Mapping
 
+## GPU instance preparation and TLAS (#28, 2026-10-26)
+
+Reference: RTXPT-fork `9503910839f013f7ee0a2590a1131d84160ca712`,
+`Sample::UploadTLASInstanceData`, `BuildTLASGPU`, `UpdateTLAS` and `TLASCull.hlsl`.
+The Diligent adapter is `GPUTLAS.hpp` plus `shaders/TLASCull.hlsl`.
+
+`--gpu_tlas true|false` selects GPU preparation (default true) or the CPU path.
+Initialization failure retains the CPU build. Both D3D12 and Vulkan are supported.
+The GPU consumes the current sub-instance transform buffer, emits native 64-byte
+instance records, and feeds Diligent `BuildTLAS`. UAV-to-AS-read transitions and
+BLAS-to-TLAS ordering remain owned by the engine on the submitting context.
+Animated geometry remains serial under the existing async-prefix restrictions.
+
+The approved Core extension is `BuildTLASAttribs::InstanceBufferIsPrebuilt`,
+default false, with API version 256022. It suppresses descriptor upload only;
+CPU instance metadata still controls BLAS lifetime, transitions and SBT mappings.
+Callers must match native descriptor addresses/order/contributions to that
+metadata. On refit, original instance indices are preserved. CPU metadata cannot
+validate GPU descriptor contents. Rebuild all consumers after this API change.
+Zero-instance builds are supported with nonzero TLAS allocation capacity and
+valid scratch/instance buffers; empty SBT binding is a no-op.
+
+Preserved adapter differences:
+
+- Each scene/topology build first bootstraps native descriptors through the CPU
+  path, then copies an immutable GPU template (64 bytes/instance). This avoids
+  another public BLAS-address API and preserves native flag conversion. The
+  bootstrap includes an extra initial TLAS build; steady-state refits do not.
+- A 16-byte instance table carries transform index, custom ID and visibility mask.
+  The existing GPU transform buffer supplies row-vector matrices; the shader
+  writes their transposed affine 3x4 representation. No GPU readback is needed.
+- Custom IDs remain sub-instance bases; the separate native SBT contribution
+  retains two records per geometry. Material lookup, HitObject/SER and TraceRay
+  shaders are unchanged. Do not copy upstream's contribution-equals-custom-ID rule.
+- No view-frustum culling, instance compaction, OMM or BLAS pooling is introduced.
+  Masks can disable records without changing instance order. Templates must be
+  recreated on BLAS address, flags, SBT layout or topology changes.
+- Scene reload/rebuild resets templates and bindings. Rigid animation now updates
+  TLAS even without skinned meshes; skinning/BLAS refit precedes GPU preparation.
+  The sample treats an empty scene as an unbuilt AS and uses its clear fallback;
+  the isolated engine test also exercises actual zero-instance traversal.
+- TLAS allocations allow update for rigid as well as skinned instances. Additional
+  explicit GPU storage is 80 bytes/instance; driver allocation overhead and AS
+  allocation changes are not represented by that number.
+
+See [validation and remaining limits](tests/README.md#gpu-tlas-validation-issue-28).
+
 ## Async prefix scheduling (#27)
 
 **Work in progress; issue #27 has not met acceptance.** The Vulkan scene reload

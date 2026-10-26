@@ -184,6 +184,7 @@ private:
     AsyncPrefix                                                m_AsyncPrefix;
     std::vector<ImmediateContextCreateInfo>                    m_AsyncContextInfo;
     bool                                                       m_EnableAsyncPrefix    = false;
+    bool                                                       m_EnableGPUTLAS        = true;
     bool                                                       m_CreateAsyncQueue     = true;
     bool                                                       m_AsyncInputsPrepared  = false;
     bool                                                       m_AsyncPrefixReady     = false;

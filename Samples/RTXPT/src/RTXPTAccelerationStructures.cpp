@@ -105,6 +105,7 @@ InstanceMatrix ToInstanceMatrix(const float4x4& Transform)
 
 void RTXPTAccelerationStructures::Reset()
 {
+    m_GPUTLAS = {};
     m_BLASRecords.clear();
     m_TLAS.Release();
     m_BLASScratch.Release();
@@ -123,7 +124,8 @@ bool RTXPTAccelerationStructures::BuildScene(IRenderDevice*                   pD
                                              const RTXPTSceneGraphData&       SceneData,
                                              VALUE_TYPE                       IndexType,
                                              const RTXPTSkinnedSceneGeometry* pSkinnedGeometry,
-                                             bool                             RayTracingSupported)
+                                             bool                             RayTracingSupported,
+                                             IEngineFactory*                  Factory)
 {
     Reset();
     m_Stats.RayTracingSupported = RayTracingSupported;
@@ -142,7 +144,7 @@ bool RTXPTAccelerationStructures::BuildScene(IRenderDevice*                   pD
 
     if (SceneData.ModelAssets.empty() || SceneData.ModelInstances.empty())
     {
-        LOG_ERROR_MESSAGE("RTXPT acceleration structure build requires model assets and instances");
+        // Empty scenes deliberately remain unbuilt; the sample presents its clear fallback.
         return false;
     }
 
@@ -168,7 +170,6 @@ bool RTXPTAccelerationStructures::BuildScene(IRenderDevice*                   pD
 
     Uint32 SubInstanceBase        = 0;
     Uint32 EmissiveTriangleOffset = 0;
-    bool   HasDynamicGeometry     = false;
     for (Uint32 InstanceId = 0; InstanceId < SceneData.ModelInstances.size(); ++InstanceId)
     {
         const RTXPTModelInstance& Instance = SceneData.ModelInstances[InstanceId];
@@ -474,7 +475,6 @@ bool RTXPTAccelerationStructures::BuildScene(IRenderDevice*                   pD
             BLASAttribs.ScratchBufferTransitionMode = RESOURCE_STATE_TRANSITION_MODE_TRANSITION;
             pContext->BuildBLAS(BLASAttribs);
 
-            HasDynamicGeometry = HasDynamicGeometry || Record.Dynamic;
             m_InstanceNames.emplace_back(Record.Name);
 
             TLASBuildInstanceData TLASInstance;
@@ -494,7 +494,7 @@ bool RTXPTAccelerationStructures::BuildScene(IRenderDevice*                   pD
 
     if (m_TLASInstances.empty())
     {
-        LOG_ERROR_MESSAGE("No RTXPT mesh instances were available for TLAS build");
+        // A scene may contain cameras/lights only. Never retain the previous TLAS.
         return false;
     }
 
@@ -505,7 +505,7 @@ bool RTXPTAccelerationStructures::BuildScene(IRenderDevice*                   pD
     TLASDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
     TLASDesc.Name             = "RTXPT TLAS";
     TLASDesc.MaxInstanceCount = static_cast<Uint32>(m_TLASInstances.size());
-    TLASDesc.Flags            = HasDynamicGeometry ? RAYTRACING_BUILD_AS_ALLOW_UPDATE : RAYTRACING_BUILD_AS_NONE;
+    TLASDesc.Flags            = RAYTRACING_BUILD_AS_ALLOW_UPDATE;
     pDevice->CreateTLAS(TLASDesc, &m_TLAS);
 
     VERIFY(m_TLAS, "Failed to create RTXPT TLAS");
@@ -514,15 +514,14 @@ bool RTXPTAccelerationStructures::BuildScene(IRenderDevice*                   pD
 
     const Uint64 TLASBuildScratchSize  = m_TLAS->GetScratchBufferSizes().Build;
     const Uint64 TLASUpdateScratchSize = m_TLAS->GetScratchBufferSizes().Update;
-    m_Stats.TLASScratchSize            = HasDynamicGeometry ?
-        std::max(TLASBuildScratchSize, TLASUpdateScratchSize) :
-        TLASBuildScratchSize;
+    m_Stats.TLASScratchSize            = std::max(TLASBuildScratchSize, TLASUpdateScratchSize);
 
     BufferDesc InstanceBufferDesc;
     InstanceBufferDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
     InstanceBufferDesc.Name      = "RTXPT TLAS instance buffer";
     InstanceBufferDesc.Usage     = USAGE_DEFAULT;
-    InstanceBufferDesc.BindFlags = BIND_RAY_TRACING;
+    InstanceBufferDesc.BindFlags = BIND_RAY_TRACING | BIND_UNORDERED_ACCESS;
+    InstanceBufferDesc.Mode      = BUFFER_MODE_RAW;
     InstanceBufferDesc.Size      = Uint64{TLAS_INSTANCE_DATA_SIZE} * Uint64{m_TLASInstances.size()};
     pDevice->CreateBuffer(InstanceBufferDesc, nullptr, &m_InstanceBuffer);
     VERIFY(m_InstanceBuffer, "Failed to create RTXPT TLAS instance buffer");
@@ -592,6 +591,27 @@ bool RTXPTAccelerationStructures::BuildScene(IRenderDevice*                   pD
 
     if (!UploadSubInstanceTransforms(pContext)) return false;
 
+    if (Factory != nullptr)
+    {
+        std::vector<GPUTLAS::InstanceData> Instances;
+        for (const auto& Inst : m_TLASInstances)
+            Instances.push_back({Inst.CustomId, Inst.CustomId, Inst.Mask});
+        m_Stats.GPUTLASActive = m_GPUTLAS.Initialize(pDevice, pContext, Factory, m_InstanceBuffer,
+                                                     Instances.data(), static_cast<Uint32>(Instances.size()));
+        if (m_Stats.GPUTLASActive)
+        {
+            m_Stats.GPUInstanceDataSize = m_GPUTLAS.GetMemorySize();
+            TLASAttribs.InstanceBufferIsPrebuilt = m_GPUTLAS.Prepare(pContext, m_SubInstanceTransformBuffer, m_InstanceBuffer);
+            TLASAttribs.Update = true;
+            pContext->BuildTLAS(TLASAttribs);
+        }
+        else
+        {
+            m_GPUTLAS = {};
+            LOG_WARNING_MESSAGE("GPU TLAS initialization unavailable; using CPU instance preparation");
+        }
+    }
+
     m_Stats.BLASCount        = static_cast<Uint32>(m_BLASRecords.size());
     m_Stats.InstanceCount    = static_cast<Uint32>(m_TLASInstances.size());
     m_Stats.SubInstanceCount = static_cast<Uint32>(SubInstances.size());
@@ -653,7 +673,8 @@ bool RTXPTAccelerationStructures::UpdateTLAS(IDeviceContext* pContext, const RTX
         }
 
         const float4x4& WorldTransform                     = Transforms.NodeGlobalMatrices[NodeIndex];
-        m_TLASInstances[Record.InstanceIndex].Transform    = ToInstanceMatrix(WorldTransform);
+        if (!m_Stats.GPUTLASActive)
+            m_TLASInstances[Record.InstanceIndex].Transform = ToInstanceMatrix(WorldTransform);
         m_TLASInstances[Record.InstanceIndex].InstanceName = m_InstanceNames[Record.InstanceIndex].c_str();
 
         if (Uint64{Record.SubInstanceBase} + Uint64{Record.GeometryCount} > m_SubInstanceTransforms.size())
@@ -685,6 +706,7 @@ bool RTXPTAccelerationStructures::UpdateTLAS(IDeviceContext* pContext, const RTX
     TLASAttribs.pScratchBuffer               = m_TLASScratch;
     TLASAttribs.ScratchBufferTransitionMode  = RESOURCE_STATE_TRANSITION_MODE_TRANSITION;
     TLASAttribs.Update                       = true;
+    TLASAttribs.InstanceBufferIsPrebuilt     = m_Stats.GPUTLASActive && m_GPUTLAS.Prepare(pContext, m_SubInstanceTransformBuffer, m_InstanceBuffer);
     pContext->BuildTLAS(TLASAttribs);
     return true;
 }

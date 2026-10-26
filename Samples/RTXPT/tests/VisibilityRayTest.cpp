@@ -2,8 +2,11 @@
 // Licensed under the Apache License, Version 2.0.
 // Executes production inline visibility and both production any-hit entry points.
 #include <Windows.h>
+#include <dxgi1_4.h>
+#include <wrl/client.h>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
@@ -28,6 +31,32 @@ void DILIGENT_CALL_TYPE Message(DEBUG_MESSAGE_SEVERITY Severity, const Char* Tex
 void Require(bool Value, const char* Text)
 {
     if (!Value) throw std::runtime_error{Text};
+}
+Uint64 LocalVideoMemoryUsage(const GraphicsAdapterInfo& RenderAdapter)
+{
+    // DXGI reports this process's local-segment usage, including driver allocation
+    // granularity. Load the system DLL explicitly; no new linked dependency.
+    static HMODULE DXGI = LoadLibraryExA("dxgi.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    Require(DXGI != nullptr, "DXGI telemetry unavailable");
+    auto CreateFactory = reinterpret_cast<HRESULT(WINAPI*)(REFIID, void**)>(GetProcAddress(DXGI, "CreateDXGIFactory1"));
+    Require(CreateFactory != nullptr, "DXGI factory unavailable");
+    Microsoft::WRL::ComPtr<IDXGIFactory1> Factory;
+    Require(SUCCEEDED(CreateFactory(IID_PPV_ARGS(&Factory))), "DXGI telemetry factory failed");
+    for (UINT Index = 0;; ++Index)
+    {
+        Microsoft::WRL::ComPtr<IDXGIAdapter1> Adapter;
+        if (Factory->EnumAdapters1(Index, &Adapter) == DXGI_ERROR_NOT_FOUND) break;
+        DXGI_ADAPTER_DESC1 Desc{};
+        Adapter->GetDesc1(&Desc);
+        if (Desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) continue;
+        if (Desc.VendorId != RenderAdapter.VendorId || Desc.DeviceId != RenderAdapter.DeviceId) continue;
+        Microsoft::WRL::ComPtr<IDXGIAdapter3> Adapter3;
+        if (FAILED(Adapter.As(&Adapter3))) continue;
+        DXGI_QUERY_VIDEO_MEMORY_INFO Info{};
+        if (SUCCEEDED(Adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &Info)))
+            return Info.CurrentUsage;
+    }
+    throw std::runtime_error{"Local video-memory telemetry unavailable"};
 }
 RefCntAutoPtr<IBuffer> Buffer(IRenderDevice* Device, Uint64 Size, Diligent::BIND_FLAGS Bind, const void* Data = nullptr, Uint32 Stride = 0)
 {
@@ -111,6 +140,7 @@ try
         EngineD3D12CreateInfo CI;
         CI.EnableValidation    = true;
         CI.Features.RayTracing = DEVICE_FEATURE_STATE_ENABLED;
+        CI.Features.DurationQueries = DEVICE_FEATURE_STATE_ENABLED;
         D3D12()->CreateDeviceAndContextsD3D12(CI, &Device, &Context);
     }
     else
@@ -122,6 +152,7 @@ try
         EngineVkCreateInfo CI;
         CI.EnableValidation    = true;
         CI.Features.RayTracing = DEVICE_FEATURE_STATE_ENABLED;
+        CI.Features.DurationQueries = DEVICE_FEATURE_STATE_ENABLED;
         Vulkan()->CreateDeviceAndContextsVk(CI, &Device, &Context);
     }
     Require(Device && Context, "Cannot create device");
@@ -200,10 +231,11 @@ try
     BLASDesc.Name          = "Visibility test BLAS";
     BLASDesc.pTriangles    = GeometryDescs.data();
     BLASDesc.TriangleCount = 4;
+    BLASDesc.Flags = RAYTRACING_BUILD_AS_ALLOW_UPDATE;
     RefCntAutoPtr<IBottomLevelAS> BLAS;
     Device->CreateBLAS(BLASDesc, &BLAS);
     Require(BLAS != nullptr, "BLAS creation failed");
-    auto             BLASScratch = Buffer(Device, BLAS->GetScratchBufferSizes().Build, BIND_RAY_TRACING);
+    auto             BLASScratch = Buffer(Device, std::max(BLAS->GetScratchBufferSizes().Build, BLAS->GetScratchBufferSizes().Update), BIND_RAY_TRACING);
     BuildBLASAttribs BuildBLAS;
     BuildBLAS.pBLAS              = BLAS;
     BuildBLAS.pTriangleData      = GeometryData.data();
@@ -221,17 +253,26 @@ try
         Instances[I].pBLAS        = BLAS;
         Instances[I].CustomId     = CustomIDs[I];
         Instances[I].Mask         = 0xFF;
+        Instances[I].Flags        = RAYTRACING_INSTANCE_TRIANGLE_FACING_CULL_DISABLE;
     }
     Instances[1].Transform.SetTranslation(0, 10, 0);
     Instances[2].Transform.SetTranslation(0, 0, 1);
     TopLevelASDesc TLASDesc;
     TLASDesc.Name             = "Visibility test TLAS";
     TLASDesc.MaxInstanceCount = 3;
+    TLASDesc.Flags            = RAYTRACING_BUILD_AS_ALLOW_UPDATE;
     RefCntAutoPtr<ITopLevelAS> TLAS;
     Device->CreateTLAS(TLASDesc, &TLAS);
     Require(TLAS != nullptr, "TLAS creation failed");
-    auto             TLASScratch    = Buffer(Device, TLAS->GetScratchBufferSizes().Build, BIND_RAY_TRACING);
-    auto             InstanceBuffer = Buffer(Device, TLAS_INSTANCE_DATA_SIZE * 3, BIND_RAY_TRACING);
+    auto             TLASScratch    = Buffer(Device, std::max(TLAS->GetScratchBufferSizes().Build, TLAS->GetScratchBufferSizes().Update), BIND_RAY_TRACING);
+    BufferDesc InstanceDesc;
+    InstanceDesc.Name = "GPU TLAS output";
+    InstanceDesc.Size = TLAS_INSTANCE_DATA_SIZE * 3;
+    InstanceDesc.BindFlags = BIND_RAY_TRACING | BIND_UNORDERED_ACCESS;
+    InstanceDesc.Mode = BUFFER_MODE_RAW;
+    RefCntAutoPtr<IBuffer> InstanceBuffer;
+    Device->CreateBuffer(InstanceDesc, nullptr, &InstanceBuffer);
+    Require(InstanceBuffer != nullptr, "GPU TLAS output creation failed");
     BuildTLASAttribs BuildTLAS;
     BuildTLAS.pTLAS              = TLAS;
     BuildTLAS.pInstances         = Instances.data();
@@ -293,6 +334,7 @@ try
 #include "PathTracer/PathTracerVisibility.hlsli"
 #include "PathTracer/PathPayload.hlsli"
 RWStructuredBuffer<uint4> u_Results;
+RWStructuredBuffer<uint4> u_Hits;
 #ifdef TEST_RAYGEN
 [shader("raygeneration")] void RayGen()
 {
@@ -310,6 +352,18 @@ RWStructuredBuffer<uint4> u_Results;
     PathPayload primary = (PathPayload)0;
     TraceRay(t_SceneBVH, RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, 0xFF, 0, 2, 0, ray, primary);
     u_Results[n] = uint4(visible, shadow.packed[0].x, primary.packed[0].x, 0);
+    RayQuery<RAY_FLAG_NONE> identity;
+    identity.TraceRayInline(t_SceneBVH, RAY_FLAG_NONE, 0xff, ray);
+    while (identity.Proceed())
+        if (identity.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE &&
+            Bridge::AlphaTestImpl(t_SubInstanceData[identity.CandidateInstanceID() + identity.CandidateGeometryIndex()],
+                identity.CandidatePrimitiveIndex(), identity.CandidateTriangleBarycentrics()))
+            identity.CommitNonOpaqueTriangleHit();
+    u_Hits[n] = uint4(0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu);
+    if (identity.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
+        u_Hits[n] = uint4(identity.CommittedInstanceID(), identity.CommittedGeometryIndex(),
+            t_SubInstanceData[identity.CommittedInstanceID() + identity.CommittedGeometryIndex()].MaterialID,
+            asuint(identity.CommittedRayT()));
 #if USE_DX_HIT_OBJECT_EXTENSION
     RayQuery<RAY_FLAG_NONE> query;
     Bridge::traceScatterRay(ray, query);
@@ -384,6 +438,7 @@ RWStructuredBuffer<uint4> u_Results;
     RefCntAutoPtr<IShaderResourceBinding> SRB;
     PSO->CreateShaderResourceBinding(&SRB, true);
     auto Output = Buffer(Device, 48 * 4 * sizeof(Uint32), BIND_UNORDERED_ACCESS, nullptr, 16);
+    auto Hits = Buffer(Device, 48 * 4 * sizeof(Uint32), BIND_UNORDERED_ACCESS, nullptr, 16);
     for (SHADER_TYPE Stage : {SHADER_TYPE_RAY_GEN, SHADER_TYPE_RAY_ANY_HIT})
     {
         auto Set = [&](const char* Name, IDeviceObject* Object) {
@@ -397,6 +452,7 @@ RWStructuredBuffer<uint4> u_Results;
         Set("t_IndexBuffer", IndexView);
         Set("t_BindlessTextures", Texture->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
         Set("u_Results", Output->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS));
+        Set("u_Hits", Hits->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS));
     }
     ShaderBindingTableDesc SBTDesc;
     SBTDesc.Name = "Visibility test SBT";
@@ -431,7 +487,138 @@ RWStructuredBuffer<uint4> u_Results;
             }
         }
     }
+    // Differential coverage uses the production GPU descriptor shader. CPU and GPU
+    // builds deliberately receive different CPU transforms/masks, detecting any
+    // accidental CPU overwrite of the prebuilt buffer in either backend.
+    auto TraceAndRead = [&]() {
+        // Topology changes invalidate the old table, including removed records.
+        SBT.Release();
+        Device->CreateSBT(SBTDesc, &SBT);
+        SBT->BindRayGenShader("RayGen");
+        SBT->BindMissShader("Miss", 0);
+        SBT->BindHitGroupForTLAS(TLAS, 0, "Primary");
+        SBT->BindHitGroupForTLAS(TLAS, 1, "Shadow");
+        Context->UpdateSBT(SBT);
+        Context->SetPipelineState(PSO);
+        Context->CommitShaderResources(SRB, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+        Context->TraceRays(Trace);
+        auto Values = Read(Context, Device, Output);
+        auto HitValues = Read(Context, Device, Hits);
+        Values.insert(Values.end(), HitValues.begin(), HitValues.end());
+        return Values;
+    };
+    std::array<float4x4, 33> Transforms;
+    std::array<GPUTLAS::InstanceData, 3> GPUInstances;
+    auto TransformBuffer = Buffer(Device, sizeof(Transforms), BIND_SHADER_RESOURCE, nullptr, sizeof(float4x4));
+    RefCntAutoPtr<IQuery> Timing;
+    Device->CreateQuery(QueryDesc{QUERY_TYPE_DURATION}, &Timing);
+    Require(Timing != nullptr, "TLAS duration query unavailable");
+    auto ReportTiming = [&](const char* Path, Uint32 Scenario, double SubmitUs) {
+        QueryDataDuration Data;
+        Require(Timing->GetData(&Data, sizeof(Data)) && Data.Frequency != 0, "TLAS duration unavailable");
+        std::cout << "TLAS timing," << Path << ',' << Scenario << ",cpu_us=" << SubmitUs
+                  << ",gpu_us=" << double(Data.Duration) * 1e6 / double(Data.Frequency) << '\n';
+    };
+    for (Uint32 Scenario = 0; Scenario < 7; ++Scenario)
+    {
+        if (Scenario == 6)
+        {
+            for (auto& V : Vertices) V.Position.z += 0.25f;
+            Context->UpdateBuffer(VB, 0, sizeof(Vertices), Vertices.data(), RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+            BuildBLAS.Update = true;
+            Context->BuildBLAS(BuildBLAS);
+        }
+        // Removal, addition/reload, transform, mask, and fully invisible scene.
+        const Uint32 Count = Scenario == 4 ? 1 : Scenario == 5 ? 0 : 3;
+        for (Uint32 I = 0; I < 3; ++I)
+        {
+            const float X = Scenario == 1 ? 4.0f : 0.0f;
+            const float Y = I == 1 ? 10.0f : 0.0f;
+            const float Z = I == 2 ? 1.0f : 0.0f;
+            Transforms[CustomIDs[I]] = float4x4::Translation(X, Y, Z);
+            if (Scenario == 1)
+                Transforms[CustomIDs[I]] = float4x4::Scale(0.75f, 1.25f, 1.0f) * float4x4::RotationZ(0.1f) * Transforms[CustomIDs[I]];
+            Instances[I].Transform.SetRotation(&Transforms[CustomIDs[I]]._11, 4);
+            Instances[I].Transform.SetTranslation(X, Y, Z);
+            Instances[I].Mask = Scenario == 3 || (Scenario == 2 && I == 0) ? 0 : 0xff;
+            GPUInstances[I] = {CustomIDs[I], CustomIDs[I], Instances[I].Mask};
+        }
+        BuildTLAS.Update = false;
+        BuildTLAS.InstanceCount = Count;
+        BuildTLAS.InstanceBufferIsPrebuilt = false;
+        Context->BuildTLAS(BuildTLAS);
+        // Compare identical refit modes; topology/bootstrap builds are not timed.
+        BuildTLAS.Update = true;
+        Context->BeginQuery(Timing);
+        auto SubmitStart = std::chrono::steady_clock::now();
+        Context->BuildTLAS(BuildTLAS);
+        double SubmitUs = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - SubmitStart).count();
+        Context->EndQuery(Timing);
+        const auto Expected = TraceAndRead();
+        ReportTiming("cpu", Scenario, SubmitUs);
+        const auto ExpectedInstances = Read(Context, Device, InstanceBuffer);
+        const Uint64 CPUVideoMemory = LocalVideoMemoryUsage(Device->GetAdapterInfo());
+        if (Count != 0)
+        {
+            GPUTLAS GPU;
+            Require(GPU.Initialize(Device, Context, Factory, InstanceBuffer, GPUInstances.data(), Count, Argv[2]), "GPU TLAS initialization failed");
+            Context->UpdateBuffer(TransformBuffer, 0, sizeof(Transforms), Transforms.data(), RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+            Context->BeginQuery(Timing);
+            SubmitStart = std::chrono::steady_clock::now();
+            Require(GPU.Prepare(Context, TransformBuffer, InstanceBuffer), "GPU TLAS preparation failed");
+            for (auto& Instance : Instances)
+            {
+                Instance.Transform.SetTranslation(100, 100, 100);
+                Instance.Mask = 0;
+            }
+            BuildTLAS.InstanceBufferIsPrebuilt = true;
+            BuildTLAS.Update = true;
+            Context->BuildTLAS(BuildTLAS);
+            SubmitUs = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - SubmitStart).count();
+            Context->EndQuery(Timing);
+            Require(Expected == TraceAndRead(), "CPU/GPU TLAS ray, material or visibility mismatch");
+            ReportTiming("gpu", Scenario, SubmitUs);
+            Require(ExpectedInstances == Read(Context, Device, InstanceBuffer), "Native GPU descriptor bytes differ (transform, flags, mask, BLAS or SBT)");
+            std::cout << "TLAS additional buffer bytes," << GPU.GetMemorySize() << '\n';
+            std::cout << "TLAS process local VRAM bytes,cpu=" << CPUVideoMemory << ",gpu=" << LocalVideoMemoryUsage(Device->GetAdapterInfo()) << '\n';
+            // Exercise a full GPU rebuild too, not only refits.
+            Require(GPU.Prepare(Context, TransformBuffer, InstanceBuffer), "GPU TLAS rebuild preparation failed");
+            BuildTLAS.Update = false;
+            Context->BuildTLAS(BuildTLAS);
+            Require(Expected == TraceAndRead(), "GPU TLAS rebuild mismatch");
+            if (Scenario == 2)
+            {
+                // Change visibility without replacing the template or instance table.
+                GPUInstances[0].Mask = 0xff;
+                for (Uint32 I = 0; I < Count; ++I)
+                {
+                    const auto& Matrix = Transforms[CustomIDs[I]];
+                    Instances[I].Transform.SetRotation(&Matrix._11, 4);
+                    Instances[I].Transform.SetTranslation(Matrix._41, Matrix._42, Matrix._43);
+                    Instances[I].Mask = static_cast<Uint8>(GPUInstances[I].Mask);
+                }
+                BuildTLAS.Update = true;
+                BuildTLAS.InstanceBufferIsPrebuilt = false;
+                Context->BuildTLAS(BuildTLAS);
+                const auto UpdatedExpected = TraceAndRead();
+                Require(Expected != UpdatedExpected, "Mask update must change the test rays");
+                GPU.UpdateInstanceData(Context, GPUInstances.data());
+                Require(GPU.Prepare(Context, TransformBuffer, InstanceBuffer), "GPU visibility update preparation failed");
+                BuildTLAS.InstanceBufferIsPrebuilt = true;
+                Context->BuildTLAS(BuildTLAS);
+                Require(UpdatedExpected == TraceAndRead(), "GPU visibility update mismatch");
+            }
+        }
+        else
+        {
+            BuildTLAS.InstanceBufferIsPrebuilt = true;
+            Context->BuildTLAS(BuildTLAS);
+            Require(Expected == TraceAndRead(), "Empty GPU TLAS mismatch");
+        }
+        Context->WaitForIdle();
+    }
     Require(Errors == 0, "GPU validation errors");
+    std::cout << "PASS: CPU/GPU TLAS differential, 7 scenarios, hit IDs / material / distance / shadows\n";
     std::cout << "PASS: material classification, 48 rays, inline / TraceRay visibility / primary any-hit"
               << (UseHitObject ? " / HitObject + reorder, " : ", ") << (Use16Bit ? "uint16" : "uint32") << " indices\n";
     return 0;

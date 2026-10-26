@@ -653,6 +653,7 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
     CommandLineParser Args{argc, argv};
     Args.Parse("realtime", m_RealtimeUI.RealtimeMode);
     Args.Parse("asyncPrefix", m_EnableAsyncPrefix);
+    Args.Parse("gpu_tlas", m_EnableGPUTLAS);
     Args.Parse("async_queue", m_CreateAsyncQueue);
     Args.Parse("async_validation", m_ValidateAsyncPrefix);
     Args.Parse("gpu_profile", m_EnableGpuProfiling);
@@ -853,7 +854,8 @@ bool RTXPTSample::RebuildSceneDependentResources()
                                             SceneData,
                                             m_Scene.GetIndexType(),
                                             &m_SkinnedGeometry,
-                                            m_FeatureCaps.RayTracing);
+                                            m_FeatureCaps.RayTracing,
+                                            m_EnableGPUTLAS ? m_pEngineFactory.RawPtr() : nullptr);
 
     if (ResourcesReady)
     {
@@ -2295,13 +2297,13 @@ void RTXPTSample::Update(double CurrTime, double ElapsedTime, bool DoUpdateUI)
     if (m_EnableSceneAnimations)
     {
         m_Scene.Update(CurrTime, ElapsedTime);
-        if (m_Scene.IsGeometryDirty() && m_SkinnedGeometry.HasSkinnedGeometry() && m_SkinnedGeometry.IsReady())
+        if (m_Scene.IsGeometryDirty() && m_AccelerationStructures.IsBuilt())
         {
             const RTXPTSceneGraphData& SceneData        = m_Scene.GetSceneGraphData();
-            const bool                 SkinningExecuted = m_SkinnedGeometry.Update(m_pImmediateContext, SceneData);
-            const bool                 ASUpdated =
-                SkinningExecuted &&
-                m_AccelerationStructures.UpdateDynamicBLAS(m_pImmediateContext, SceneData, m_SkinnedGeometry);
+            const bool ASUpdated = m_SkinnedGeometry.HasSkinnedGeometry() ?
+                (m_SkinnedGeometry.IsReady() && m_SkinnedGeometry.Update(m_pImmediateContext, SceneData) &&
+                 m_AccelerationStructures.UpdateDynamicBLAS(m_pImmediateContext, SceneData, m_SkinnedGeometry)) :
+                m_AccelerationStructures.UpdateTLAS(m_pImmediateContext, SceneData);
             if (ASUpdated)
             {
                 m_EmissiveTrianglesDirty = true;
@@ -2309,7 +2311,7 @@ void RTXPTSample::Update(double CurrTime, double ElapsedTime, bool DoUpdateUI)
                 // The emissive-triangle buffer was rebuilt in place; re-run the per-triangle power proxy build
                 // on the next LightsBaker UpdateEnd so the sampling weights track the deformed emitters.
                 m_LightsBaker.RequestProxyRebuild();
-                RequestAccumulationReset("Skinned geometry updated", false);
+                RequestAccumulationReset("Scene geometry or instance transforms updated", false);
                 m_Sharc.Invalidate();
                 m_Scene.ClearGeometryDirty();
             }

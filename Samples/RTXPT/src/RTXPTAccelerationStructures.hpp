@@ -38,6 +38,7 @@
 #include "RenderDevice.h"
 #include "RTXPTSkinnedGeometry.hpp"
 #include "TopLevelAS.h"
+#include "GPUTLAS.hpp"
 
 namespace Diligent
 {
@@ -74,6 +75,8 @@ struct RTXPTAccelerationStructureStats
     Uint32 ExcludedFromNEEGeometryCount = 0;
     Uint64 BLASScratchSize           = 0;
     Uint64 TLASScratchSize           = 0;
+    Uint64 GPUInstanceDataSize       = 0;
+    bool   GPUTLASActive             = false;
 };
 
 class RTXPTAccelerationStructures
@@ -88,7 +91,8 @@ public:
                     const RTXPTSceneGraphData&       SceneData,
                     VALUE_TYPE                       IndexType,
                     const RTXPTSkinnedSceneGeometry* pSkinnedGeometry,
-                    bool                             RayTracingSupported);
+                    bool                             RayTracingSupported,
+                    IEngineFactory*                  Factory = nullptr);
 
     bool BuildStaticScene(IRenderDevice*             pDevice,
                           IDeviceContext*            pContext,
@@ -109,6 +113,7 @@ public:
     IBuffer*     GetSubInstanceBuffer() const { return m_SubInstanceBuffer; }
     IBuffer*     GetSubInstanceTransformBuffer() const { return m_SubInstanceTransformBuffer; }
     bool         UploadSubInstanceTransforms(IDeviceContext* Context);
+    bool UpdateTLAS(IDeviceContext* pContext, const RTXPTSceneGraphData& SceneData);
 
     const RTXPTAccelerationStructureStats& GetStats() const { return m_Stats; }
 
@@ -131,7 +136,7 @@ private:
         Uint32                             SubInstanceBase       = 0;
     };
 
-    bool UpdateTLAS(IDeviceContext* pContext, const RTXPTSceneGraphData& SceneData);
+    GPUTLAS m_GPUTLAS;
 
     std::vector<BLASRecord>            m_BLASRecords;
     std::vector<std::string>           m_InstanceNames;

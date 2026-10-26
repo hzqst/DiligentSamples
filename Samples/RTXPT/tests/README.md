@@ -1003,3 +1003,88 @@ Artifacts: `%TEMP%/rtxpt-perf-diagnosis/fp16-final-build.log`,
 `fp16-original/before/after.csv` with corresponding runner logs. Initial
 `fp16-*-regression.*` runs preceded the final explicit casts / roughness-view
 alignment; the `*-final.*` logs validate the delivered shaders.
+
+## GPU TLAS validation (issue #28)
+
+`VisibilityRayTest.cpp` now exercises the production `GPUTLAS` descriptor pass
+and Core prebuilt-buffer API on D3D12 and Vulkan. Build using the existing
+`build_visibility_test.bat` after rebuilding the engine and sample; all binaries
+must use API 256022. Vulkan additionally needs `DiligentNGX_64r.dll` and
+`spv_dxcompiler.dll` from the sample runtime on the DLL search path.
+
+The original 48-ray visibility expectations remain. Seven differential scenarios
+cover baseline, rotation/nonuniform scale/translation, masked instances, all-zero
+masks, removal to one instance, zero instances, and addition/reload with a BLAS
+refit. Each ray compares custom ID, geometry, material, hit distance and visibility
+through inline and TraceRay paths; D3D12 also runs HitObject plus reorder.
+Both GPU refits and GPU rebuilds are compared to CPU results. CPU transforms and
+masks are intentionally wrong during GPU builds to detect accidental overwrites.
+Topology changes recreate the SBT so removed records do not retain stale mappings.
+Native descriptor bytes are also compared, including non-default instance flags,
+BLAS addresses and SBT contributions. A live mask change updates the existing GPU
+instance table and must change the rays before matching the CPU reference again.
+
+Timing output reports CPU submission microseconds and GPU duration queries for
+matching CPU/GPU refit modes. GPU duration includes descriptor compute plus TLAS
+refit; template bootstrap, transform uploads, tracing and readback are excluded.
+These are tiny, validation-enabled single-shot measurements, not a throughput
+benchmark. Additional explicit buffers are 240 bytes for three instances or 80
+bytes for one. DXGI `QueryVideoMemoryInfo` also records process-local video-memory
+usage for the matching adapter; allocator pages, deferred release and driver
+granularity affect these numbers, so their difference is not the buffer size.
+
+### Results (2026-10-26)
+
+Windows, NVIDIA GeForce RTX 5060, Release, API 256022, validation enabled.
+
+- `cmake --build build/x64/Release --config Release --target RTXPT --parallel 8`:
+  passed, including both backend libraries. Standalone test build passed.
+- D3D12 uint32 and uint16 + HitObject/reorder: all seven differential scenarios
+  and original 48-ray assertions passed, zero engine/AS validation errors.
+- Vulkan uint32 and uint16: the same scenarios passed, zero engine/AS validation
+  errors. The installed validation layer 1.4.350 warns that headers are 1.4.363.
+- Dynamic sample scene `../tests/sharc-dynamic.scene.json`, animations enabled:
+  D3D12/Vulkan explicit CPU fallback (`--gpu_tlas false`) ran 16 frames and exited
+  0 with no engine errors. Vulkan GPU Reference ran 32 frames and exited 0 with
+  no engine errors.
+- D3D12 GPU path reused the 336-frame `--async_validation true --async_queue false`
+  lifecycle sequence: reload at frame 128, odd resize, animation, Reference/RR
+  switching. Result: `failures=0, engine errors=0, async frames=0`. This is serial
+  lifecycle coverage, not an async-overlap performance claim.
+- **Vulkan RR lifecycle sequence did not pass:** `failures=2, engine errors=4`.
+  At frames 0 and 96, NGX images named `nv.ngx.dlssd.resource` trigger
+  `VUID-vkCmdDraw-None-09600` (expected GENERAL, observed UNDEFINED). Repeating
+  the identical sequence with `--gpu_tlas false` produces the same four errors.
+  The problem is independent of GPU TLAS; it remains unresolved here. Exit 0
+  from the sample alone is not considered validation success.
+
+Representative three-instance nonuniform-transform refit (scenario 1), in us:
+
+| Backend | CPU path submission | GPU path submission | CPU path GPU duration | GPU prepare + refit duration |
+| --- | ---: | ---: | ---: | ---: |
+| D3D12 | 12.0 | 63.0 | 10.912 | 18.688 |
+| Vulkan | 17.8 | 86.0 | 10.240 | 13.184 |
+
+This tiny workload is slower with GPU preparation. No large-scene speedup or
+steady-state throughput improvement is claimed. First-use shader/descriptor
+costs are higher still. In the same scenario, DXGI local usage was
+55,558,144 -> 55,566,336 bytes on D3D12 and 122,142,720 -> 122,142,720 bytes on
+Vulkan. Later Vulkan samples fell to 95,600,640 bytes due to deferred releases;
+this is not a negative allocation cost. Explicit added storage remains 80 bytes
+per instance. Large-scene scaling, other GPUs and image-quality benchmarking
+remain unmeasured.
+
+Empty-scene scope: the engine test traces an actual zero-instance TLAS. The sample
+AS owner clears previous resources and remains unbuilt for an empty graph; this
+does not add support for loading/rendering model-free scene JSON in the UI.
+
+Reproduction: run `VisibilityRayTest.exe <rebuilt engine DLL> <RTXPT/shaders>
+uint32`, then `uint16` (append `hitobject` on D3D12 SM 6.9). Sample lifecycle
+arguments: `--mode d3d12|vk --scene ../tests/sharc-dynamic.scene.json
+--scene_animations true --gpu_tlas true|false --realtime false --width 320
+--height 180 --validation 2 --vsync false --async_queue false
+--async_validation true --exit_after_frames 336`.
+
+Session artifacts in `%TEMP%`: `rtxpt-issue28-verified-build.log`,
+`rtxpt-issue28-testbuild.log`, `rtxpt-issue28-{d3d12,hitobject,vulkan,vulkan16}-final.log`,
+and `rtxpt28-final-*.out/.err` (including `vk-cpu-reload` and `vk-gpu-reference`).
