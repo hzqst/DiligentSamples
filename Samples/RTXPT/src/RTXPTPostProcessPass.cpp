@@ -34,6 +34,8 @@
 
 #include <string>
 
+#include "AsyncPrefix.hpp"
+
 namespace Diligent
 {
 
@@ -288,6 +290,7 @@ bool RTXPTPostProcessPass::Initialize(IRenderDevice* pDevice, IEngineFactory* pE
     ShaderCI.pShaderSourceStreamFactory = pShaderSourceFactory;
 
     BufferDesc MiniConstantsDesc;
+    MiniConstantsDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
     MiniConstantsDesc.Name           = "RTXPT post-process SampleMiniConstants";
     MiniConstantsDesc.Size           = sizeof(SampleMiniConstants);
     MiniConstantsDesc.BindFlags      = BIND_UNIFORM_BUFFER;
@@ -356,6 +359,7 @@ bool RTXPTPostProcessPass::CreatePostProcessPSO(IRenderDevice*          pDevice,
     ComputePipelineStateCreateInfo PSOCreateInfo;
     PSOCreateInfo.PSODesc.Name         = GetPassName(Pass);
     PSOCreateInfo.PSODesc.PipelineType = PIPELINE_TYPE_COMPUTE;
+    PSOCreateInfo.PSODesc.ImmediateContextMask = kRTXPTImmediateContextMask;
     PSOCreateInfo.pCS                  = pCS;
 
     PipelineResourceLayoutDescX ResourceLayout;
@@ -442,7 +446,8 @@ bool RTXPTPostProcessPass::DispatchPass(IDeviceContext*                        p
         Pass != RTXPTPostProcessPassId::NoDenoiserFinalMerge)
         return false;
 
-    pContext->SetRenderTargets(0, nullptr, nullptr, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+    if ((pContext->GetDesc().QueueType & COMMAND_QUEUE_TYPE_PRIMARY_MASK) == COMMAND_QUEUE_TYPE_GRAPHICS)
+        pContext->SetRenderTargets(0, nullptr, nullptr, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
 
     if (!UpdateMiniConstantsBuffer(pContext, m_MiniConstants, Pass, Attribs))
         return false;
@@ -559,7 +564,8 @@ bool RTXPTPostProcessPass::RunDLSSRRDenoiserPrepareInputs(IDeviceContext* pConte
     }
     // BUILD/FILL and prepare access stable planes through UAVs. An explicit UAV
     // dependency is needed even when their tracked state does not change.
-    pContext->SetRenderTargets(0, nullptr, nullptr, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+    if ((pContext->GetDesc().QueueType & COMMAND_QUEUE_TYPE_PRIMARY_MASK) == COMMAND_QUEUE_TYPE_GRAPHICS)
+        pContext->SetRenderTargets(0, nullptr, nullptr, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
     const RTXPTRenderTargets& Targets            = *Attribs.pRenderTargets;
     StateTransitionDesc       ProducerBarriers[] = {
         {Targets.GetStableRadianceUAV()->GetTexture(), RESOURCE_STATE_UNKNOWN, RESOURCE_STATE_UNORDERED_ACCESS, STATE_TRANSITION_FLAG_UPDATE_STATE},

@@ -40,6 +40,8 @@
 #include <unordered_map>
 #include <utility>
 
+#include "AsyncPrefix.hpp"
+
 namespace Diligent
 {
 
@@ -283,6 +285,7 @@ bool BuildRTXPTStaticGeometryBuffers(IRenderDevice*          pDevice,
     }
 
     BufferDesc VertexDesc;
+    VertexDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
     VertexDesc.Name              = "RTXPT scene static vertex buffer";
     VertexDesc.Usage             = USAGE_DEFAULT;
     VertexDesc.BindFlags         = BIND_VERTEX_BUFFER | BIND_SHADER_RESOURCE | BIND_RAY_TRACING;
@@ -295,6 +298,7 @@ bool BuildRTXPTStaticGeometryBuffers(IRenderDevice*          pDevice,
         return false;
 
     BufferDesc IndexDesc;
+    IndexDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
     IndexDesc.Name              = "RTXPT scene static index buffer";
     IndexDesc.Usage             = USAGE_DEFAULT;
     IndexDesc.BindFlags         = BIND_INDEX_BUFFER | BIND_SHADER_RESOURCE | BIND_RAY_TRACING;

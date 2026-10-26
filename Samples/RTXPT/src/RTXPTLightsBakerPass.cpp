@@ -30,6 +30,8 @@
 #include "GraphicsTypesX.hpp"
 #include "RenderStateCache.h"
 
+#include "AsyncPrefix.hpp"
+
 namespace Diligent
 {
 
@@ -68,6 +70,7 @@ bool RTXPTLightsBakerPass::Initialize(IRenderDevice* pDevice, IEngineFactory* pE
     ComputePipelineStateCreateInfo PSOCreateInfo;
     PSOCreateInfo.PSODesc.Name         = ShaderCI.Desc.Name;
     PSOCreateInfo.PSODesc.PipelineType = PIPELINE_TYPE_COMPUTE;
+    PSOCreateInfo.PSODesc.ImmediateContextMask = kRTXPTImmediateContextMask;
     PSOCreateInfo.pCS                  = pCS;
 
     PipelineResourceLayoutDescX ResourceLayout;

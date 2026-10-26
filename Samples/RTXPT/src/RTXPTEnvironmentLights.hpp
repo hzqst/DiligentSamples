@@ -17,6 +17,8 @@
 #include "TextureView.h"
 #include "../shaders/PathTracer/Lighting/EnvironmentLightConfig.h"
 
+#include "AsyncPrefix.hpp"
+
 namespace Diligent
 {
 
@@ -61,6 +63,7 @@ public:
             ComputePipelineStateCreateInfo PCI;
             PCI.PSODesc.Name                               = Entries[I];
             PCI.PSODesc.PipelineType                       = PIPELINE_TYPE_COMPUTE;
+            PCI.PSODesc.ImmediateContextMask               = kRTXPTImmediateContextMask;
             PCI.PSODesc.ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC;
             PCI.pCS                                        = Shader;
             if (pCache) pCache->CreateComputePipelineState(PCI, &m_PSOs[I]);
@@ -84,6 +87,7 @@ public:
         auto CreateBuffer = [&](const char* Name, Uint32 Count, Uint32 Stride, RefCntAutoPtr<IBuffer>& Buffer) {
             Buffer.Release();
             BufferDesc Desc;
+            Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
             Desc.Name              = Name;
             Desc.Size              = Uint64{Count} * Stride;
             Desc.Mode              = BUFFER_MODE_STRUCTURED;
@@ -98,6 +102,7 @@ public:
             return false;
         m_Lookup.Release();
         TextureDesc Desc;
+        Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
         Desc.Name  = "RTXPT environment light lookup";
         Desc.Type  = RESOURCE_DIM_TEX_2D;
         Desc.Width = Desc.Height = std::max(Resolution, 1u);
@@ -142,6 +147,13 @@ public:
     Uint32        GetLightCount() const { return m_Resolution != 0 ? RTXPT_NEEAT_ENVMAP_QT_TOTAL_NODE_COUNT : 0; }
     IBuffer*      GetLights() const { return m_Lights; }
     ITextureView* GetLookupSRV() const { return m_Lookup ? m_Lookup->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE) : nullptr; }
+
+    void ReleaseQueueResources(IDeviceContext* Context)
+    {
+        ReleasePrefixResource(Context, m_Lookup.RawPtr());
+        ReleasePrefixResource(Context, m_Lights.RawPtr());
+        ReleasePrefixResource(Context, m_BaseNodes.RawPtr());
+    }
 
 private:
     std::array<RefCntAutoPtr<IPipelineState>, 3>         m_PSOs;

@@ -39,6 +39,7 @@
 #include "CommandLineParser.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -79,7 +80,7 @@ constexpr Uint32 kRTXPTRealtimeNoisePeriod = 8192u;
 
 // Disk file used to persist the render state cache (compiled shaders + pipeline states)
 // across runs. Resolved relative to the working directory set in Initialize().
-constexpr char kStateCachePath[] = "RTXPTCache_017.bin";
+constexpr char kStateCachePath[] = "RTXPTCache_018.bin";
 
 bool IsStandaloneNrdAvailable()
 {
@@ -621,6 +622,10 @@ SampleBase* CreateSample()
 void RTXPTSample::ModifyEngineInitInfo(const ModifyEngineInitInfoAttribs& Attribs)
 {
     SampleBase::ModifyEngineInitInfo(Attribs);
+    if (m_ValidateAsyncPrefix)
+        InstallAsyncValidationErrorCounter(Attribs.pFactory);
+    if (m_CreateAsyncQueue && (Attribs.DeviceType == RENDER_DEVICE_TYPE_D3D12 || Attribs.DeviceType == RENDER_DEVICE_TYPE_VULKAN))
+        AsyncPrefix::Configure(Attribs.pFactory, Attribs.EngineCI, m_AsyncContextInfo, Attribs.DeviceType == RENDER_DEVICE_TYPE_VULKAN);
 
     Attribs.EngineCI.Features.RayTracing    = DEVICE_FEATURE_STATE_ENABLED;
     Attribs.EngineCI.Features.ShaderFloat16 = DEVICE_FEATURE_STATE_OPTIONAL;
@@ -647,6 +652,9 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
 {
     CommandLineParser Args{argc, argv};
     Args.Parse("realtime", m_RealtimeUI.RealtimeMode);
+    Args.Parse("asyncPrefix", m_EnableAsyncPrefix);
+    Args.Parse("async_queue", m_CreateAsyncQueue);
+    Args.Parse("async_validation", m_ValidateAsyncPrefix);
     Args.Parse("gpu_profile", m_EnableGpuProfiling);
     Args.Parse("inline_shadows", m_EnableInlineVisibility);
     Args.Parse("hit_object", m_EnableHitObject);
@@ -697,7 +705,14 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
 
 void RTXPTSample::CreateFrameResources()
 {
-    CreateUniformBuffer(m_pDevice, sizeof(SampleConstants), "RTXPT frame constants", &m_FrameConstantsCB);
+    BufferDesc Desc;
+    Desc.Name                 = "RTXPT frame constants";
+    Desc.Size                 = sizeof(SampleConstants);
+    Desc.BindFlags            = BIND_UNIFORM_BUFFER;
+    Desc.Usage                = USAGE_DYNAMIC;
+    Desc.CPUAccessFlags       = CPU_ACCESS_WRITE;
+    Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
+    m_pDevice->CreateBuffer(Desc, nullptr, &m_FrameConstantsCB);
 }
 
 void RTXPTSample::EnumerateAvailableScenes()
@@ -733,6 +748,16 @@ void RTXPTSample::ApplySceneEnvironmentSettings()
 
 void RTXPTSample::ResetSceneDependentResources()
 {
+    DrainAsyncPrefix();
+    m_AsyncPrefixReady = false;
+    // A scene can be replaced from the serial route too. Retire old commands
+    // and cached bindings before overwriting cached PSO static variables.
+    if (m_pImmediateContext)
+    {
+        m_pImmediateContext->Flush();
+        m_pImmediateContext->WaitForIdle();
+        m_pImmediateContext->InvalidateState();
+    }
     m_Materials.Reset();
     m_Lights.Reset();
     m_LightsBaker.SceneReloaded();
@@ -839,6 +864,10 @@ bool RTXPTSample::RebuildSceneDependentResources()
         // its pass resources. In particular, Vulkan must not retire resources still
         // referenced by an unsubmitted initialization command buffer.
         m_pImmediateContext->Flush();
+        // Scene initialization can be followed immediately by another pass/SRB
+        // rebuild (camera, extent or settings). Finish the bake before those
+        // cached bindings and their dynamic allocations may be replaced.
+        m_pImmediateContext->WaitForIdle();
     }
     else
     {
@@ -984,6 +1013,8 @@ bool RTXPTSample::ApplySceneCamera(Uint32 CameraIndex)
 
 RTXPTSample::~RTXPTSample()
 {
+    DrainAsyncPrefix();
+    LOG_INFO_MESSAGE("RTXPT AsyncPrefix frames: ", m_AsyncFrames);
     const auto& RRStats = m_PostProcessPipeline.GetRayReconstructionPass().GetStats();
     LOG_INFO_MESSAGE("DLSS-RR totals: created=", RRStats.CreateCount, ", executed=", RRStats.ExecuteCount, ", resets=", RRStats.ResetCount);
     m_PostProcessPipeline.GetRayReconstructionPass().Reset();
@@ -1005,6 +1036,8 @@ RTXPTSample::~RTXPTSample()
 void RTXPTSample::Initialize(const SampleInitInfo& InitInfo)
 {
     SampleBase::Initialize(InitInfo);
+    m_AsyncPrefix.Initialize(m_pDevice, m_pImmediateContext, InitInfo.NumImmediateCtx > 1 ? InitInfo.ppContexts[1] : nullptr);
+    LOG_INFO_MESSAGE("RTXPT AsyncPrefix: ", m_AsyncPrefix.IsAvailable() ? "independent prefix queue available" : "unavailable; serial fallback");
     m_FeatureCaps = MakeFeatureCaps(m_pDevice);
     InitializeCamera();
     CreateFrameResources();
@@ -1338,6 +1371,8 @@ void RTXPTSample::CreateSceneIndependentPasses()
 
 void RTXPTSample::CreateSceneDependentPasses()
 {
+    DrainAsyncPrefix();
+    m_AsyncPrefixReady = false;
     if (!m_AdaptiveSampling.Initialize(m_pDevice, m_pEngineFactory, m_pStateCache, m_FrameConstantsCB))
         LOG_ERROR_MESSAGE("SubSampling initialization failed");
     m_Sharc.Invalidate();
@@ -1457,6 +1492,7 @@ bool RTXPTSample::EnsureRenderTargets()
         MakeRenderTargetCreateInfo(m_CurrentTargetDimensions, m_RealtimeUI, m_FeatureCaps.RayTracing);
     if (WasRR && (!(OldDimensions == CreateInfo.Dimensions) || !CreateInfo.CreateRayReconstructionResources))
     {
+        DrainAsyncPrefix();
         m_pImmediateContext->SetRenderTargets(0, nullptr, nullptr, RESOURCE_STATE_TRANSITION_MODE_NONE);
         m_pImmediateContext->Flush();
         m_pImmediateContext->WaitForIdle();
@@ -1476,6 +1512,7 @@ bool RTXPTSample::EnsureRenderTargets()
          WasRR != m_RenderTargets.HasRayReconstructionRenderTargets() ||
          WasRealtimeAllocated != m_RenderTargets.HasRealtimeRenderTargets()))
     {
+        m_AsyncPrefixReady = false;
         RequestAccumulationReset("Render targets (re)created");
         RequestRealtimeReset(RTXPT_REALTIME_RESET_RENDER_TARGET_RECREATE |
                                  RTXPT_REALTIME_RESET_REALTIME_CACHES |
@@ -1531,6 +1568,7 @@ bool RTXPTSample::DispatchPathTracePrePass(const RTXPTRayTracingDispatch& BaseDi
 
 bool RTXPTSample::PathTrace()
 {
+    if (!m_AccelerationStructures.UploadSubInstanceTransforms(m_pImmediateContext)) return false;
     m_SharcActive = m_SharcSettings.Enabled && m_RealtimeUI.RealtimeMode &&
         SharcIntegration::IsSupported(m_pDevice) && m_RayTracingPass.IsReady(RTXPTPathTraceVariant::SharcFill);
     if (!m_SharcActive)
@@ -1889,7 +1927,7 @@ bool RTXPTSample::PresentRealtimeFinalOutput()
                 HasRealtimeResetFlag(m_CurrentFrameRealtimeReset, RTXPT_REALTIME_RESET_REALTIME_CACHES) ||
                 HasRealtimeResetFlag(m_RealtimeResetPending, RTXPT_REALTIME_RESET_TAA_SR_HISTORY);
             if (!m_RayReconstructionFrameReady ||
-                !m_PostProcessPipeline.RunRayReconstruction(m_pImmediateContext, m_RenderTargets, m_LastFrameConstants, ResetHistory, &m_GpuProfiler))
+                !m_PostProcessPipeline.RunRayReconstruction(m_pImmediateContext, m_RenderTargets, m_LastFrameConstants, ResetHistory, &m_GpuProfiler, m_AsyncInputsPrepared))
             {
                 RecordRealtimePathTraceStatus(RR.GetStats().Message.c_str());
                 RR.InvalidateHistory();
@@ -2081,9 +2119,35 @@ bool RTXPTSample::RunRealtimePathTraceOnly()
         return false;
     }
 
-    const bool PathTraceOk = PathTrace();
+    m_AsyncInputsPrepared = false;
+    const bool Async      = CanUseAsyncPrefix();
+    if (!Async) DrainAsyncPrefix();
+    auto Graphics = m_pImmediateContext;
+    if (Async)
+    {
+        if (!m_AsyncPrefix.IsActive()) ReleasePrefixResources(m_pImmediateContext);
+        m_AsyncPrefix.Begin();
+        m_pImmediateContext = m_AsyncPrefix.GetContext();
+        MapHelper<SampleConstants> Constants{m_pImmediateContext, m_FrameConstantsCB, MAP_WRITE, MAP_FLAG_DISCARD};
+        *Constants = m_LastFrameConstants;
+    }
+    m_GpuProfiler.Begin(m_pImmediateContext, RTXPTGpuProfiler::Stage::PrefixEarly);
+    bool PathTraceOk = PathTrace();
+    m_GpuProfiler.End(m_pImmediateContext, RTXPTGpuProfiler::Stage::PrefixEarly);
+    if (Async)
+    {
+        m_AsyncPrefix.JoinPreviousGraphics();
+        if (PathTraceOk)
+            PathTraceOk = m_PostProcessPipeline.PrepareRayReconstruction(m_pImmediateContext, m_RenderTargets, &m_GpuProfiler);
+        m_AsyncInputsPrepared = PathTraceOk;
+        ReleaseRRInputs(m_pImmediateContext);
+        m_AsyncPrefix.Submit();
+        m_pImmediateContext = Graphics;
+        ++m_AsyncFrames;
+    }
     if (!PathTraceOk)
     {
+        if (Async) m_AsyncPrefix.EndGraphics();
         m_PostProcessPipeline.GetRayReconstructionPass().InvalidateHistory();
         ClearFallback(float4{0.9f, 0.15f, 0.05f, 1.0f});
         return false;
@@ -2097,6 +2161,11 @@ bool RTXPTSample::RunRealtimePathTraceOnly()
 
     if (!RunRealtimePostProcess())
     {
+        if (Async)
+        {
+            ReleaseRRInputs(m_pImmediateContext);
+            m_AsyncPrefix.EndGraphics();
+        }
         ClearFallback(float4{0.08f, 0.08f, 0.10f, 1.0f});
         return false;
     }
@@ -2104,7 +2173,54 @@ bool RTXPTSample::RunRealtimePathTraceOnly()
     if (!m_HDRCapture.Processed)
         m_HDRCapture.Capture(m_pDevice, m_pImmediateContext, m_RenderTargets.GetOutputColorSRV()->GetTexture(), m_FrameIndex);
 
+    if (Async)
+    {
+        ReleaseRRInputs(m_pImmediateContext);
+        m_AsyncPrefix.EndGraphics();
+    }
+
     return true;
+}
+
+bool RTXPTSample::CanUseAsyncPrefix() const
+{
+    return m_EnableAsyncPrefix && m_AsyncPrefix.IsAvailable() && m_AsyncPrefixReady &&
+        m_RealtimeUI.RealtimeMode && m_RealtimeUI.RealtimeAA == RTXPTRealtimeAAMode::DLSSRR &&
+        m_RayReconstructionFrameReady && !m_EnableSceneAnimations &&
+        m_RealtimeUI.DenoisingGuideDebugView == RTXPTDenoisingGuideDebugView::Disabled &&
+        !m_EnvMapBakerDirty && !m_EnvMapBakerSettingsDirty && !m_LightsBakerSettingsDirty &&
+        !m_RayTracingPassSettingsDirty;
+}
+
+void RTXPTSample::ReleaseRRInputs(IDeviceContext* Context)
+{
+    for (auto* View : {m_RenderTargets.GetOutputColorSRV(), m_RenderTargets.GetRRDiffuseAlbedoSRV(),
+                       m_RenderTargets.GetRRSpecAlbedoSRV(), m_RenderTargets.GetRRNormalsAndRoughnessSRV(),
+                       m_RenderTargets.GetRRDepthSRV(), m_RenderTargets.GetRRMotionVectorsSRV(),
+                       m_RenderTargets.GetRRSpecMotionVectorsSRV()})
+    {
+        if (!View) continue;
+        StateTransitionDesc Barrier{View->GetTexture(), RESOURCE_STATE_UNKNOWN, RESOURCE_STATE_COMMON, STATE_TRANSITION_FLAG_UPDATE_STATE};
+        Context->TransitionResourceStates(1, &Barrier);
+    }
+}
+
+void RTXPTSample::DrainAsyncPrefix()
+{
+    if (m_AsyncPrefix.IsActive()) ReleasePrefixResources(m_AsyncPrefix.GetContext());
+    m_AsyncPrefix.Drain();
+    m_AsyncInputsPrepared = false;
+}
+
+void RTXPTSample::ReleasePrefixResources(IDeviceContext* Context)
+{
+    for (auto* View : {m_RenderTargets.GetDepthSRV(), m_RenderTargets.GetScreenMotionVectorsSRV(),
+                       m_RenderTargets.GetThroughputSRV(), m_RenderTargets.GetSpecularHitTSRV(),
+                       m_RenderTargets.GetScratchFloat1SRV(), m_RenderTargets.GetStableRadianceSRV(),
+                       m_RenderTargets.GetDenoisingLayersHeaderSRV(), m_RenderTargets.GetDenoiserAvgLayerRadianceHalfResSRV()})
+        if (View) ReleasePrefixResource(Context, View->GetTexture());
+    ReleasePrefixResource(Context, m_RenderTargets.GetDenoisingLayersBuffer());
+    m_LightsBaker.ReleaseQueueResources(Context);
 }
 
 void RTXPTSample::Render()
@@ -2150,6 +2266,7 @@ void RTXPTSample::Render()
             return;
         }
         m_LastFrameSucceeded = RunRealtimePathTraceOnly();
+        m_AsyncPrefixReady   = m_LastFrameSucceeded;
         return;
     }
 
@@ -2160,7 +2277,9 @@ void RTXPTSample::Update(double CurrTime, double ElapsedTime, bool DoUpdateUI)
 {
     RunRayReconstructionValidation(CurrTime);
     RunSubSamplingValidation();
+    RunAsyncPrefixValidation();
     SampleBase::Update(CurrTime, ElapsedTime, DoUpdateUI);
+    if (!CanUseAsyncPrefix()) DrainAsyncPrefix();
 
     m_Camera.Update(m_InputController, static_cast<float>(ElapsedTime));
     if (m_HasLastCameraMatrices &&
@@ -2233,6 +2352,7 @@ void RTXPTSample::Update(double CurrTime, double ElapsedTime, bool DoUpdateUI)
 
 void RTXPTSample::WindowResize(Uint32 Width, Uint32 Height)
 {
+    DrainAsyncPrefix();
     if (Width == 0 || Height == 0)
         return;
 
@@ -2403,6 +2523,9 @@ void RTXPTSample::UpdateUI()
                     std::clamp(m_RealtimeUI.RealtimeSamplesPerPixel, Int32{1}, static_cast<Int32>(kRTXPTRealtimeSamplesPerPixelMax));
                 if (ImGui::IsItemHovered())
                     ImGui::SetTooltip("Full paths per pixel per realtime frame; camera ray anti-aliasing is handled by the selected AA/SR mode.");
+                ResetRealtimeOnChange(ImGui::Checkbox("AsyncPrefix", &m_EnableAsyncPrefix), "AsyncPrefix changed");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Overlap path tracing with previous-frame DLSS-RR. Other modes use serial scheduling.");
                 ImGui::BeginDisabled(m_RealtimeUI.ActualSamplesPerPixel() != 1);
                 ResetRealtimeOnChange(ImGui::Combo("Sub-sampling rate", &m_RealtimeUI.RealtimeSubSamplingMode, "1 spp\0Three quarters\0Half\0Quarter\0"), "Sub-sampling rate changed");
                 ResetRealtimeOnChange(ImGui::Combo("Sub-sampling pattern", &m_RealtimeUI.RealtimeSubSamplingPattern, "Random per block\0Stochastic compacted\0Block stratified\0Sobol block\0"), "Sub-sampling pattern changed");
@@ -3358,5 +3481,6 @@ void RTXPTSample::InvalidatePreviousFrameConstants()
 
 #include "../tests/RRSceneValidation.hpp"
 #include "../tests/SubSamplingSceneValidation.hpp"
+#include "../tests/AsyncPrefixSceneValidation.hpp"
 
 } // namespace Diligent

@@ -33,6 +33,8 @@
 #include "MapHelper.hpp"
 #include "RenderStateCache.h"
 
+#include "AsyncPrefix.hpp"
+
 namespace Diligent
 {
 
@@ -136,6 +138,7 @@ bool RTXPTSkinnedSceneGeometry::CreateBuffers(IRenderDevice* pDevice)
     const Uint32 VertexCountForBuffer = std::max<Uint32>(m_Stats.SkinnedVertexCount, 1);
 
     BufferDesc VertexDesc;
+    VertexDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
     VertexDesc.Name              = "RTXPT current skinned vertex arena";
     VertexDesc.Usage             = USAGE_DEFAULT;
     VertexDesc.BindFlags         = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS | BIND_RAY_TRACING;

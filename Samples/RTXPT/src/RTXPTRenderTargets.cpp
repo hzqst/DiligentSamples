@@ -29,6 +29,8 @@
 
 #include <algorithm>
 
+#include "AsyncPrefix.hpp"
+
 namespace Diligent
 {
 
@@ -149,6 +151,7 @@ bool RTXPTRenderTargets::CreateTarget(IRenderDevice*           pDevice,
                                       Uint32                   ArraySize)
 {
     TextureDesc Desc;
+    Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
     Desc.Name        = Name;
     Desc.Type        = Type;
     Desc.Width       = Width;
@@ -184,6 +187,7 @@ bool RTXPTRenderTargets::CreateDenoisingLayersBuffer(IRenderDevice*          pDe
                                                      RefCntAutoPtr<IBuffer>& Target)
 {
     BufferDesc Desc;
+    Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
     Desc.Name              = "RTXPT DenoisingLayersBuffer";
     Desc.Usage             = USAGE_DEFAULT;
     Desc.BindFlags         = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;

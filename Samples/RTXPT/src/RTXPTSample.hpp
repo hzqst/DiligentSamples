@@ -47,6 +47,7 @@
 #include "RTXPTRayTracingPass.hpp"
 #include "SharcIntegration.hpp"
 #include "AdaptiveSampling.hpp"
+#include "AsyncPrefix.hpp"
 #include "../tests/HDRValidationCapture.hpp"
 #include "RTXPTDenoisingGuidesBaker.hpp"
 #include "RTXPTNrdIntegration.hpp"
@@ -130,6 +131,12 @@ protected:
     virtual void UpdateUI() override final;
 
 private:
+    void DrainAsyncPrefix();
+    bool CanUseAsyncPrefix() const;
+    void ReleaseRRInputs(IDeviceContext* Context);
+    void ReleasePrefixResources(IDeviceContext* Context);
+    void RunAsyncPrefixValidation();
+    void InstallAsyncValidationErrorCounter(IEngineFactory* pFactory);
     void CreateFrameResources();
     void EnumerateAvailableScenes();
     void EnumerateEnvironmentMaps();
@@ -174,10 +181,20 @@ private:
     RefCntAutoPtr<IRenderStateCache>                           m_pStateCache;
     RTXPTFeatureCaps                                           m_FeatureCaps;
     RTXPTGpuProfiler                                           m_GpuProfiler;
-    bool                                                       m_EnableGpuProfiling     = false;
-    bool                                                       m_EnableInlineVisibility = true;
-    bool                                                       m_EnableHitObject        = true;
-    bool                                                       m_EnableThreadReorder    = true;
+    AsyncPrefix                                                m_AsyncPrefix;
+    std::vector<ImmediateContextCreateInfo>                    m_AsyncContextInfo;
+    bool                                                       m_EnableAsyncPrefix    = false;
+    bool                                                       m_CreateAsyncQueue     = true;
+    bool                                                       m_AsyncInputsPrepared  = false;
+    bool                                                       m_AsyncPrefixReady     = false;
+    Uint64                                                     m_AsyncFrames          = 0;
+    bool                                                       m_ValidateAsyncPrefix  = false;
+    Uint32                                                     m_AsyncValidationFrame = 0, m_AsyncValidationFailures = 0;
+    Uint32                                                     m_AsyncValidationEngineErrors = 0;
+    bool                                                       m_EnableGpuProfiling          = false;
+    bool                                                       m_EnableInlineVisibility      = true;
+    bool                                                       m_EnableHitObject             = true;
+    bool                                                       m_EnableThreadReorder         = true;
     std::string                                                m_GpuProfileCSV;
     std::string                                                m_AssetsRoot;
     std::vector<std::string>                                   m_AvailableScenes;

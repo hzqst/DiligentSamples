@@ -36,6 +36,8 @@
 #include <limits>
 #include <vector>
 
+#include "AsyncPrefix.hpp"
+
 namespace Diligent
 {
 
@@ -184,6 +186,7 @@ bool RTXPTLights::UploadLightBuffer(IRenderDevice* pDevice, std::vector<Polymorp
     }
 
     BufferDesc Desc;
+    Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
     Desc.Name              = "RTXPT light buffer";
     Desc.Usage             = USAGE_IMMUTABLE;
     Desc.BindFlags         = BIND_SHADER_RESOURCE;
@@ -218,6 +221,7 @@ bool RTXPTLights::UploadEmissiveTriangleBuffer(IRenderDevice* pDevice, Uint32 Em
     const Uint32 ElementCount = std::max<Uint32>(EmissiveTriangleCount, 1u);
 
     BufferDesc Desc;
+    Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
     Desc.Name              = "RTXPT emissive triangle buffer";
     Desc.Usage             = USAGE_DEFAULT;
     Desc.BindFlags         = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;

@@ -38,6 +38,9 @@
 #include <utility>
 #include <vector>
 
+#include "AsyncPrefix.hpp"
+#include "RTXPTSharedTexture.hpp"
+
 namespace Diligent
 {
 
@@ -245,7 +248,7 @@ Uint32 AppendExternalTexture(IRenderDevice*                            pDevice,
     LoadInfo.IsSRGB = Desc.SRGB;
 
     RefCntAutoPtr<ITexture> pTexture;
-    CreateTextureFromFile(ResolvedPath.c_str(), LoadInfo, pDevice, &pTexture);
+    CreateSharedTextureFromFile(ResolvedPath.c_str(), LoadInfo, pDevice, &pTexture);
     if (!pTexture)
     {
         LOG_WARNING_MESSAGE("Failed to load RTXPT material texture: ", ResolvedPath);
@@ -390,6 +393,7 @@ void RTXPTMaterials::AppendTextureViews(const GLTF::Model& Model, std::vector<Ui
 bool RTXPTMaterials::CreateMaterialBuffer(IRenderDevice* pDevice, const std::vector<MaterialPTData>& MaterialData)
 {
     BufferDesc Desc;
+    Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
     Desc.Name              = "RTXPT material buffer";
     Desc.Usage             = USAGE_IMMUTABLE;
     Desc.BindFlags         = BIND_SHADER_RESOURCE;

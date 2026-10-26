@@ -40,6 +40,8 @@
 #include <limits>
 #include <vector>
 
+#include "AsyncPrefix.hpp"
+
 namespace Diligent
 {
 
@@ -390,6 +392,7 @@ bool RTXPTLightsBaker::CreateFeedbackTextures(IRenderDevice* pDevice, Uint32 Wid
     TextureData       WeightData{&WeightSubres, 1};
 
     TextureDesc WeightDesc;
+    WeightDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
     WeightDesc.Name      = "RTXPT LightsBaker feedback total weight";
     WeightDesc.Type      = RESOURCE_DIM_TEX_2D;
     WeightDesc.Width     = SafeWidth;
@@ -440,6 +443,7 @@ bool RTXPTLightsBaker::CreateLocalSamplingBuffer(IRenderDevice* pDevice, Uint32 
     const Uint64 ElementCount = Uint64{TileCountX} * Uint64{TileCountY} * kLocalProxyCount;
 
     BufferDesc Desc;
+    Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
     Desc.Name              = "RTXPT LightsBaker local sampling buffer";
     Desc.Usage             = USAGE_DEFAULT;
     Desc.BindFlags         = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
@@ -505,6 +509,7 @@ bool RTXPTLightsBaker::CreateProxyBuffers(IRenderDevice* pDevice, const RTXPTLig
 
     auto CreateRWStructured = [&](const char* Name, Uint32 ElementCount, Uint32 Stride, RefCntAutoPtr<IBuffer>& Out, const void* Initial = nullptr) {
         BufferDesc Desc;
+        Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
         Desc.Name              = Name;
         Desc.Usage             = USAGE_DEFAULT;
         Desc.BindFlags         = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
@@ -550,6 +555,7 @@ bool RTXPTLightsBaker::CreateProxyBuffers(IRenderDevice* pDevice, const RTXPTLig
     for (auto& Extension : Extensions)
         Extension.ClusterIndexAndCount = ~0u;
     BufferDesc ExDesc;
+    ExDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
     ExDesc.Name              = "RTXPT packed light extensions";
     ExDesc.Usage             = USAGE_DEFAULT;
     ExDesc.BindFlags         = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
@@ -676,6 +682,7 @@ bool RTXPTLightsBaker::UploadControlBuffer(IRenderDevice* pDevice, const RTXPTLi
     Control.BakerPadding[kLightsBakerEnvMapColorBaseWord + 3u] = FloatAsUint(Settings.EnvMapParams.Enabled);
 
     BufferDesc Desc;
+    Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
     Desc.Name              = "RTXPT LightsBaker control buffer";
     Desc.Usage             = USAGE_DEFAULT; // GPU proxy build writes the computed scalars via UAV atomics
     Desc.BindFlags         = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
@@ -713,6 +720,19 @@ void RTXPTLightsBaker::UpdateFrame(const float4x4& ViewProj, const float3& Camer
     }
     // Frustum importance and intensity history must follow every rendered frame.
     m_ProxyBuildPending = true;
+}
+
+void RTXPTLightsBaker::ReleaseQueueResources(IDeviceContext* Context)
+{
+    ReleasePrefixResource(Context, m_FeedbackTotalWeight.RawPtr());
+    ReleasePrefixResource(Context, m_FeedbackCandidates.RawPtr());
+    for (auto* Buffer : {m_ControlBuffer.RawPtr(), m_LightsBuffer.RawPtr(), m_LightsExBuffer.RawPtr(),
+                         m_LightWeights.RawPtr(), m_LightProxyCounters.RawPtr(), m_LightSamplingProxies.RawPtr(),
+                         m_LocalSamplingBuffer.RawPtr()})
+        ReleasePrefixResource(Context, Buffer);
+    m_EnvironmentLights.ReleaseQueueResources(Context);
+    m_LightFeedback.ReleaseQueueResources(Context);
+    m_LightHistory.ReleaseQueueResources(Context);
 }
 
 } // namespace Diligent

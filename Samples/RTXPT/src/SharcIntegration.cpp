@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cstddef>
 
+#include "AsyncPrefix.hpp"
+
 namespace Diligent
 {
 namespace
@@ -42,6 +44,7 @@ bool SharcIntegration::Initialize(IRenderDevice* pDevice, IEngineFactory* pFacto
     if (!IsSupported(pDevice)) return false;
     if (m_ClearPSO && m_ResolvePSO) return true;
     BufferDesc CB;
+    CB.ImmediateContextMask = kRTXPTImmediateContextMask;
     CB.Name           = "SHaRC constants";
     CB.Size           = sizeof(SharcConstants);
     CB.BindFlags      = BIND_UNIFORM_BUFFER;
@@ -70,6 +73,7 @@ bool SharcIntegration::Initialize(IRenderDevice* pDevice, IEngineFactory* pFacto
         ComputePipelineStateCreateInfo PSO;
         PSO.PSODesc.Name                               = CI.Desc.Name;
         PSO.PSODesc.PipelineType                       = PIPELINE_TYPE_COMPUTE;
+        PSO.PSODesc.ImmediateContextMask               = kRTXPTImmediateContextMask;
         PSO.PSODesc.ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC;
         PSO.pCS                                        = Shader;
         pCache->CreateComputePipelineState(PSO, Clear ? &m_ClearPSO : &m_ResolvePSO);
@@ -85,6 +89,7 @@ bool SharcIntegration::Prepare(IRenderDevice* pDevice, IDeviceContext* pContext,
     auto         Allocate = [&](RefCntAutoPtr<IBuffer>& Buffer, const char* Name, Uint32 Count, Uint32 Stride, bool Raw = false) {
         Buffer.Release();
         BufferDesc Desc;
+        Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
         Desc.Name              = Name;
         Desc.Size              = Uint64{Count} * Stride;
         Desc.BindFlags         = BIND_UNORDERED_ACCESS | BIND_SHADER_RESOURCE;

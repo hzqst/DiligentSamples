@@ -65,6 +65,9 @@ set(INCLUDE
     src/RTXPTRayTracingPass.hpp
     src/SharcIntegration.hpp
     src/AdaptiveSampling.hpp
+    src/AsyncPrefix.hpp
+    tests/AsyncPrefixSceneValidation.hpp
+    src/RTXPTSharedTexture.hpp
     src/RTXPTDenoisingGuidesBaker.hpp
     src/RTXPTEmissiveTrianglePass.hpp
     src/RTXPTComputePass.hpp

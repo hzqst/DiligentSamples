@@ -31,6 +31,8 @@
 #include "MapHelper.hpp"
 #include "RenderStateCache.h"
 
+#include "AsyncPrefix.hpp"
+
 namespace Diligent
 {
 
@@ -134,6 +136,7 @@ bool RTXPTDenoisingGuidesBaker::Initialize(IRenderDevice*     pDevice,
     m_FrameConstants = pFrameConstants;
 
     BufferDesc ConstantsDesc;
+    ConstantsDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
     ConstantsDesc.Name           = "RTXPT denoising guides baker constants";
     ConstantsDesc.Size           = sizeof(DenoisingGuidesBakerConstants);
     ConstantsDesc.BindFlags      = BIND_UNIFORM_BUFFER;
@@ -189,6 +192,7 @@ bool RTXPTDenoisingGuidesBaker::CreatePass(IRenderDevice*                   pDev
     ComputePipelineStateCreateInfo PSOCreateInfo;
     PSOCreateInfo.PSODesc.Name         = GetPassName(Pass);
     PSOCreateInfo.PSODesc.PipelineType = PIPELINE_TYPE_COMPUTE;
+    PSOCreateInfo.PSODesc.ImmediateContextMask = kRTXPTImmediateContextMask;
     PSOCreateInfo.pCS                  = pCS;
 
     PipelineResourceLayoutDescX ResourceLayout;

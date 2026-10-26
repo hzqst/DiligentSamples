@@ -32,6 +32,8 @@
 #include "RenderStateCache.h"
 #include <algorithm>
 
+#include "AsyncPrefix.hpp"
+
 namespace Diligent
 {
 
@@ -103,6 +105,7 @@ bool RTXPTLightProxyBuildPass::CreatePSO(IRenderStateCache*                     
     ComputePipelineStateCreateInfo PSOCreateInfo;
     PSOCreateInfo.PSODesc.Name         = Name;
     PSOCreateInfo.PSODesc.PipelineType = PIPELINE_TYPE_COMPUTE;
+    PSOCreateInfo.PSODesc.ImmediateContextMask = kRTXPTImmediateContextMask;
     PSOCreateInfo.pCS                  = pCS;
 
     PipelineResourceLayoutDescX ResourceLayout;
@@ -177,6 +180,7 @@ bool RTXPTLightProxyBuildPass::Initialize(IRenderDevice* pDevice, IEngineFactory
     }
 
     BufferDesc ConstantsDesc;
+    ConstantsDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
     ConstantsDesc.Name           = "RTXPT light proxy build constants";
     ConstantsDesc.Size           = sizeof(LightProxyBuildConstantsCPU);
     ConstantsDesc.BindFlags      = BIND_UNIFORM_BUFFER;
@@ -267,6 +271,7 @@ bool RTXPTLightProxyBuildPass::Build(IDeviceContext* pContext,
     if (!m_HistoricLightWeights)
     {
         BufferDesc Desc;
+        Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
         Desc.Name              = "RTXPT historic light weights";
         Desc.Size              = sizeof(float);
         Desc.Mode              = BUFFER_MODE_STRUCTURED;
@@ -296,6 +301,7 @@ bool RTXPTLightProxyBuildPass::Build(IDeviceContext* pContext,
     {
         m_ProxyJobs.Release();
         BufferDesc Desc;
+        Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
         Desc.Name              = "RTXPT light proxy jobs";
         Desc.Size              = std::max(JobsSize, Uint64{16});
         Desc.Mode              = BUFFER_MODE_STRUCTURED;
@@ -306,6 +312,7 @@ bool RTXPTLightProxyBuildPass::Build(IDeviceContext* pContext,
     if (!m_ProxyDispatchArgs)
     {
         BufferDesc Desc;
+        Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
         Desc.Name              = "RTXPT light proxy indirect dispatch";
         Desc.Size              = 3 * sizeof(Uint32);
         Desc.Mode              = BUFFER_MODE_STRUCTURED;
@@ -392,6 +399,7 @@ bool RTXPTLightProxyBuildPass::Build(IDeviceContext* pContext,
     {
         m_HistoricLightWeights.Release();
         BufferDesc Desc;
+        Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
         Desc.Name              = "RTXPT historic light weights";
         Desc.Size              = WeightBytes;
         Desc.Mode              = BUFFER_MODE_STRUCTURED;

@@ -36,6 +36,8 @@
 #include "MapHelper.hpp"
 #include "RTXPTMaterials.hpp"
 
+#include "AsyncPrefix.hpp"
+
 namespace Diligent
 {
 
@@ -432,6 +434,7 @@ bool RTXPTAccelerationStructures::BuildScene(IRenderDevice*                   pD
             }
 
             BottomLevelASDesc BLASDesc;
+            BLASDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
             BLASDesc.Name          = Record.Name.c_str();
             BLASDesc.Flags         = IsSkinnedNode ? RAYTRACING_BUILD_AS_ALLOW_UPDATE : RAYTRACING_BUILD_AS_NONE;
             BLASDesc.pTriangles    = TriangleDescs.data();
@@ -449,6 +452,7 @@ bool RTXPTAccelerationStructures::BuildScene(IRenderDevice*                   pD
             if (!m_BLASScratch || m_BLASScratch->GetDesc().Size < ScratchSize)
             {
                 BufferDesc ScratchDesc;
+                ScratchDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
                 ScratchDesc.Name      = "RTXPT BLAS scratch buffer";
                 ScratchDesc.Usage     = USAGE_DEFAULT;
                 ScratchDesc.BindFlags = BIND_RAY_TRACING;
@@ -498,6 +502,7 @@ bool RTXPTAccelerationStructures::BuildScene(IRenderDevice*                   pD
         m_TLASInstances[i].InstanceName = m_InstanceNames[i].c_str();
 
     TopLevelASDesc TLASDesc;
+    TLASDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
     TLASDesc.Name             = "RTXPT TLAS";
     TLASDesc.MaxInstanceCount = static_cast<Uint32>(m_TLASInstances.size());
     TLASDesc.Flags            = HasDynamicGeometry ? RAYTRACING_BUILD_AS_ALLOW_UPDATE : RAYTRACING_BUILD_AS_NONE;
@@ -514,6 +519,7 @@ bool RTXPTAccelerationStructures::BuildScene(IRenderDevice*                   pD
         TLASBuildScratchSize;
 
     BufferDesc InstanceBufferDesc;
+    InstanceBufferDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
     InstanceBufferDesc.Name      = "RTXPT TLAS instance buffer";
     InstanceBufferDesc.Usage     = USAGE_DEFAULT;
     InstanceBufferDesc.BindFlags = BIND_RAY_TRACING;
@@ -524,6 +530,7 @@ bool RTXPTAccelerationStructures::BuildScene(IRenderDevice*                   pD
         return false;
 
     BufferDesc TLASScratchDesc;
+    TLASScratchDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
     TLASScratchDesc.Name      = "RTXPT TLAS scratch buffer";
     TLASScratchDesc.Usage     = USAGE_DEFAULT;
     TLASScratchDesc.BindFlags = BIND_RAY_TRACING;
@@ -555,6 +562,7 @@ bool RTXPTAccelerationStructures::BuildScene(IRenderDevice*                   pD
     }
 
     BufferDesc SubInstanceDesc;
+    SubInstanceDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
     SubInstanceDesc.Name              = "RTXPT sub-instance buffer";
     SubInstanceDesc.Usage             = USAGE_IMMUTABLE;
     SubInstanceDesc.BindFlags         = BIND_SHADER_RESOURCE;
@@ -569,6 +577,7 @@ bool RTXPTAccelerationStructures::BuildScene(IRenderDevice*                   pD
         return false;
 
     BufferDesc TransformDesc;
+    TransformDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
     TransformDesc.Name              = "RTXPT sub-instance transform buffer";
     TransformDesc.Usage             = USAGE_DYNAMIC;
     TransformDesc.BindFlags         = BIND_SHADER_RESOURCE;
@@ -581,18 +590,22 @@ bool RTXPTAccelerationStructures::BuildScene(IRenderDevice*                   pD
     if (!m_SubInstanceTransformBuffer)
         return false;
 
-    {
-        MapHelper<float4x4> Mapped{pContext, m_SubInstanceTransformBuffer, MAP_WRITE, MAP_FLAG_DISCARD};
-        VERIFY(Mapped, "Failed to map RTXPT sub-instance transform buffer");
-        if (!Mapped)
-            return false;
-        std::copy(m_SubInstanceTransforms.begin(), m_SubInstanceTransforms.end(), static_cast<float4x4*>(Mapped));
-    }
+    if (!UploadSubInstanceTransforms(pContext)) return false;
 
     m_Stats.BLASCount        = static_cast<Uint32>(m_BLASRecords.size());
     m_Stats.InstanceCount    = static_cast<Uint32>(m_TLASInstances.size());
     m_Stats.SubInstanceCount = static_cast<Uint32>(SubInstances.size());
     m_Stats.Built            = true;
+    return true;
+}
+
+bool RTXPTAccelerationStructures::UploadSubInstanceTransforms(IDeviceContext* Context)
+{
+    if (!m_SubInstanceTransformBuffer || m_SubInstanceTransforms.empty()) return false;
+    // Dynamic allocations belong to the consuming context and current frame.
+    MapHelper<float4x4> Mapped{Context, m_SubInstanceTransformBuffer, MAP_WRITE, MAP_FLAG_DISCARD};
+    if (!Mapped) return false;
+    std::copy(m_SubInstanceTransforms.begin(), m_SubInstanceTransforms.end(), static_cast<float4x4*>(Mapped));
     return true;
 }
 
@@ -657,13 +670,7 @@ bool RTXPTAccelerationStructures::UpdateTLAS(IDeviceContext* pContext, const RTX
         DEV_ERROR("RTXPT dynamic TLAS update requires a sub-instance transform buffer");
         return false;
     }
-    {
-        MapHelper<float4x4> Mapped{pContext, m_SubInstanceTransformBuffer, MAP_WRITE, MAP_FLAG_DISCARD};
-        VERIFY(Mapped, "Failed to map RTXPT sub-instance transform buffer");
-        if (!Mapped)
-            return false;
-        std::copy(m_SubInstanceTransforms.begin(), m_SubInstanceTransforms.end(), static_cast<float4x4*>(Mapped));
-    }
+    if (!UploadSubInstanceTransforms(pContext)) return false;
 
     BuildTLASAttribs TLASAttribs;
     TLASAttribs.pTLAS                        = m_TLAS;

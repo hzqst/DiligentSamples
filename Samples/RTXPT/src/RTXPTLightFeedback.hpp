@@ -5,6 +5,8 @@
 #include "RTXPTEnvironmentLights.hpp"
 #include <cmath>
 
+#include "AsyncPrefix.hpp"
+
 namespace Diligent
 {
 
@@ -49,6 +51,7 @@ public:
             ComputePipelineStateCreateInfo PCI;
             PCI.PSODesc.Name                               = Entries[I];
             PCI.PSODesc.PipelineType                       = PIPELINE_TYPE_COMPUTE;
+            PCI.PSODesc.ImmediateContextMask               = kRTXPTImmediateContextMask;
             PCI.PSODesc.ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC;
             PCI.pCS                                        = Shader;
             if (pCache) pCache->CreateComputePipelineState(PCI, &m_PSOs[I]);
@@ -59,6 +62,7 @@ public:
             if (!m_SRBs[I]) return false;
         }
         BufferDesc Constants;
+        Constants.ImmediateContextMask = kRTXPTImmediateContextMask;
         Constants.Name      = "RTXPT feedback frame constants";
         Constants.Size      = 12 * sizeof(Uint32);
         Constants.BindFlags = BIND_UNIFORM_BUFFER;
@@ -66,6 +70,7 @@ public:
         for (size_t I = 0; I < m_Textures.size(); ++I)
         {
             TextureDesc Desc;
+            Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
             Desc.Name      = "RTXPT temporal light feedback";
             Desc.Type      = RESOURCE_DIM_TEX_2D;
             Desc.Width     = std::max(Width, 1u);
@@ -82,6 +87,7 @@ public:
     {
         m_Counts.Release();
         BufferDesc Desc;
+        Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
         Desc.Name              = "RTXPT per-light temporal feedback counts";
         Desc.Size              = (Uint64{Count} + 1) * sizeof(Uint32);
         Desc.Mode              = BUFFER_MODE_STRUCTURED;
@@ -174,6 +180,13 @@ public:
 
     IBuffer* GetCounts() const { return m_Counts; }
     Uint32   GetHistoryFrameCount() const { return m_Frame; }
+
+    void ReleaseQueueResources(IDeviceContext* Context)
+    {
+        for (auto& Texture : m_Textures) ReleasePrefixResource(Context, Texture.RawPtr());
+        ReleasePrefixResource(Context, m_Constants.RawPtr());
+        ReleasePrefixResource(Context, m_Counts.RawPtr());
+    }
 
 private:
     template <typename ResourceType>

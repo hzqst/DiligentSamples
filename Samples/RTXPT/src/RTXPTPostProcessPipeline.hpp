@@ -117,7 +117,8 @@ public:
 
     float2 GetRealtimeTAAPixelJitter(Uint32 FrameIndex) const;
 
-    bool                        RunRayReconstruction(IDeviceContext* pContext, const RTXPTRenderTargets& RenderTargets, const SampleConstants& FrameConstants, bool ResetHistory, RTXPTGpuProfiler* Profiler = nullptr);
+    bool                        PrepareRayReconstruction(IDeviceContext* pContext, const RTXPTRenderTargets& RenderTargets, RTXPTGpuProfiler* Profiler);
+    bool                        RunRayReconstruction(IDeviceContext* pContext, const RTXPTRenderTargets& RenderTargets, const SampleConstants& FrameConstants, bool ResetHistory, RTXPTGpuProfiler* Profiler = nullptr, bool InputsPrepared = false);
     RTXPTRayReconstructionPass& GetRayReconstructionPass() { return m_RayReconstructionPass; }
 
     bool CopyRealtimeOutputToProcessed(IDeviceContext*           pContext,

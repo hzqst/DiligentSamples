@@ -12,6 +12,12 @@
 #include "Query.h"
 #include "RefCntAutoPtr.hpp"
 #include "RenderDevice.h"
+#if D3D12_SUPPORTED
+#    include "../../../../DiligentCore/Platforms/Win32/interface/WinHPreface.h"
+#    include <d3d12.h>
+#    include "../../../../DiligentCore/Platforms/Win32/interface/WinHPostface.h"
+#    include "../../../../DiligentCore/Graphics/GraphicsEngineD3D12/interface/CommandQueueD3D12.h"
+#endif
 
 namespace Diligent
 {
@@ -24,6 +30,7 @@ public:
     enum class Stage : Uint32
     {
         Total,
+        PrefixEarly,
         Build,
         LightsBaker,
         SharcUpdate,
@@ -88,7 +95,29 @@ public:
     void Begin(IDeviceContext* Context, Stage Pass)
     {
         if (m_Current >= 0)
+        {
+            auto&      Frame          = m_Frames[m_Current];
+            const auto Index          = static_cast<size_t>(Pass);
+            Frame.ContextIds[Index]   = Context->GetDesc().ContextId;
+            Frame.ClockOffsets[Index] = 0;
+#if D3D12_SUPPORTED
+            if (m_D3D12)
+            {
+                auto*      Queue = static_cast<ICommandQueueD3D12*>(Context->LockCommandQueue());
+                Uint64     GPU = 0, CPU = 0, Frequency = 0;
+                auto*      Native = Queue->GetD3D12CommandQueue();
+                const bool Valid  = SUCCEEDED(Native->GetTimestampFrequency(&Frequency)) &&
+                    SUCCEEDED(Native->GetClockCalibration(&GPU, &CPU)) && Frequency != 0;
+                Context->UnlockCommandQueue();
+                LARGE_INTEGER QPCFrequency;
+                QueryPerformanceFrequency(&QPCFrequency);
+                Frame.ClockOffsets[Index] = Valid ? static_cast<double>(CPU) / QPCFrequency.QuadPart -
+                        static_cast<double>(GPU) / Frequency :
+                                                    -1;
+            }
+#endif
             Context->EndQuery(m_Frames[m_Current].Queries[static_cast<size_t>(Pass) * 2]);
+        }
     }
 
     void End(IDeviceContext* Context, Stage Pass)
@@ -111,11 +140,13 @@ private:
     static constexpr Uint32                               kBufferedFrames = 8;
     static constexpr Uint32                               kReportFrames   = 120;
     static constexpr std::array<const char*, kStageCount> kNames          = {
-        "Total", "BUILD", "LightsBaker", "SHaRCUpdate", "SHaRCResolve", "SubSampling", "FILL", "Guides", "RRPrepare", "RR", "PostProcess"};
+        "Total", "PrefixEarly", "BUILD", "LightsBaker", "SHaRCUpdate", "SHaRCResolve", "SubSampling", "FILL", "Guides", "RRPrepare", "RR", "PostProcess"};
     struct Frame
     {
         std::array<RefCntAutoPtr<IQuery>, kStageCount * 2> Queries;
         std::array<bool, kStageCount>                      Ended{};
+        std::array<Uint32, kStageCount>                    ContextIds{};
+        std::array<double, kStageCount>                    ClockOffsets{};
         Uint64                                             Number  = 0;
         bool                                               Pending = false;
     };
@@ -123,6 +154,7 @@ private:
     void Initialize(IRenderDevice* Device, const std::string& CSVPath)
     {
         m_Initialized = true;
+        m_D3D12       = Device->GetDeviceInfo().Type == RENDER_DEVICE_TYPE_D3D12;
         if (!Device->GetDeviceInfo().Features.TimestampQueries)
         {
             std::cerr << "RTXPT GPU profiling unavailable: timestamp queries are disabled\n";
@@ -148,8 +180,10 @@ private:
                 m_CSV << "Frame";
                 for (const char* Name : kNames)
                     m_CSV << ',' << Name << "_ms";
+                for (const char* Name : kNames)
+                    m_CSV << ',' << Name << "_queue," << Name << "_begin_s," << Name << "_end_s";
                 m_CSV << '\n'
-                      << std::fixed << std::setprecision(6);
+                      << std::fixed << std::setprecision(9);
             }
         }
         m_Available = true;
@@ -169,6 +203,9 @@ private:
                 continue;
             if (m_CSV)
                 m_CSV << Sample.Number;
+            std::array<double, kStageCount> Starts{}, Stops{};
+            Starts.fill(-1);
+            Stops.fill(-1);
             for (size_t I = 0; I < kStageCount; ++I)
             {
                 double Milliseconds = -1;
@@ -178,7 +215,14 @@ private:
                     Sample.Queries[I * 2]->GetData(&Start, sizeof(Start));
                     Sample.Queries[I * 2 + 1]->GetData(&Stop, sizeof(Stop));
                     if (Start.Frequency != 0 && Start.Frequency == Stop.Frequency && Stop.Counter >= Start.Counter)
+                    {
                         Milliseconds = 1000.0 * static_cast<double>(Stop.Counter - Start.Counter) / static_cast<double>(Start.Frequency);
+                        if (Sample.ClockOffsets[I] != -1)
+                        {
+                            Starts[I] = static_cast<double>(Start.Counter) / Start.Frequency + Sample.ClockOffsets[I];
+                            Stops[I]  = static_cast<double>(Stop.Counter) / Stop.Frequency + Sample.ClockOffsets[I];
+                        }
+                    }
                 }
                 if (m_CSV)
                     m_CSV << ',' << Milliseconds;
@@ -189,7 +233,11 @@ private:
                 }
             }
             if (m_CSV)
+            {
+                for (size_t I = 0; I < kStageCount; ++I)
+                    m_CSV << ',' << Sample.ContextIds[I] << ',' << Starts[I] << ',' << Stops[I];
                 m_CSV << '\n';
+            }
             Sample.Pending = false;
             if (++m_Collected % kReportFrames == 0)
             {
@@ -216,6 +264,7 @@ private:
     int                                m_Current     = -1;
     bool                               m_Initialized = false;
     bool                               m_Available   = false;
+    bool                               m_D3D12       = false;
 };
 
 } // namespace Diligent

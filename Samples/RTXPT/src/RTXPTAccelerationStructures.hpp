@@ -108,6 +108,7 @@ public:
     ITopLevelAS* GetTLAS() const { return m_TLAS; }
     IBuffer*     GetSubInstanceBuffer() const { return m_SubInstanceBuffer; }
     IBuffer*     GetSubInstanceTransformBuffer() const { return m_SubInstanceTransformBuffer; }
+    bool         UploadSubInstanceTransforms(IDeviceContext* Context);
 
     const RTXPTAccelerationStructureStats& GetStats() const { return m_Stats; }
 

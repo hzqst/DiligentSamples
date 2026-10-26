@@ -33,6 +33,8 @@
 #include "RenderStateCache.h"
 #include "ShaderMacroHelper.hpp"
 
+#include "AsyncPrefix.hpp"
+
 namespace Diligent
 {
 
@@ -192,6 +194,7 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
     m_TLAS = pTLAS;
 
     BufferDesc MiniCBDesc;
+    MiniCBDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
     MiniCBDesc.Name           = "RTXPT SampleMiniConstants";
     MiniCBDesc.Size           = sizeof(SampleMiniConstants);
     MiniCBDesc.BindFlags      = BIND_UNIFORM_BUFFER;
@@ -381,6 +384,7 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
         RayTracingPipelineStateCreateInfoX PSOCreateInfo;
         PSOCreateInfo.PSODesc.Name         = "RTXPT path trace RT PSO";
         PSOCreateInfo.PSODesc.PipelineType = PIPELINE_TYPE_RAY_TRACING;
+        PSOCreateInfo.PSODesc.ImmediateContextMask = kRTXPTImmediateContextMask;
         PSOCreateInfo.AddGeneralShader("Main", pRayGen);
         if (!UseHitObject)
             PSOCreateInfo.AddGeneralShader("PrimaryMiss", pMiss);

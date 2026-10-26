@@ -6,6 +6,8 @@
 #include "RTXPTLightSourceHistory.hpp"
 #include <memory>
 
+#include "AsyncPrefix.hpp"
+
 namespace Diligent
 {
 
@@ -55,6 +57,7 @@ public:
         ComputePipelineStateCreateInfo PCI;
         PCI.PSODesc.Name                               = "RTXPT light history";
         PCI.PSODesc.PipelineType                       = PIPELINE_TYPE_COMPUTE;
+        PCI.PSODesc.ImmediateContextMask               = kRTXPTImmediateContextMask;
         PCI.PSODesc.ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC;
         PCI.pCS                                        = Shader;
         if (pCache) pCache->CreateComputePipelineState(PCI, &m_PSO);
@@ -63,6 +66,7 @@ public:
         if (!m_PSO) return false;
         m_PSO->CreateShaderResourceBinding(&m_SRB, true);
         BufferDesc Desc;
+        Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
         Desc.Name      = "RTXPT light history constants";
         Desc.Size      = 32;
         Desc.BindFlags = BIND_UNIFORM_BUFFER;
@@ -94,6 +98,7 @@ public:
             if (*Buffer && (*Buffer)->GetDesc().Size >= Size) continue;
             Buffer->Release();
             BufferDesc Desc;
+            Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
             Desc.Name              = "RTXPT light history map";
             Desc.Size              = Size;
             Desc.Mode              = BUFFER_MODE_STRUCTURED;
@@ -155,6 +160,13 @@ public:
     }
     IBuffer* GetCurrentToPast() const { return m_CurrentToPast; }
     IBuffer* GetPastToCurrent() const { return m_PastToCurrent; }
+
+    void ReleaseQueueResources(IDeviceContext* Context)
+    {
+        ReleasePrefixResource(Context, m_PreviousLookup.RawPtr());
+        for (auto* Buffer : {m_Constants.RawPtr(), m_CurrentToPast.RawPtr(), m_PastToCurrent.RawPtr(), m_PreviousEnvironment.RawPtr()})
+            ReleasePrefixResource(Context, Buffer);
+    }
 
 private:
     bool CreateLookup(TextureDesc Desc)

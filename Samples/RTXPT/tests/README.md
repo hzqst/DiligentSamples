@@ -1,5 +1,84 @@
 # RR input and resource contract GPU regression
 
+## Async prefix validation (issue #27, in progress)
+
+Build `tests/build_async_prefix_test.bat` in a VS 2022 x64 Native Tools prompt.
+Run `%TEMP%/AsyncPrefixTest/AsyncPrefixTest.exe D3D12|Vk <engine-DLL>`.
+The production scheduler transports 128 independently predicted values across
+early/late/graphics phases and four drain/re-entry cycles, then checks readback
+and validation error count. Vulkan uses two queues from the same family.
+
+Run the sample with `--asyncPrefix true --async_validation true --aa rr
+--realtime true --exit_after_frames 352 --validation 2`. The lifecycle sequence
+covers serial/async toggles, motion, 641x361 resize, forced scene reload,
+Reference/realtime switching, animation fallback, quarter-rate compaction and a
+camera cut. A real animated scene is also required; toggling the animation flag
+in the static convergence scene does not validate skinning.
+
+Current evidence (2026-10-26; **not final acceptance**):
+
+- After restarting the host, the latest Debug build passed. GPU-assisted
+  validation restricted to the emissive shader completed all ten lifecycle
+  stages with zero failures both with and without GPUAV safe mode (252 async
+  frames each), while ordinary Vulkan execution reproduced the reload failure.
+  GPU-AV keeps out-of-bounds descriptor loads in bounds, which hid the root
+  cause described below.
+- WinDbg captured arguments at the actual DXC compile entry: emissive build and
+  raygen/miss/closest-hit/any-hit use `-O3` for Vulkan SPIR-V and D3D12 DXIL,
+  including Debug builds (`-Zi -Qembed_debug -O3` for DXIL). EnvCube VS/PS had
+  omitted the explicit optimization level and therefore used the Debug default
+  `-Od`; they now explicitly request O3. Vulkan runtime capture confirms this
+  correction. Logs: `async-dxc-runtime.txt`, `async-dxc-dxil-runtime.txt`.
+- Release build and `git diff --check` passed after removing diagnostic code and
+  formatting changed C++ ranges with clang-format 10, before the EnvCube O3 fix.
+  Repeat final Release verification after that fix. The earlier Debug executable
+  lock caused by a test process stuck in the Vulkan driver cleared after reboot.
+- The scheduler protocol test passed D3D12 and Vulkan (128 values, no validation
+  errors). It must be repeated after the final lifecycle edits.
+- An earlier Debug D3D12 revision completed the ten lifecycle stages with zero
+  reported failed frames. The latest source still needs that regression repeated.
+- Vulkan steady serial RR passed 128 frames after remapping dynamic transforms
+  on the consuming context each frame.
+- Vulkan scene reload (stage 4) device loss is fixed. Root cause: with a Vulkan
+  1.4 instance (Diligent's default) and no `robustBufferAccess`, the NVIDIA
+  driver (RTX 5060, 621.01) executes the dependent
+  `t_SubInstanceData -> t_PTMaterialData` loads in `EmissiveTriangleBuild.hlsl`
+  for lanes rejected by the `SubInstanceCount` guard. After reload, memory past
+  the sub-instance buffer holds other sub-allocations, and the garbage MaterialID
+  faults the device. This is not caused by overlap (the single-queue control
+  failed the same way) and not by Diligent resource creation (reproduced in a
+  pure native Vulkan program; API 1.2/1.3 or `robustBufferAccess` hide it).
+  The shader now clamps the index after the guard; the same idiom was applied to
+  `SkinnedVertexBuild.csh` and `LightProxyBuild.hlsl`.
+- Release Vulkan lifecycle after the fix (`--validation 2`, 352 frames):
+  async `failures=0, engine errors=0, async frames=220`, no ERROR lines; the
+  single-queue control (`--async_queue false`) also passed. Negative control with
+  the clamp removed: `failures=192, engine errors=2583`, first failure at frame
+  128 (stage 4). Logs: `async-vk-lifecycle-counted.log`,
+  `async-vk-lifecycle-counted-noclamp.log`, `async-vk-lifecycle-fix-single.log`.
+- Final HDR comparison, actual animated geometry, GPU overlap timeline,
+  end-to-end throughput and extra GPU memory remain **unverified**. Earlier image
+  captures are diagnostic only. No performance improvement is claimed.
+
+Local artifacts are in `build/rtxpt-v190/`: `async-unit-*.log`,
+`async-transitions-debug.log`, `async-vk-remap-control.log`,
+`async-vk-reload-invalidate.log`, `async-vk-reload-single.log`,
+`async-vk-reload-mutable.log` and `async-vk-reload-data.log`.
+The sample returns zero even after device loss. `--async_validation true` therefore
+also counts engine-side ERROR messages (Vulkan validation, failed submissions):
+any frame that logs one is a failure, and the summary reports `engine errors=`.
+`build/rtxpt-v190/run-async-case.ps1` additionally fails on any `ERROR:` log line
+and, with `-Sequence`, unless the summary reports `failures=0`. Launch from a
+directory without `vk_layer_settings.txt` (the one in `build/rtxpt-v190/` enables
+GPU-AV) because the Vulkan instance reads it from the initial working directory.
+Keep shader optimization at O3 (the previously identified DXC O0 issue applies).
+
+CSV profiling adds `<stage>_queue`, `<stage>_begin_s`, `<stage>_end_s`.
+Compare frame N's `PrefixEarly` interval with frame N-1's RR/postprocess interval
+to establish overlap; compare successive graphics completion times for throughput.
+The graphics-only `Total_ms` is not an end-to-end async measurement. Disable HDR
+readbacks for timing. `--async_queue false` provides a one-queue control.
+
 ## Sub-sampling validation (issue #26)
 
 Run `tests/build_subsampling_test.bat` from a VS 2022 x64 Native Tools prompt.

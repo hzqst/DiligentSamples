@@ -122,6 +122,7 @@ public:
     bool UpdateBegin(IRenderDevice* pDevice, const RTXPTLights& Lights, const RTXPTLightsBakerSettings& Settings);
     bool PrepareLightBuffers(IDeviceContext* pContext);
     void UpdateFrame(const float4x4& ViewProj, const float3& CameraPosition);
+    void ReleaseQueueResources(IDeviceContext* Context);
     // Process feedback after BUILD exported current depth and pixel-space motion.
     bool UpdateEnd(IDeviceContext* pContext, ITextureView* pDepthSRV, ITextureView* pMotionVectorsSRV);
 

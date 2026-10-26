@@ -297,7 +297,7 @@ float2 RTXPTPostProcessPipeline::GetRealtimeTAAPixelJitter(Uint32 FrameIndex) co
     return RTXPTTemporalAAPass::ComputePixelJitter(FrameIndex);
 }
 
-bool RTXPTPostProcessPipeline::RunRayReconstruction(IDeviceContext* pContext, const RTXPTRenderTargets& RenderTargets, const SampleConstants& FrameConstants, bool ResetHistory, RTXPTGpuProfiler* Profiler)
+bool RTXPTPostProcessPipeline::PrepareRayReconstruction(IDeviceContext* pContext, const RTXPTRenderTargets& RenderTargets, RTXPTGpuProfiler* Profiler)
 {
     m_Stats.LastRealtimeCopyExecuted  = false;
     m_Stats.LastTemporalAAActive      = false;
@@ -312,6 +312,12 @@ bool RTXPTPostProcessPipeline::RunRayReconstruction(IDeviceContext* pContext, co
         m_RayReconstructionPass.NotifyInputPreparationFailed();
         return false;
     }
+    return true;
+}
+
+bool RTXPTPostProcessPipeline::RunRayReconstruction(IDeviceContext* pContext, const RTXPTRenderTargets& RenderTargets, const SampleConstants& FrameConstants, bool ResetHistory, RTXPTGpuProfiler* Profiler, bool InputsPrepared)
+{
+    if (!InputsPrepared && !PrepareRayReconstruction(pContext, RenderTargets, Profiler)) return false;
     RTXPTGpuProfiler::Scope Timing{Profiler, pContext, RTXPTGpuProfiler::Stage::RR};
     return m_RayReconstructionPass.Execute(pContext, RenderTargets, FrameConstants, ResetHistory);
 }

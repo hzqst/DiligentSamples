@@ -1,5 +1,59 @@
 # RTXPT Fork Mapping
 
+## Async prefix scheduling (#27)
+
+**Work in progress; issue #27 has not met acceptance.** The Vulkan scene reload
+device loss is fixed (see `tests/README.md`), but final image, timeline,
+throughput and memory measurements are pending. The implementation below
+describes the current opt-in path, not a completed validation claim.
+
+Reference remains RTXPT-fork `9503910839f013f7ee0a2590a1131d84160ca712`.
+The upstream overlap boundary is cross-frame: BUILD, LightsBaker, optional
+SHaRC, FILL and guide filtering for frame N can run while graphics consumes
+frame N-1's RR inputs. RR input preparation is the late prefix; it waits for
+the previous graphics completion before replacing those inputs. Graphics then
+waits for the current prefix and runs native RR and presentation for frame N.
+There is no extra frame of image latency and no concurrent access to the live
+depth/motion/layer data by the graphics tail.
+
+`AsyncPrefix` owns the two general fences and the scheduling boundary. The
+early prefix is explicitly submitted before installing the previous-graphics
+wait. All steady-state waits are device waits. Context 1 is finished explicitly
+each frame because swap-chain presentation only finishes context 0. Serial
+re-entry, scene replacement, target recreation and teardown drain submitted
+work before releasing resources. Resources crossing queue types are released
+through COMMON; shared resources and PSOs declare both immediate contexts.
+Dynamic frame and sub-instance transform data are mapped on the consuming
+context for the current frame.
+
+D3D12 uses a dedicated compute queue. Vulkan currently requires a second
+graphics-capable queue in the same family: Diligent's shared dynamic upload
+heap and internally created SBT do not expose the sample-level sharing contract
+needed for a separate family. Devices without that second queue remain serial.
+The first frame after scene/pass/target reconstruction runs serially.
+
+The existing seven independent RR input textures (including RR depth and
+motion copies) are reused. No additional full-resolution image set is allocated.
+Material/environment texture loading preserves the loader's decoding and mip
+data while setting the sample's context mask on the final texture descriptor.
+Native NGX remains on the graphics context; no Streamline/NVRHI scheduling,
+dependency update, engine API or third-party source change is introduced.
+
+Controls: `--asyncPrefix true|false` and the realtime UI switch; default off.
+`--async_queue false` disables allocation of the extra context for a complete
+single-queue fallback. Runtime overlap requires realtime DLSS-RR, ready passes,
+no guide debug view and no enabled scene animation; Reference, NRD and dynamic
+geometry retain serial execution. `--async_validation true` exercises switching,
+motion, odd resize, scene reload, Reference and animation fallback.
+
+GPU profiling retains asynchronous query collection and adds context IDs plus
+absolute stage start/end times to CSV. D3D12 queue timestamps are calibrated to
+QPC; Vulkan timestamps use the physical-device timestamp period. Use successive
+graphics completion times for frame throughput: a graphics-only `Total` span
+is not the full async frame cost. HDR readback is excluded from timing runs.
+The PSO cache is `RTXPTCache_018.bin`; path-tracing shaders continue to use O3.
+Validation results and backend restrictions are recorded in `tests/README.md`.
+
 ## Sub-sampling / sub-1spp (#26, 2026-10-26)
 
 Reference remains RTXPT-fork `9503910839f013f7ee0a2590a1131d84160ca712`.

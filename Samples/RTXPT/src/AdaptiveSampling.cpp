@@ -6,11 +6,14 @@
 #include "GraphicsTypesX.hpp"
 #include "../shaders/PathTracer/SubSampling.h"
 
+#include "AsyncPrefix.hpp"
+
 namespace Diligent
 {
 bool AdaptiveSampling::Initialize(IRenderDevice* Device, IEngineFactory* Factory, IRenderStateCache* Cache, IBuffer* FrameConstants)
 {
     BufferDesc CB;
+    CB.ImmediateContextMask = kRTXPTImmediateContextMask;
     CB.Name           = "SubSampling mini constants";
     CB.Size           = sizeof(SampleMiniConstants);
     CB.BindFlags      = BIND_UNIFORM_BUFFER;
@@ -36,6 +39,7 @@ bool AdaptiveSampling::Initialize(IRenderDevice* Device, IEngineFactory* Factory
     ComputePipelineStateCreateInfo P;
     P.PSODesc.Name                               = "SubSampling compaction";
     P.PSODesc.PipelineType                       = PIPELINE_TYPE_COMPUTE;
+    P.PSODesc.ImmediateContextMask               = kRTXPTImmediateContextMask;
     P.PSODesc.ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC;
     P.pCS                                        = Shader;
     m_CompactionSRB.Release();
@@ -66,6 +70,7 @@ bool AdaptiveSampling::PrepareSubSampling(IRenderDevice* Device, IDeviceContext*
             m_CompactionSRB->GetVariableByName(SHADER_TYPE_COMPUTE, "u_SubSamplingPixelList")->Set(nullptr);
         m_PixelList.Release();
         BufferDesc B;
+        B.ImmediateContextMask = kRTXPTImmediateContextMask;
         B.Name      = "SubSampling pixel list";
         B.Size      = Bytes;
         B.BindFlags = BIND_UNORDERED_ACCESS;
