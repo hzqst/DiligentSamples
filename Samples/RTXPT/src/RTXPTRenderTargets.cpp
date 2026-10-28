@@ -152,15 +152,15 @@ bool RTXPTRenderTargets::CreateTarget(IRenderDevice*           pDevice,
 {
     TextureDesc Desc;
     Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
-    Desc.Name        = Name;
-    Desc.Type        = Type;
-    Desc.Width       = Width;
-    Desc.Height      = Height;
-    Desc.ArraySize   = ArraySize;
-    Desc.MipLevels   = 1;
-    Desc.SampleCount = 1;
-    Desc.Format      = TargetFormat;
-    Desc.BindFlags   = BindFlags;
+    Desc.Name                 = Name;
+    Desc.Type                 = Type;
+    Desc.Width                = Width;
+    Desc.Height               = Height;
+    Desc.ArraySize            = ArraySize;
+    Desc.MipLevels            = 1;
+    Desc.SampleCount          = 1;
+    Desc.Format               = TargetFormat;
+    Desc.BindFlags            = BindFlags;
 
     Target.Release();
     pDevice->CreateTexture(Desc, nullptr, &Target);
@@ -188,12 +188,12 @@ bool RTXPTRenderTargets::CreateDenoisingLayersBuffer(IRenderDevice*          pDe
 {
     BufferDesc Desc;
     Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
-    Desc.Name              = "RTXPT DenoisingLayersBuffer";
-    Desc.Usage             = USAGE_DEFAULT;
-    Desc.BindFlags         = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
-    Desc.Mode              = BUFFER_MODE_STRUCTURED;
-    Desc.ElementByteStride = sizeof(RTXPTDenoisingLayerData);
-    Desc.Size              = std::max<Uint64>(ElementCount, Uint64{1}) * sizeof(RTXPTDenoisingLayerData);
+    Desc.Name                 = "RTXPT DenoisingLayersBuffer";
+    Desc.Usage                = USAGE_DEFAULT;
+    Desc.BindFlags            = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
+    Desc.Mode                 = BUFFER_MODE_STRUCTURED;
+    Desc.ElementByteStride    = sizeof(RTXPTDenoisingLayerData);
+    Desc.Size                 = std::max<Uint64>(ElementCount, Uint64{1}) * sizeof(RTXPTDenoisingLayerData);
 
     Target.Release();
     pDevice->CreateBuffer(Desc, nullptr, &Target);

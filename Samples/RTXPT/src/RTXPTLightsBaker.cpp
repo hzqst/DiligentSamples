@@ -393,12 +393,12 @@ bool RTXPTLightsBaker::CreateFeedbackTextures(IRenderDevice* pDevice, Uint32 Wid
 
     TextureDesc WeightDesc;
     WeightDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
-    WeightDesc.Name      = "RTXPT LightsBaker feedback total weight";
-    WeightDesc.Type      = RESOURCE_DIM_TEX_2D;
-    WeightDesc.Width     = SafeWidth;
-    WeightDesc.Height    = SafeHeight;
-    WeightDesc.Format    = TEX_FORMAT_R32_FLOAT;
-    WeightDesc.BindFlags = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
+    WeightDesc.Name                 = "RTXPT LightsBaker feedback total weight";
+    WeightDesc.Type                 = RESOURCE_DIM_TEX_2D;
+    WeightDesc.Width                = SafeWidth;
+    WeightDesc.Height               = SafeHeight;
+    WeightDesc.Format               = TEX_FORMAT_R32_FLOAT;
+    WeightDesc.BindFlags            = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
     pDevice->CreateTexture(WeightDesc, &WeightData, &m_FeedbackTotalWeight);
 
     TextureSubResData CandidateSubres{InvalidCandidates.data(), Uint64{SafeWidth} * sizeof(Uint32)};
@@ -444,12 +444,12 @@ bool RTXPTLightsBaker::CreateLocalSamplingBuffer(IRenderDevice* pDevice, Uint32 
 
     BufferDesc Desc;
     Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
-    Desc.Name              = "RTXPT LightsBaker local sampling buffer";
-    Desc.Usage             = USAGE_DEFAULT;
-    Desc.BindFlags         = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
-    Desc.Mode              = BUFFER_MODE_STRUCTURED;
-    Desc.ElementByteStride = sizeof(Uint32);
-    Desc.Size              = ElementCount * sizeof(Uint32);
+    Desc.Name                 = "RTXPT LightsBaker local sampling buffer";
+    Desc.Usage                = USAGE_DEFAULT;
+    Desc.BindFlags            = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
+    Desc.Mode                 = BUFFER_MODE_STRUCTURED;
+    Desc.ElementByteStride    = sizeof(Uint32);
+    Desc.Size                 = ElementCount * sizeof(Uint32);
     pDevice->CreateBuffer(Desc, nullptr, &m_LocalSamplingBuffer);
 
     if (!m_LocalSamplingBuffer)
@@ -510,12 +510,12 @@ bool RTXPTLightsBaker::CreateProxyBuffers(IRenderDevice* pDevice, const RTXPTLig
     auto CreateRWStructured = [&](const char* Name, Uint32 ElementCount, Uint32 Stride, RefCntAutoPtr<IBuffer>& Out, const void* Initial = nullptr) {
         BufferDesc Desc;
         Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
-        Desc.Name              = Name;
-        Desc.Usage             = USAGE_DEFAULT;
-        Desc.BindFlags         = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
-        Desc.Mode              = BUFFER_MODE_STRUCTURED;
-        Desc.ElementByteStride = Stride;
-        Desc.Size              = Uint64{std::max(ElementCount, 1u)} * Stride;
+        Desc.Name                 = Name;
+        Desc.Usage                = USAGE_DEFAULT;
+        Desc.BindFlags            = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
+        Desc.Mode                 = BUFFER_MODE_STRUCTURED;
+        Desc.ElementByteStride    = Stride;
+        Desc.Size                 = Uint64{std::max(ElementCount, 1u)} * Stride;
         Out.Release();
         BufferData Data{Initial, Desc.Size};
         pDevice->CreateBuffer(Desc, Initial ? &Data : nullptr, &Out);
@@ -556,12 +556,12 @@ bool RTXPTLightsBaker::CreateProxyBuffers(IRenderDevice* pDevice, const RTXPTLig
         Extension.ClusterIndexAndCount = ~0u;
     BufferDesc ExDesc;
     ExDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
-    ExDesc.Name              = "RTXPT packed light extensions";
-    ExDesc.Usage             = USAGE_DEFAULT;
-    ExDesc.BindFlags         = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
-    ExDesc.Mode              = BUFFER_MODE_STRUCTURED;
-    ExDesc.ElementByteStride = sizeof(PolymorphicLightInfoEx);
-    ExDesc.Size              = Extensions.size() * sizeof(PolymorphicLightInfoEx);
+    ExDesc.Name                 = "RTXPT packed light extensions";
+    ExDesc.Usage                = USAGE_DEFAULT;
+    ExDesc.BindFlags            = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
+    ExDesc.Mode                 = BUFFER_MODE_STRUCTURED;
+    ExDesc.ElementByteStride    = sizeof(PolymorphicLightInfoEx);
+    ExDesc.Size                 = Extensions.size() * sizeof(PolymorphicLightInfoEx);
     BufferData ExData{Extensions.data(), ExDesc.Size};
     m_LightsExBuffer.Release();
     pDevice->CreateBuffer(ExDesc, &ExData, &m_LightsExBuffer);
@@ -683,12 +683,12 @@ bool RTXPTLightsBaker::UploadControlBuffer(IRenderDevice* pDevice, const RTXPTLi
 
     BufferDesc Desc;
     Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
-    Desc.Name              = "RTXPT LightsBaker control buffer";
-    Desc.Usage             = USAGE_DEFAULT; // GPU proxy build writes the computed scalars via UAV atomics
-    Desc.BindFlags         = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
-    Desc.Mode              = BUFFER_MODE_STRUCTURED;
-    Desc.ElementByteStride = sizeof(RTXPTLightingControlDataCPU);
-    Desc.Size              = sizeof(RTXPTLightingControlDataCPU);
+    Desc.Name                 = "RTXPT LightsBaker control buffer";
+    Desc.Usage                = USAGE_DEFAULT; // GPU proxy build writes the computed scalars via UAV atomics
+    Desc.BindFlags            = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
+    Desc.Mode                 = BUFFER_MODE_STRUCTURED;
+    Desc.ElementByteStride    = sizeof(RTXPTLightingControlDataCPU);
+    Desc.Size                 = sizeof(RTXPTLightingControlDataCPU);
     BufferData Data{&Control, Desc.Size};
     pDevice->CreateBuffer(Desc, &Data, &m_ControlBuffer);
 

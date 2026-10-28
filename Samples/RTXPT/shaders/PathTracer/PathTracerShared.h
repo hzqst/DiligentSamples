@@ -306,7 +306,7 @@ static const uint kPolymorphicLightTypePoint       = 4u;
 
 static const uint kLightProxyKindAnalytic         = 0u;
 static const uint kLightProxyKindEmissiveTriangle = 1u;
-static const uint kLightProxyKindEnvironmentQuad = 2u;
+static const uint kLightProxyKindEnvironmentQuad  = 2u;
 
 // Decoded triangle parameters, never a structured-buffer element.
 struct EmissiveTriangle

@@ -59,27 +59,27 @@ public:
     // the per-sub-instance EmissiveTriangleOffset allocation) is unconditional now that bindless is mandatory.
     bool UploadEmissiveTriangles(IRenderDevice* pDevice, const RTXPTSceneGraphData& SceneData);
 
-    const RTXPTLightStats&                   GetStats() const { return m_Stats; }
-    IBuffer*                                 GetLightBuffer() const { return m_LightBuffer; }
+    const RTXPTLightStats&                       GetStats() const { return m_Stats; }
+    IBuffer*                                     GetLightBuffer() const { return m_LightBuffer; }
     IBuffer*                                     GetLightExBuffer() const { return m_LightExBuffer; }
-    IBuffer*                                 GetEmissiveTriangleBuffer() const { return m_EmissiveTriangleBuffer; }
-    Uint32                                   GetEmissiveTriangleCount() const { return m_Stats.EmissiveTriangleCount; }
+    IBuffer*                                     GetEmissiveTriangleBuffer() const { return m_EmissiveTriangleBuffer; }
+    Uint32                                       GetEmissiveTriangleCount() const { return m_Stats.EmissiveTriangleCount; }
     const std::vector<PolymorphicLightInfoFull>& GetAnalyticLights() const { return m_AnalyticLights; }
-    float                                    GetEmissiveProxyWeight() const { return m_EmissiveProxyWeight; }
-    const std::vector<RTXPTLightSourceRange>& GetAnalyticSources() const { return m_AnalyticSources; }
-    const std::vector<RTXPTLightSourceRange>& GetTriangleSources() const { return m_TriangleSources; }
+    float                                        GetEmissiveProxyWeight() const { return m_EmissiveProxyWeight; }
+    const std::vector<RTXPTLightSourceRange>&    GetAnalyticSources() const { return m_AnalyticSources; }
+    const std::vector<RTXPTLightSourceRange>&    GetTriangleSources() const { return m_TriangleSources; }
 
 private:
     bool UploadLightBuffer(IRenderDevice* pDevice, std::vector<PolymorphicLightInfoFull>& Lights);
     bool UploadEmissiveTriangleBuffer(IRenderDevice* pDevice, Uint32 EmissiveTriangleCount);
 
-    RefCntAutoPtr<IBuffer>            m_LightBuffer;
+    RefCntAutoPtr<IBuffer>                m_LightBuffer;
     RefCntAutoPtr<IBuffer>                m_LightExBuffer;
-    RefCntAutoPtr<IBuffer>            m_EmissiveTriangleBuffer;
+    RefCntAutoPtr<IBuffer>                m_EmissiveTriangleBuffer;
     std::vector<PolymorphicLightInfoFull> m_AnalyticLights;
-    std::vector<RTXPTLightSourceRange> m_AnalyticSources, m_TriangleSources;
-    float                             m_EmissiveProxyWeight = 0.0f;
-    RTXPTLightStats                   m_Stats;
+    std::vector<RTXPTLightSourceRange>    m_AnalyticSources, m_TriangleSources;
+    float                                 m_EmissiveProxyWeight = 0.0f;
+    RTXPTLightStats                       m_Stats;
 };
 
 } // namespace Diligent

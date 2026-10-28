@@ -436,10 +436,10 @@ bool RTXPTAccelerationStructures::BuildScene(IRenderDevice*                   pD
 
             BottomLevelASDesc BLASDesc;
             BLASDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
-            BLASDesc.Name          = Record.Name.c_str();
-            BLASDesc.Flags         = IsSkinnedNode ? RAYTRACING_BUILD_AS_ALLOW_UPDATE : RAYTRACING_BUILD_AS_NONE;
-            BLASDesc.pTriangles    = TriangleDescs.data();
-            BLASDesc.TriangleCount = static_cast<Uint32>(TriangleDescs.size());
+            BLASDesc.Name                 = Record.Name.c_str();
+            BLASDesc.Flags                = IsSkinnedNode ? RAYTRACING_BUILD_AS_ALLOW_UPDATE : RAYTRACING_BUILD_AS_NONE;
+            BLASDesc.pTriangles           = TriangleDescs.data();
+            BLASDesc.TriangleCount        = static_cast<Uint32>(TriangleDescs.size());
             pDevice->CreateBLAS(BLASDesc, &Record.BLAS);
 
             VERIFY(Record.BLAS, "Failed to create RTXPT BLAS");
@@ -454,10 +454,10 @@ bool RTXPTAccelerationStructures::BuildScene(IRenderDevice*                   pD
             {
                 BufferDesc ScratchDesc;
                 ScratchDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
-                ScratchDesc.Name      = "RTXPT BLAS scratch buffer";
-                ScratchDesc.Usage     = USAGE_DEFAULT;
-                ScratchDesc.BindFlags = BIND_RAY_TRACING;
-                ScratchDesc.Size      = ScratchSize;
+                ScratchDesc.Name                 = "RTXPT BLAS scratch buffer";
+                ScratchDesc.Usage                = USAGE_DEFAULT;
+                ScratchDesc.BindFlags            = BIND_RAY_TRACING;
+                ScratchDesc.Size                 = ScratchSize;
                 m_BLASScratch.Release();
                 pDevice->CreateBuffer(ScratchDesc, nullptr, &m_BLASScratch);
                 VERIFY(m_BLASScratch, "Failed to create RTXPT BLAS scratch buffer");
@@ -503,9 +503,9 @@ bool RTXPTAccelerationStructures::BuildScene(IRenderDevice*                   pD
 
     TopLevelASDesc TLASDesc;
     TLASDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
-    TLASDesc.Name             = "RTXPT TLAS";
-    TLASDesc.MaxInstanceCount = static_cast<Uint32>(m_TLASInstances.size());
-    TLASDesc.Flags            = RAYTRACING_BUILD_AS_ALLOW_UPDATE;
+    TLASDesc.Name                 = "RTXPT TLAS";
+    TLASDesc.MaxInstanceCount     = static_cast<Uint32>(m_TLASInstances.size());
+    TLASDesc.Flags                = RAYTRACING_BUILD_AS_ALLOW_UPDATE;
     pDevice->CreateTLAS(TLASDesc, &m_TLAS);
 
     VERIFY(m_TLAS, "Failed to create RTXPT TLAS");
@@ -518,11 +518,11 @@ bool RTXPTAccelerationStructures::BuildScene(IRenderDevice*                   pD
 
     BufferDesc InstanceBufferDesc;
     InstanceBufferDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
-    InstanceBufferDesc.Name      = "RTXPT TLAS instance buffer";
-    InstanceBufferDesc.Usage     = USAGE_DEFAULT;
-    InstanceBufferDesc.BindFlags = BIND_RAY_TRACING | BIND_UNORDERED_ACCESS;
-    InstanceBufferDesc.Mode      = BUFFER_MODE_RAW;
-    InstanceBufferDesc.Size      = Uint64{TLAS_INSTANCE_DATA_SIZE} * Uint64{m_TLASInstances.size()};
+    InstanceBufferDesc.Name                 = "RTXPT TLAS instance buffer";
+    InstanceBufferDesc.Usage                = USAGE_DEFAULT;
+    InstanceBufferDesc.BindFlags            = BIND_RAY_TRACING | BIND_UNORDERED_ACCESS;
+    InstanceBufferDesc.Mode                 = BUFFER_MODE_RAW;
+    InstanceBufferDesc.Size                 = Uint64{TLAS_INSTANCE_DATA_SIZE} * Uint64{m_TLASInstances.size()};
     pDevice->CreateBuffer(InstanceBufferDesc, nullptr, &m_InstanceBuffer);
     VERIFY(m_InstanceBuffer, "Failed to create RTXPT TLAS instance buffer");
     if (!m_InstanceBuffer)
@@ -530,10 +530,10 @@ bool RTXPTAccelerationStructures::BuildScene(IRenderDevice*                   pD
 
     BufferDesc TLASScratchDesc;
     TLASScratchDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
-    TLASScratchDesc.Name      = "RTXPT TLAS scratch buffer";
-    TLASScratchDesc.Usage     = USAGE_DEFAULT;
-    TLASScratchDesc.BindFlags = BIND_RAY_TRACING;
-    TLASScratchDesc.Size      = m_Stats.TLASScratchSize;
+    TLASScratchDesc.Name                 = "RTXPT TLAS scratch buffer";
+    TLASScratchDesc.Usage                = USAGE_DEFAULT;
+    TLASScratchDesc.BindFlags            = BIND_RAY_TRACING;
+    TLASScratchDesc.Size                 = m_Stats.TLASScratchSize;
     pDevice->CreateBuffer(TLASScratchDesc, nullptr, &m_TLASScratch);
     VERIFY(m_TLASScratch, "Failed to create RTXPT TLAS scratch buffer");
     if (!m_TLASScratch)
@@ -562,12 +562,12 @@ bool RTXPTAccelerationStructures::BuildScene(IRenderDevice*                   pD
 
     BufferDesc SubInstanceDesc;
     SubInstanceDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
-    SubInstanceDesc.Name              = "RTXPT sub-instance buffer";
-    SubInstanceDesc.Usage             = USAGE_IMMUTABLE;
-    SubInstanceDesc.BindFlags         = BIND_SHADER_RESOURCE;
-    SubInstanceDesc.Mode              = BUFFER_MODE_STRUCTURED;
-    SubInstanceDesc.ElementByteStride = sizeof(SubInstanceData);
-    SubInstanceDesc.Size              = sizeof(SubInstanceData) * SubInstances.size();
+    SubInstanceDesc.Name                 = "RTXPT sub-instance buffer";
+    SubInstanceDesc.Usage                = USAGE_IMMUTABLE;
+    SubInstanceDesc.BindFlags            = BIND_SHADER_RESOURCE;
+    SubInstanceDesc.Mode                 = BUFFER_MODE_STRUCTURED;
+    SubInstanceDesc.ElementByteStride    = sizeof(SubInstanceData);
+    SubInstanceDesc.Size                 = sizeof(SubInstanceData) * SubInstances.size();
 
     BufferData SubInstanceData{SubInstances.data(), SubInstanceDesc.Size};
     pDevice->CreateBuffer(SubInstanceDesc, &SubInstanceData, &m_SubInstanceBuffer);
@@ -577,13 +577,13 @@ bool RTXPTAccelerationStructures::BuildScene(IRenderDevice*                   pD
 
     BufferDesc TransformDesc;
     TransformDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
-    TransformDesc.Name              = "RTXPT sub-instance transform buffer";
-    TransformDesc.Usage             = USAGE_DYNAMIC;
-    TransformDesc.BindFlags         = BIND_SHADER_RESOURCE;
-    TransformDesc.CPUAccessFlags    = CPU_ACCESS_WRITE;
-    TransformDesc.Mode              = BUFFER_MODE_STRUCTURED;
-    TransformDesc.ElementByteStride = sizeof(float4x4);
-    TransformDesc.Size              = Uint64{m_SubInstanceTransforms.size()} * sizeof(float4x4);
+    TransformDesc.Name                 = "RTXPT sub-instance transform buffer";
+    TransformDesc.Usage                = USAGE_DYNAMIC;
+    TransformDesc.BindFlags            = BIND_SHADER_RESOURCE;
+    TransformDesc.CPUAccessFlags       = CPU_ACCESS_WRITE;
+    TransformDesc.Mode                 = BUFFER_MODE_STRUCTURED;
+    TransformDesc.ElementByteStride    = sizeof(float4x4);
+    TransformDesc.Size                 = Uint64{m_SubInstanceTransforms.size()} * sizeof(float4x4);
     pDevice->CreateBuffer(TransformDesc, nullptr, &m_SubInstanceTransformBuffer);
     VERIFY(m_SubInstanceTransformBuffer, "Failed to create RTXPT sub-instance transform buffer");
     if (!m_SubInstanceTransformBuffer)
@@ -600,9 +600,9 @@ bool RTXPTAccelerationStructures::BuildScene(IRenderDevice*                   pD
                                                      Instances.data(), static_cast<Uint32>(Instances.size()));
         if (m_Stats.GPUTLASActive)
         {
-            m_Stats.GPUInstanceDataSize = m_GPUTLAS.GetMemorySize();
+            m_Stats.GPUInstanceDataSize          = m_GPUTLAS.GetMemorySize();
             TLASAttribs.InstanceBufferIsPrebuilt = m_GPUTLAS.Prepare(pContext, m_SubInstanceTransformBuffer, m_InstanceBuffer);
-            TLASAttribs.Update = true;
+            TLASAttribs.Update                   = true;
             pContext->BuildTLAS(TLASAttribs);
         }
         else
@@ -672,7 +672,7 @@ bool RTXPTAccelerationStructures::UpdateTLAS(IDeviceContext* pContext, const RTX
             return false;
         }
 
-        const float4x4& WorldTransform                     = Transforms.NodeGlobalMatrices[NodeIndex];
+        const float4x4& WorldTransform = Transforms.NodeGlobalMatrices[NodeIndex];
         if (!m_Stats.GPUTLASActive)
             m_TLASInstances[Record.InstanceIndex].Transform = ToInstanceMatrix(WorldTransform);
         m_TLASInstances[Record.InstanceIndex].InstanceName = m_InstanceNames[Record.InstanceIndex].c_str();

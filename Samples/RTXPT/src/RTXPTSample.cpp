@@ -2308,8 +2308,8 @@ void RTXPTSample::Update(double CurrTime, double ElapsedTime, bool DoUpdateUI)
         m_Scene.Update(CurrTime, ElapsedTime);
         if (m_Scene.IsGeometryDirty() && m_AccelerationStructures.IsBuilt())
         {
-            const RTXPTSceneGraphData& SceneData        = m_Scene.GetSceneGraphData();
-            const bool ASUpdated = m_SkinnedGeometry.HasSkinnedGeometry() ?
+            const RTXPTSceneGraphData& SceneData = m_Scene.GetSceneGraphData();
+            const bool                 ASUpdated = m_SkinnedGeometry.HasSkinnedGeometry() ?
                 (m_SkinnedGeometry.IsReady() && m_SkinnedGeometry.Update(m_pImmediateContext, SceneData) &&
                  m_AccelerationStructures.UpdateDynamicBLAS(m_pImmediateContext, SceneData, m_SkinnedGeometry)) :
                 m_AccelerationStructures.UpdateTLAS(m_pImmediateContext, SceneData);

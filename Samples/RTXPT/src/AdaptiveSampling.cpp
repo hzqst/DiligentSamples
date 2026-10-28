@@ -14,11 +14,11 @@ bool AdaptiveSampling::Initialize(IRenderDevice* Device, IEngineFactory* Factory
 {
     BufferDesc CB;
     CB.ImmediateContextMask = kRTXPTImmediateContextMask;
-    CB.Name           = "SubSampling mini constants";
-    CB.Size           = sizeof(SampleMiniConstants);
-    CB.BindFlags      = BIND_UNIFORM_BUFFER;
-    CB.Usage          = USAGE_DYNAMIC;
-    CB.CPUAccessFlags = CPU_ACCESS_WRITE;
+    CB.Name                 = "SubSampling mini constants";
+    CB.Size                 = sizeof(SampleMiniConstants);
+    CB.BindFlags            = BIND_UNIFORM_BUFFER;
+    CB.Usage                = USAGE_DYNAMIC;
+    CB.CPUAccessFlags       = CPU_ACCESS_WRITE;
     if (!m_MiniConstants)
         Device->CreateBuffer(CB, nullptr, &m_MiniConstants);
     RefCntAutoPtr<IShaderSourceInputStreamFactory> Source;
@@ -71,10 +71,10 @@ bool AdaptiveSampling::PrepareSubSampling(IRenderDevice* Device, IDeviceContext*
         m_PixelList.Release();
         BufferDesc B;
         B.ImmediateContextMask = kRTXPTImmediateContextMask;
-        B.Name      = "SubSampling pixel list";
-        B.Size      = Bytes;
-        B.BindFlags = BIND_UNORDERED_ACCESS;
-        B.Mode      = BUFFER_MODE_RAW;
+        B.Name                 = "SubSampling pixel list";
+        B.Size                 = Bytes;
+        B.BindFlags            = BIND_UNORDERED_ACCESS;
+        B.Mode                 = BUFFER_MODE_RAW;
         Device->CreateBuffer(B, nullptr, &m_PixelList);
     }
     if (!m_PixelList) return false;

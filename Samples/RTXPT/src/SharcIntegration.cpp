@@ -45,11 +45,11 @@ bool SharcIntegration::Initialize(IRenderDevice* pDevice, IEngineFactory* pFacto
     if (m_ClearPSO && m_ResolvePSO) return true;
     BufferDesc CB;
     CB.ImmediateContextMask = kRTXPTImmediateContextMask;
-    CB.Name           = "SHaRC constants";
-    CB.Size           = sizeof(SharcConstants);
-    CB.BindFlags      = BIND_UNIFORM_BUFFER;
-    CB.Usage          = USAGE_DYNAMIC;
-    CB.CPUAccessFlags = CPU_ACCESS_WRITE;
+    CB.Name                 = "SHaRC constants";
+    CB.Size                 = sizeof(SharcConstants);
+    CB.BindFlags            = BIND_UNIFORM_BUFFER;
+    CB.Usage                = USAGE_DYNAMIC;
+    CB.CPUAccessFlags       = CPU_ACCESS_WRITE;
     pDevice->CreateBuffer(CB, nullptr, &m_Constants);
     RefCntAutoPtr<IShaderSourceInputStreamFactory> Factory;
     pFactory->CreateDefaultShaderSourceStreamFactory("shaders;shaders/PathTracer;shaders/SHARC;" RTXPT_SHARC_SHADER_DIR, &Factory);
@@ -90,11 +90,11 @@ bool SharcIntegration::Prepare(IRenderDevice* pDevice, IDeviceContext* pContext,
         Buffer.Release();
         BufferDesc Desc;
         Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
-        Desc.Name              = Name;
-        Desc.Size              = Uint64{Count} * Stride;
-        Desc.BindFlags         = BIND_UNORDERED_ACCESS | BIND_SHADER_RESOURCE;
-        Desc.Mode              = Raw ? BUFFER_MODE_RAW : BUFFER_MODE_STRUCTURED;
-        Desc.ElementByteStride = Raw ? 0 : Stride;
+        Desc.Name                 = Name;
+        Desc.Size                 = Uint64{Count} * Stride;
+        Desc.BindFlags            = BIND_UNORDERED_ACCESS | BIND_SHADER_RESOURCE;
+        Desc.Mode                 = Raw ? BUFFER_MODE_RAW : BUFFER_MODE_STRUCTURED;
+        Desc.ElementByteStride    = Raw ? 0 : Stride;
         pDevice->CreateBuffer(Desc, nullptr, &Buffer);
     };
     if (Capacity != m_Capacity)

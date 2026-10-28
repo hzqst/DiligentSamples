@@ -291,11 +291,11 @@ bool RTXPTPostProcessPass::Initialize(IRenderDevice* pDevice, IEngineFactory* pE
 
     BufferDesc MiniConstantsDesc;
     MiniConstantsDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
-    MiniConstantsDesc.Name           = "RTXPT post-process SampleMiniConstants";
-    MiniConstantsDesc.Size           = sizeof(SampleMiniConstants);
-    MiniConstantsDesc.BindFlags      = BIND_UNIFORM_BUFFER;
-    MiniConstantsDesc.Usage          = USAGE_DYNAMIC;
-    MiniConstantsDesc.CPUAccessFlags = CPU_ACCESS_WRITE;
+    MiniConstantsDesc.Name                 = "RTXPT post-process SampleMiniConstants";
+    MiniConstantsDesc.Size                 = sizeof(SampleMiniConstants);
+    MiniConstantsDesc.BindFlags            = BIND_UNIFORM_BUFFER;
+    MiniConstantsDesc.Usage                = USAGE_DYNAMIC;
+    MiniConstantsDesc.CPUAccessFlags       = CPU_ACCESS_WRITE;
     pDevice->CreateBuffer(MiniConstantsDesc, nullptr, &m_MiniConstants);
     VERIFY(m_MiniConstants, "Failed to create RTXPT post-process SampleMiniConstants");
     if (!m_MiniConstants)
@@ -357,10 +357,10 @@ bool RTXPTPostProcessPass::CreatePostProcessPSO(IRenderDevice*          pDevice,
         return false;
 
     ComputePipelineStateCreateInfo PSOCreateInfo;
-    PSOCreateInfo.PSODesc.Name         = GetPassName(Pass);
-    PSOCreateInfo.PSODesc.PipelineType = PIPELINE_TYPE_COMPUTE;
+    PSOCreateInfo.PSODesc.Name                 = GetPassName(Pass);
+    PSOCreateInfo.PSODesc.PipelineType         = PIPELINE_TYPE_COMPUTE;
     PSOCreateInfo.PSODesc.ImmediateContextMask = kRTXPTImmediateContextMask;
-    PSOCreateInfo.pCS                  = pCS;
+    PSOCreateInfo.pCS                          = pCS;
 
     PipelineResourceLayoutDescX ResourceLayout;
     ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE;

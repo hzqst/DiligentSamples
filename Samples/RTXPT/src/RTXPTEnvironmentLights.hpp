@@ -88,11 +88,11 @@ public:
             Buffer.Release();
             BufferDesc Desc;
             Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
-            Desc.Name              = Name;
-            Desc.Size              = Uint64{Count} * Stride;
-            Desc.Mode              = BUFFER_MODE_STRUCTURED;
-            Desc.ElementByteStride = Stride;
-            Desc.BindFlags         = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
+            Desc.Name                 = Name;
+            Desc.Size                 = Uint64{Count} * Stride;
+            Desc.Mode                 = BUFFER_MODE_STRUCTURED;
+            Desc.ElementByteStride    = Stride;
+            Desc.BindFlags            = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
             pDevice->CreateBuffer(Desc, nullptr, &Buffer);
             return Buffer != nullptr;
         };
@@ -103,8 +103,8 @@ public:
         m_Lookup.Release();
         TextureDesc Desc;
         Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
-        Desc.Name  = "RTXPT environment light lookup";
-        Desc.Type  = RESOURCE_DIM_TEX_2D;
+        Desc.Name                 = "RTXPT environment light lookup";
+        Desc.Type                 = RESOURCE_DIM_TEX_2D;
         Desc.Width = Desc.Height = std::max(Resolution, 1u);
         Desc.Format              = TEX_FORMAT_R32_UINT;
         Desc.BindFlags           = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;

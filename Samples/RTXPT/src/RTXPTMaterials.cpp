@@ -403,12 +403,12 @@ bool RTXPTMaterials::CreateMaterialBuffer(IRenderDevice* pDevice, const std::vec
 {
     BufferDesc Desc;
     Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
-    Desc.Name              = "RTXPT material buffer";
-    Desc.Usage             = USAGE_IMMUTABLE;
-    Desc.BindFlags         = BIND_SHADER_RESOURCE;
-    Desc.Mode              = BUFFER_MODE_STRUCTURED;
-    Desc.ElementByteStride = sizeof(MaterialPTData);
-    Desc.Size              = sizeof(MaterialPTData) * MaterialData.size();
+    Desc.Name                 = "RTXPT material buffer";
+    Desc.Usage                = USAGE_IMMUTABLE;
+    Desc.BindFlags            = BIND_SHADER_RESOURCE;
+    Desc.Mode                 = BUFFER_MODE_STRUCTURED;
+    Desc.ElementByteStride    = sizeof(MaterialPTData);
+    Desc.Size                 = sizeof(MaterialPTData) * MaterialData.size();
 
     BufferData Data{MaterialData.data(), Desc.Size};
     pDevice->CreateBuffer(Desc, &Data, &m_MaterialBuffer);

@@ -67,9 +67,9 @@ public:
         m_PSO->CreateShaderResourceBinding(&m_SRB, true);
         BufferDesc Desc;
         Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
-        Desc.Name      = "RTXPT light history constants";
-        Desc.Size      = 32;
-        Desc.BindFlags = BIND_UNIFORM_BUFFER;
+        Desc.Name                 = "RTXPT light history constants";
+        Desc.Size                 = 32;
+        Desc.BindFlags            = BIND_UNIFORM_BUFFER;
         pDevice->CreateBuffer(Desc, nullptr, &m_Constants);
         return m_SRB && m_Constants;
     }
@@ -99,11 +99,11 @@ public:
             Buffer->Release();
             BufferDesc Desc;
             Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
-            Desc.Name              = "RTXPT light history map";
-            Desc.Size              = Size;
-            Desc.Mode              = BUFFER_MODE_STRUCTURED;
-            Desc.ElementByteStride = sizeof(Uint32);
-            Desc.BindFlags         = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
+            Desc.Name                 = "RTXPT light history map";
+            Desc.Size                 = Size;
+            Desc.Mode                 = BUFFER_MODE_STRUCTURED;
+            Desc.ElementByteStride    = sizeof(Uint32);
+            Desc.BindFlags            = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
             m_Device->CreateBuffer(Desc, nullptr, &*Buffer);
             if (!*Buffer) return false;
         }

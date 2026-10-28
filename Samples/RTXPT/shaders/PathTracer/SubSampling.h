@@ -8,7 +8,7 @@
 * license agreement from NVIDIA CORPORATION is strictly prohibited.
 */
 
-#ifndef __SUB_SAMPLING_H__  // using instead of "#pragma once" due to https://github.com/microsoft/DirectXShaderCompiler/issues/3943
+#ifndef __SUB_SAMPLING_H__ // using instead of "#pragma once" due to https://github.com/microsoft/DirectXShaderCompiler/issues/3943
 #define __SUB_SAMPLING_H__
 
 // Realtime sub-sampling (sub-1spp): which pixels of the denoising layers fill pass get a path this frame. The rate is
@@ -17,10 +17,10 @@
 // radiance, so every pattern is unbiased in expectation.
 //
 // Patterns - must match SubSamplingPattern in SampleUI.h:
-#define RTXPT_SUB_SAMPLING_PATTERN_BLOCK_JITTER             0   // RATE_NUM uniformly random pixels per SCALE_X x SCALE_Y block
-#define RTXPT_SUB_SAMPLING_PATTERN_STOCHASTIC_COMPACTED     1   // per-pixel white noise coin flip, stream-compacted list
-#define RTXPT_SUB_SAMPLING_PATTERN_BLOCK_STRATIFIED         2   // exactly N*N*rate pixels at random distinct positions per NxN block
-#define RTXPT_SUB_SAMPLING_PATTERN_SOBOL_BLOCK              3   // Owen-scrambled Sobol (0,2) sequence per NxN block, see SubSampling_ThreadToPixel
+#define RTXPT_SUB_SAMPLING_PATTERN_BLOCK_JITTER         0 // RATE_NUM uniformly random pixels per SCALE_X x SCALE_Y block
+#define RTXPT_SUB_SAMPLING_PATTERN_STOCHASTIC_COMPACTED 1 // per-pixel white noise coin flip, stream-compacted list
+#define RTXPT_SUB_SAMPLING_PATTERN_BLOCK_STRATIFIED     2 // exactly N*N*rate pixels at random distinct positions per NxN block
+#define RTXPT_SUB_SAMPLING_PATTERN_SOBOL_BLOCK          3 // Owen-scrambled Sobol (0,2) sequence per NxN block, see SubSampling_ThreadToPixel
 
 // Diligent adapter: pass the upstream scale/pattern/block settings at runtime in the existing
 // SampleMiniConstants rather than compiling a separate FILL PSO for each setting:
@@ -33,19 +33,19 @@
 // Compacted pixel list (u_SubSamplingPixelList, RenderTargets::SubSamplingPixelList) layout:
 //      +0                                      uint count, reset to 0 every frame before compaction
 //      +RTXPT_SUB_SAMPLING_LIST_HEADER_BYTES   uint pixel[count], packed as x | (y << 16)
-#define RTXPT_SUB_SAMPLING_LIST_HEADER_BYTES                16
+#define RTXPT_SUB_SAMPLING_LIST_HEADER_BYTES 16
 
 // Compaction pass group is a TILE x TILE screen tile, so the list - and the 1D ray launch that consumes it - stays
 // spatially coherent: consecutive entries come from the same tile.
-#define RTXPT_SUB_SAMPLING_COMPACTION_TILE                  8
+#define RTXPT_SUB_SAMPLING_COMPACTION_TILE 8
 
 #if !defined(__cplusplus)
 
-#ifndef RTXPT_SUB_SAMPLING_RATE_NUM
-#define RTXPT_SUB_SAMPLING_RATE_NUM 1   // traced pixels per SCALE_X x SCALE_Y block; 3 (of 2x2) for three quarters
-#endif
+#    ifndef RTXPT_SUB_SAMPLING_RATE_NUM
+#        define RTXPT_SUB_SAMPLING_RATE_NUM 1 // traced pixels per SCALE_X x SCALE_Y block; 3 (of 2x2) for three quarters
+#    endif
 
-#include "Utils/MicroRng.hlsli"
+#    include "Utils/MicroRng.hlsli"
 
 // Same seed for the compaction pass and the fill pass raygen; equal to Bridge::getSampleIndex() at 1spp.
 uint SubSampling_FrameSeed()
@@ -89,19 +89,29 @@ uint SubSampling_SobolDim1(uint index)
 uint SubSampling_Permute(uint i, const uint l, const uint p)
 {
     uint w = l - 1;
-    w |= w >> 1; w |= w >> 2; w |= w >> 4; w |= w >> 8; w |= w >> 16;
+    w |= w >> 1;
+    w |= w >> 2;
+    w |= w >> 4;
+    w |= w >> 8;
+    w |= w >> 16;
     do
     {
-        i ^= p;             i *= 0xe170893d;
+        i ^= p;
+        i *= 0xe170893d;
         i ^= p >> 16;
         i ^= (i & w) >> 4;
-        i ^= p >> 8;        i *= 0x0929eb3f;
+        i ^= p >> 8;
+        i *= 0x0929eb3f;
         i ^= p >> 23;
-        i ^= (i & w) >> 1;  i *= 1 | p >> 27;
-                            i *= 0x6935fa69;
-        i ^= (i & w) >> 11; i *= 0x74dcb303;
-        i ^= (i & w) >> 2;  i *= 0x9e501cc3;
-        i ^= (i & w) >> 2;  i *= 0xc860a3df;
+        i ^= (i & w) >> 1;
+        i *= 1 | p >> 27;
+        i *= 0x6935fa69;
+        i ^= (i & w) >> 11;
+        i *= 0x74dcb303;
+        i ^= (i & w) >> 2;
+        i *= 0x9e501cc3;
+        i ^= (i & w) >> 2;
+        i *= 0xc860a3df;
         i &= w;
         i ^= i >> 5;
     } while (i >= l);
@@ -128,20 +138,20 @@ bool SubSampling_ThreadToPixel(const uint2 threadID, const uint2 scale, const ui
             return false;
         }
         const uint packed = u_SubSamplingPixelList.Load(RTXPT_SUB_SAMPLING_LIST_HEADER_BYTES + index * 4);
-        pixelPos = uint2(packed & 0xFFFF, packed >> 16);
-        return true;    // the list only holds in-viewport pixels
+        pixelPos          = uint2(packed & 0xFFFF, packed >> 16);
+        return true; // the list only holds in-viewport pixels
     }
     else if (pattern == RTXPT_SUB_SAMPLING_PATTERN_BLOCK_STRATIFIED)
     {
         // Each block draws its own random permutation of its N*N slots every frame and takes the first
         // samplesPerBlock of them, so a block always gets exactly that many distinct pixels.
-        const uint blockPixels      = blockSize * blockSize;
-        const uint samplesPerBlock  = blockPixels * rateNum / (scale.x * scale.y);
+        const uint  blockPixels     = blockSize * blockSize;
+        const uint  samplesPerBlock = blockPixels * rateNum / (scale.x * scale.y);
         const uint2 block           = uint2(threadID.x / samplesPerBlock, threadID.y);
-        const uint sampleInBlock    = threadID.x % samplesPerBlock;
-        MicroRng rng = MicroRng::make(block, frameSeed, 0x424c4b53 /*'BLKS'*/);
-        const uint slot = SubSampling_Permute(sampleInBlock, blockPixels, rng.Next());
-        pixelPos = block * blockSize + uint2(slot % blockSize, slot / blockSize);
+        const uint  sampleInBlock   = threadID.x % samplesPerBlock;
+        MicroRng    rng             = MicroRng::make(block, frameSeed, 0x424c4b53 /*'BLKS'*/);
+        const uint  slot            = SubSampling_Permute(sampleInBlock, blockPixels, rng.Next());
+        pixelPos                    = block * blockSize + uint2(slot % blockSize, slot / blockSize);
     }
     else if (pattern == RTXPT_SUB_SAMPLING_PATTERN_SOBOL_BLOCK)
     {
@@ -151,16 +161,15 @@ bool SubSampling_ThreadToPixel(const uint2 threadID, const uint2 scale, const ui
         // A cycle of cycleFrames frames covers indices [0, N*N), a (0,2b,2)-net, i.e. every pixel exactly once. The
         // scramble, independent per block, only changes between cycles so that property holds.
         // Three quarters: 3 of the 4 aligned quarters of [0, N*N) per frame (wrapping), each pixel traced 3x per cycle.
-        const uint cycleFrames      = scale.x * scale.y;
-        const uint samplesPerBlock  = blockSize * blockSize * rateNum / cycleFrames;
+        const uint  cycleFrames     = scale.x * scale.y;
+        const uint  samplesPerBlock = blockSize * blockSize * rateNum / cycleFrames;
         const uint2 block           = uint2(threadID.x / samplesPerBlock, threadID.y);
-        const uint index            = ((frameSeed % cycleFrames) * samplesPerBlock + (threadID.x % samplesPerBlock)) % (blockSize * blockSize);
-        MicroRng rng = MicroRng::make(block, frameSeed / cycleFrames, 0x534f424c /*'SOBL'*/);
-        const uint seedX = rng.Next();
-        const uint seedY = rng.Next();
-        const uint shift = 32 - firstbithigh(blockSize);    // keep the top log2(N) bits
-        pixelPos = block * blockSize + uint2(SubSampling_OwenScramble(reversebits(index), seedX) >> shift,
-                                             SubSampling_OwenScramble(SubSampling_SobolDim1(index), seedY) >> shift);
+        const uint  index           = ((frameSeed % cycleFrames) * samplesPerBlock + (threadID.x % samplesPerBlock)) % (blockSize * blockSize);
+        MicroRng    rng             = MicroRng::make(block, frameSeed / cycleFrames, 0x534f424c /*'SOBL'*/);
+        const uint  seedX           = rng.Next();
+        const uint  seedY           = rng.Next();
+        const uint  shift           = 32 - firstbithigh(blockSize); // keep the top log2(N) bits
+        pixelPos                    = block * blockSize + uint2(SubSampling_OwenScramble(reversebits(index), seedX) >> shift, SubSampling_OwenScramble(SubSampling_SobolDim1(index), seedY) >> shift);
     }
     else if (rateNum == 1) // RTXPT_SUB_SAMPLING_PATTERN_BLOCK_JITTER, the original method
     {
@@ -173,12 +182,12 @@ bool SubSampling_ThreadToPixel(const uint2 threadID, const uint2 scale, const ui
     {
         // The block leaves out one uniformly random pixel and its rateNum threads take the others in order, so the
         // random number is seeded by the block rather than the thread.
-        const uint2 block           = uint2(threadID.x / rateNum, threadID.y);
-        const uint sampleInBlock    = threadID.x % rateNum;
-        MicroRng mrng = MicroRng::make(block, frameSeed);
-        const uint skipped = uint(mrng.NextFloat() * (scale.x * scale.y));
-        const uint slot = sampleInBlock + ((sampleInBlock >= skipped) ? 1 : 0);
-        pixelPos = block * scale + uint2(slot % scale.x, slot / scale.x);
+        const uint2 block         = uint2(threadID.x / rateNum, threadID.y);
+        const uint  sampleInBlock = threadID.x % rateNum;
+        MicroRng    mrng          = MicroRng::make(block, frameSeed);
+        const uint  skipped       = uint(mrng.NextFloat() * (scale.x * scale.y));
+        const uint  slot          = sampleInBlock + ((sampleInBlock >= skipped) ? 1 : 0);
+        pixelPos                  = block * scale + uint2(slot % scale.x, slot / scale.x);
     }
 
     // Thread grids round up to whole blocks, so a block on the right/bottom edge can be only partially inside the

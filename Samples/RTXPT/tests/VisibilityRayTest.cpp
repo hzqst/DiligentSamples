@@ -109,8 +109,8 @@ try
     Require(Argc < 5 || std::strcmp(Argv[4], "hitobject") == 0, "Invalid scatter test mode");
     const bool       Use16Bit     = Argc >= 4 && std::strcmp(Argv[3], "uint16") == 0;
     const bool       UseHitObject = Argc == 5 && std::strcmp(Argv[4], "hitobject") == 0;
-    const VALUE_TYPE IndexType = Use16Bit ? VT_UINT16 : VT_UINT32;
-    const Uint32     IndexSize = Use16Bit ? sizeof(Uint16) : sizeof(Uint32);
+    const VALUE_TYPE IndexType    = Use16Bit ? VT_UINT16 : VT_UINT32;
+    const Uint32     IndexSize    = Use16Bit ? sizeof(Uint16) : sizeof(Uint32);
     Require(128.0f / 255.0f == RTXPTQuantizeAlphaCutoff(0.5f), "Upstream midpoint cutoff");
     Require(0.0f == RTXPTQuantizeAlphaCutoff(-1) && 1.0f == RTXPTQuantizeAlphaCutoff(2), "Cutoff saturation");
     GLTF::Material         Classification;
@@ -138,8 +138,8 @@ try
         Factory = D3D12();
         Factory->SetMessageCallback(Message);
         EngineD3D12CreateInfo CI;
-        CI.EnableValidation    = true;
-        CI.Features.RayTracing = DEVICE_FEATURE_STATE_ENABLED;
+        CI.EnableValidation         = true;
+        CI.Features.RayTracing      = DEVICE_FEATURE_STATE_ENABLED;
         CI.Features.DurationQueries = DEVICE_FEATURE_STATE_ENABLED;
         D3D12()->CreateDeviceAndContextsD3D12(CI, &Device, &Context);
     }
@@ -150,8 +150,8 @@ try
         Factory = Vulkan();
         Factory->SetMessageCallback(Message);
         EngineVkCreateInfo CI;
-        CI.EnableValidation    = true;
-        CI.Features.RayTracing = DEVICE_FEATURE_STATE_ENABLED;
+        CI.EnableValidation         = true;
+        CI.Features.RayTracing      = DEVICE_FEATURE_STATE_ENABLED;
         CI.Features.DurationQueries = DEVICE_FEATURE_STATE_ENABLED;
         Vulkan()->CreateDeviceAndContextsVk(CI, &Device, &Context);
     }
@@ -231,7 +231,7 @@ try
     BLASDesc.Name          = "Visibility test BLAS";
     BLASDesc.pTriangles    = GeometryDescs.data();
     BLASDesc.TriangleCount = 4;
-    BLASDesc.Flags = RAYTRACING_BUILD_AS_ALLOW_UPDATE;
+    BLASDesc.Flags         = RAYTRACING_BUILD_AS_ALLOW_UPDATE;
     RefCntAutoPtr<IBottomLevelAS> BLAS;
     Device->CreateBLAS(BLASDesc, &BLAS);
     Require(BLAS != nullptr, "BLAS creation failed");
@@ -264,12 +264,12 @@ try
     RefCntAutoPtr<ITopLevelAS> TLAS;
     Device->CreateTLAS(TLASDesc, &TLAS);
     Require(TLAS != nullptr, "TLAS creation failed");
-    auto             TLASScratch    = Buffer(Device, std::max(TLAS->GetScratchBufferSizes().Build, TLAS->GetScratchBufferSizes().Update), BIND_RAY_TRACING);
+    auto       TLASScratch = Buffer(Device, std::max(TLAS->GetScratchBufferSizes().Build, TLAS->GetScratchBufferSizes().Update), BIND_RAY_TRACING);
     BufferDesc InstanceDesc;
-    InstanceDesc.Name = "GPU TLAS output";
-    InstanceDesc.Size = TLAS_INSTANCE_DATA_SIZE * 3;
+    InstanceDesc.Name      = "GPU TLAS output";
+    InstanceDesc.Size      = TLAS_INSTANCE_DATA_SIZE * 3;
     InstanceDesc.BindFlags = BIND_RAY_TRACING | BIND_UNORDERED_ACCESS;
-    InstanceDesc.Mode = BUFFER_MODE_RAW;
+    InstanceDesc.Mode      = BUFFER_MODE_RAW;
     RefCntAutoPtr<IBuffer> InstanceBuffer;
     Device->CreateBuffer(InstanceDesc, nullptr, &InstanceBuffer);
     Require(InstanceBuffer != nullptr, "GPU TLAS output creation failed");
@@ -438,7 +438,7 @@ RWStructuredBuffer<uint4> u_Hits;
     RefCntAutoPtr<IShaderResourceBinding> SRB;
     PSO->CreateShaderResourceBinding(&SRB, true);
     auto Output = Buffer(Device, 48 * 4 * sizeof(Uint32), BIND_UNORDERED_ACCESS, nullptr, 16);
-    auto Hits = Buffer(Device, 48 * 4 * sizeof(Uint32), BIND_UNORDERED_ACCESS, nullptr, 16);
+    auto Hits   = Buffer(Device, 48 * 4 * sizeof(Uint32), BIND_UNORDERED_ACCESS, nullptr, 16);
     for (SHADER_TYPE Stage : {SHADER_TYPE_RAY_GEN, SHADER_TYPE_RAY_ANY_HIT})
     {
         auto Set = [&](const char* Name, IDeviceObject* Object) {
@@ -502,15 +502,15 @@ RWStructuredBuffer<uint4> u_Hits;
         Context->SetPipelineState(PSO);
         Context->CommitShaderResources(SRB, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
         Context->TraceRays(Trace);
-        auto Values = Read(Context, Device, Output);
+        auto Values    = Read(Context, Device, Output);
         auto HitValues = Read(Context, Device, Hits);
         Values.insert(Values.end(), HitValues.begin(), HitValues.end());
         return Values;
     };
-    std::array<float4x4, 33> Transforms;
+    std::array<float4x4, 33>             Transforms;
     std::array<GPUTLAS::InstanceData, 3> GPUInstances;
-    auto TransformBuffer = Buffer(Device, sizeof(Transforms), BIND_SHADER_RESOURCE, nullptr, sizeof(float4x4));
-    RefCntAutoPtr<IQuery> Timing;
+    auto                                 TransformBuffer = Buffer(Device, sizeof(Transforms), BIND_SHADER_RESOURCE, nullptr, sizeof(float4x4));
+    RefCntAutoPtr<IQuery>                Timing;
     Device->CreateQuery(QueryDesc{QUERY_TYPE_DURATION}, &Timing);
     Require(Timing != nullptr, "TLAS duration query unavailable");
     auto ReportTiming = [&](const char* Path, Uint32 Scenario, double SubmitUs) {
@@ -532,19 +532,19 @@ RWStructuredBuffer<uint4> u_Hits;
         const Uint32 Count = Scenario == 4 ? 1 : Scenario == 5 ? 0 : 3;
         for (Uint32 I = 0; I < 3; ++I)
         {
-            const float X = Scenario == 1 ? 4.0f : 0.0f;
-            const float Y = I == 1 ? 10.0f : 0.0f;
-            const float Z = I == 2 ? 1.0f : 0.0f;
+            const float X            = Scenario == 1 ? 4.0f : 0.0f;
+            const float Y            = I == 1 ? 10.0f : 0.0f;
+            const float Z            = I == 2 ? 1.0f : 0.0f;
             Transforms[CustomIDs[I]] = float4x4::Translation(X, Y, Z);
             if (Scenario == 1)
                 Transforms[CustomIDs[I]] = float4x4::Scale(0.75f, 1.25f, 1.0f) * float4x4::RotationZ(0.1f) * Transforms[CustomIDs[I]];
             Instances[I].Transform.SetRotation(&Transforms[CustomIDs[I]]._11, 4);
             Instances[I].Transform.SetTranslation(X, Y, Z);
             Instances[I].Mask = Scenario == 3 || (Scenario == 2 && I == 0) ? 0 : 0xff;
-            GPUInstances[I] = {CustomIDs[I], CustomIDs[I], Instances[I].Mask};
+            GPUInstances[I]   = {CustomIDs[I], CustomIDs[I], Instances[I].Mask};
         }
-        BuildTLAS.Update = false;
-        BuildTLAS.InstanceCount = Count;
+        BuildTLAS.Update                   = false;
+        BuildTLAS.InstanceCount            = Count;
         BuildTLAS.InstanceBufferIsPrebuilt = false;
         Context->BuildTLAS(BuildTLAS);
         // Compare identical refit modes; topology/bootstrap builds are not timed.
@@ -556,8 +556,8 @@ RWStructuredBuffer<uint4> u_Hits;
         Context->EndQuery(Timing);
         const auto Expected = TraceAndRead();
         ReportTiming("cpu", Scenario, SubmitUs);
-        const auto ExpectedInstances = Read(Context, Device, InstanceBuffer);
-        const Uint64 CPUVideoMemory = LocalVideoMemoryUsage(Device->GetAdapterInfo());
+        const auto   ExpectedInstances = Read(Context, Device, InstanceBuffer);
+        const Uint64 CPUVideoMemory    = LocalVideoMemoryUsage(Device->GetAdapterInfo());
         if (Count != 0)
         {
             GPUTLAS GPU;
@@ -572,7 +572,7 @@ RWStructuredBuffer<uint4> u_Hits;
                 Instance.Mask = 0;
             }
             BuildTLAS.InstanceBufferIsPrebuilt = true;
-            BuildTLAS.Update = true;
+            BuildTLAS.Update                   = true;
             Context->BuildTLAS(BuildTLAS);
             SubmitUs = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - SubmitStart).count();
             Context->EndQuery(Timing);
@@ -597,7 +597,7 @@ RWStructuredBuffer<uint4> u_Hits;
                     Instances[I].Transform.SetTranslation(Matrix._41, Matrix._42, Matrix._43);
                     Instances[I].Mask = static_cast<Uint8>(GPUInstances[I].Mask);
                 }
-                BuildTLAS.Update = true;
+                BuildTLAS.Update                   = true;
                 BuildTLAS.InstanceBufferIsPrebuilt = false;
                 Context->BuildTLAS(BuildTLAS);
                 const auto UpdatedExpected = TraceAndRead();
