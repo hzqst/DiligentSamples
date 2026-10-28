@@ -1088,3 +1088,25 @@ arguments: `--mode d3d12|vk --scene ../tests/sharc-dynamic.scene.json
 Session artifacts in `%TEMP%`: `rtxpt-issue28-verified-build.log`,
 `rtxpt-issue28-testbuild.log`, `rtxpt-issue28-{d3d12,hitobject,vulkan,vulkan16}-final.log`,
 and `rtxpt28-final-*.out/.err` (including `vk-cpu-reload` and `vk-gpu-reference`).
+
+## Material texture file source (2026-10-28)
+
+`RTXPTMaterials::Upload` reads the external textures of `.material.json` files
+through `RTXPTFileSource`: the `.dds` beside an authored `.png` is looked for with
+`Exists`, and the texture is read with `ReadBytes` and decoded from memory. A
+source without callbacks reads the disk, so the sample is unchanged.
+
+Build `tests/build_material_file_source_test.bat <DiligentEngine install> Debug|Release`
+in a VS 2022 x64 Native Tools prompt, then run
+`%TEMP%/MaterialFileSourceTest/MaterialFileSourceTest.exe D3D12|Vk <engine DLL>`
+(D3D12 needs `WinPixEventRuntime.dll` on `PATH`). The test checks `ReadBytes` on
+the disk and through a callback, then loads a triangle scene whose files exist
+only in a file source (a root that is not on disk): a material without a
+`.material.json`, a `.dds` preferred to its `.png`, a `.png` without a `.dds`, a
+missing texture that keeps the glTF binding and a corrupt texture that leaves the
+slot to the factors. The same files written to disk and read by the default
+source must give byte-identical `MaterialPTData` and the same bindless table.
+
+Results (2026-10-28, Debug install, RTX 5060): D3D12 and Vulkan pass. With the
+`.dds` probe reverted to `FileSystem::FileExists`, the test fails on the bindless
+table.
