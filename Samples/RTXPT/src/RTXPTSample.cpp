@@ -469,6 +469,13 @@ std::string MakeAbsoluteRTXPTPath(const std::string& Path)
     return FileSystem::SimplifyPath(Result.c_str());
 }
 
+// FileSystem::SimplifyPath reduces "." to an empty path, which names no directory, so keep it as ".".
+std::string SimplifyRTXPTCandidatePath(const char* Path)
+{
+    const std::string SimplifiedPath = FileSystem::SimplifyPath(Path);
+    return SimplifiedPath.empty() ? std::string{"."} : SimplifiedPath;
+}
+
 std::string ResolveRTXPTAssetsRoot()
 {
     const char* DirectCandidates[] =
@@ -481,7 +488,7 @@ std::string ResolveRTXPTAssetsRoot()
 
     for (const char* Candidate : DirectCandidates)
     {
-        const std::string Path = FileSystem::SimplifyPath(Candidate);
+        const std::string Path = SimplifyRTXPTCandidatePath(Candidate);
         if (IsRTXPTAssetsRoot(Path))
             return MakeAbsoluteRTXPTPath(Path);
     }
@@ -508,7 +515,7 @@ std::string ResolveRTXPTAssetsRoot()
     {
         for (const char* Suffix : SourceTreeSuffixes)
         {
-            const std::string Path = FileSystem::SimplifyPath((std::string{Prefix} + Suffix).c_str());
+            const std::string Path = SimplifyRTXPTCandidatePath((std::string{Prefix} + Suffix).c_str());
             if (IsRTXPTAssetsRoot(Path))
                 return MakeAbsoluteRTXPTPath(Path);
         }
@@ -532,7 +539,7 @@ std::string ResolveRTXPTSampleRoot(const std::string& AssetsRoot)
 
     for (const std::string& Candidate : DirectCandidates)
     {
-        const std::string Path = FileSystem::SimplifyPath(Candidate.c_str());
+        const std::string Path = SimplifyRTXPTCandidatePath(Candidate.c_str());
         if (IsRTXPTShaderRoot(Path))
             return MakeAbsoluteRTXPTPath(Path);
     }
@@ -558,7 +565,7 @@ std::string ResolveRTXPTSampleRoot(const std::string& AssetsRoot)
     {
         for (const char* Suffix : SourceTreeSuffixes)
         {
-            const std::string Path = FileSystem::SimplifyPath((std::string{Prefix} + Suffix).c_str());
+            const std::string Path = SimplifyRTXPTCandidatePath((std::string{Prefix} + Suffix).c_str());
             if (IsRTXPTShaderRoot(Path))
                 return MakeAbsoluteRTXPTPath(Path);
         }
@@ -787,7 +794,9 @@ void RTXPTSample::ResetSceneDependentResources()
 
 bool RTXPTSample::UpdateEnvMapBaker(bool ForceRebuild)
 {
-    if (!m_pDevice || !m_pImmediateContext || !m_pEngineFactory)
+    // The baker's resources and render state cache are created with the scene-dependent resources
+    // (RebuildSceneDependentResources), so there is nothing to update without a loaded scene.
+    if (!m_pDevice || !m_pImmediateContext || !m_pEngineFactory || !m_Scene.HasValidContent())
         return false;
 
     m_EnvMapSettings.Enabled   = m_ReferenceUI.EnvironmentMapEnabled;
