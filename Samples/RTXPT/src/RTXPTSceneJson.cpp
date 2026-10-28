@@ -9,7 +9,6 @@
 #include <cctype>
 #include <climits>
 #include <fstream>
-#include <sstream>
 
 #include "BasicTypes.h"
 #include "DebugUtilities.hpp"
@@ -27,19 +26,32 @@ constexpr Uint32 kGLBJsonChunkType   = 0x4E4F534A; // "JSON"
 constexpr size_t kGLBHeaderSize      = 12;
 constexpr size_t kGLBChunkHeaderSize = 8;
 
-// Reads the file in binary mode: JSON text is unaffected (CR is whitespace), and GLB bytes stay intact.
-bool ReadDiskFile(const std::string& FilePath, std::string& Data, std::string& Error)
+// Reads the file in binary mode: JSON text is unaffected (CR is whitespace), and GLB and image bytes stay intact.
+template <typename ContainerType>
+bool ReadDiskFile(const std::string& FilePath, ContainerType& Data, std::string& Error)
 {
-    std::ifstream File{FilePath, std::ios::binary};
+    std::ifstream File{FilePath, std::ios::binary | std::ios::ate};
     if (!File)
     {
         Error = "Unable to open file: " + FilePath;
         return false;
     }
 
-    std::ostringstream Strm;
-    Strm << File.rdbuf();
-    Data = Strm.str();
+    const std::streamoff Size = File.tellg();
+    File.seekg(0, std::ios::beg);
+    if (Size < 0 || !File)
+    {
+        Error = "Unable to read file: " + FilePath;
+        return false;
+    }
+
+    Data.resize(static_cast<size_t>(Size));
+    if (Size > 0 && !File.read(reinterpret_cast<char*>(Data.data()), Size))
+    {
+        Error = "Unable to read file: " + FilePath;
+        return false;
+    }
+
     return true;
 }
 
@@ -150,14 +162,25 @@ bool RTXPTFileSource::Read(const std::string& FilePath, std::string& Data, std::
         return ReadDiskFile(FilePath, Data, Error);
 
     std::vector<unsigned char> Bytes;
-    if (!ReadWholeFile(FilePath.c_str(), Bytes, Error))
+    if (!ReadBytes(FilePath, Bytes, Error))
+        return false;
+
+    Data.assign(Bytes.begin(), Bytes.end());
+    return true;
+}
+
+bool RTXPTFileSource::ReadBytes(const std::string& FilePath, std::vector<unsigned char>& Data, std::string& Error) const
+{
+    if (!ReadWholeFile)
+        return ReadDiskFile(FilePath, Data, Error);
+
+    if (!ReadWholeFile(FilePath.c_str(), Data, Error))
     {
         if (Error.empty())
             Error = "Unable to read file: " + FilePath;
         return false;
     }
 
-    Data.assign(Bytes.begin(), Bytes.end());
     return true;
 }
 

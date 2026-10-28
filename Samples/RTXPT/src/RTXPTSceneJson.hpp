@@ -16,7 +16,8 @@
 namespace Diligent
 {
 
-// Where scene files are read from: the scene and material JSON files, the glTF models and the files they reference.
+// Where scene files are read from: the scene and material JSON files, the glTF models and the files they reference,
+// and the external textures of the material files.
 // The callbacks have the signatures of the glTF loader's file callbacks (GLTF::ModelCreateInfo::FileExistsCallback and
 // ReadWholeFileCallback), which receive them for the models. Paths are the assets root joined with the relative paths
 // of the scene, with the platform's slashes. A source without callbacks reads the disk.
@@ -30,8 +31,9 @@ struct RTXPTFileSource
 
     bool Exists(const std::string& FilePath) const;
 
-    // Returns false and sets Error when the file cannot be read.
+    // Return false and set Error when the file cannot be read.
     bool Read(const std::string& FilePath, std::string& Data, std::string& Error) const;
+    bool ReadBytes(const std::string& FilePath, std::vector<unsigned char>& Data, std::string& Error) const;
 };
 
 struct RTXPTJsonLoadResult

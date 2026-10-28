@@ -193,8 +193,8 @@ void RemapMaterialTextureIndices(MaterialPTData& Data, const std::vector<Uint32>
 }
 
 // Resolves an authored material-texture path against the assets root, normalizing slashes and preferring a
-// neighboring .dds when a .png is authored (matching RTXPT-fork).
-std::string ResolveExternalTexturePath(const std::string& AssetsRoot, const std::string& LocalPath)
+// neighboring .dds when a .png is authored and the file source has one (matching RTXPT-fork).
+std::string ResolveExternalTexturePath(const std::string& AssetsRoot, const std::string& LocalPath, const RTXPTFileSource& FileSource)
 {
     std::string Resolved = (std::filesystem::path{AssetsRoot} / LocalPath).string();
     FileSystem::CorrectSlashes(Resolved);
@@ -209,7 +209,7 @@ std::string ResolveExternalTexturePath(const std::string& AssetsRoot, const std:
         std::string DdsCandidate = PathObj.replace_extension(".dds").string();
         FileSystem::CorrectSlashes(DdsCandidate);
         DdsCandidate = FileSystem::SimplifyPath(DdsCandidate.c_str());
-        if (FileSystem::FileExists(DdsCandidate.c_str()))
+        if (FileSource.Exists(DdsCandidate))
             return DdsCandidate;
     }
     return Resolved;
@@ -223,17 +223,18 @@ struct ExternalTextureBinding
 };
 using ExternalTextureCache = std::unordered_map<std::string, ExternalTextureBinding>;
 
-// Loads (or reuses) an external material texture and appends its SRV to the bindless table. Returns the
-// bindless index, or InvalidTextureIndex on failure. Deduplicates by resolved path; conflicting sRGB/NormalMap
-// metadata for the same path warns and keeps the first binding.
+// Loads (or reuses) an external material texture, read through the file source, and appends its SRV to the
+// bindless table. Returns the bindless index, or InvalidTextureIndex on failure. Deduplicates by resolved path;
+// conflicting sRGB/NormalMap metadata for the same path warns and keeps the first binding.
 Uint32 AppendExternalTexture(IRenderDevice*                            pDevice,
                              const RTXPTMaterialTextureDesc&           Desc,
                              const std::string&                        AssetsRoot,
+                             const RTXPTFileSource&                    FileSource,
                              std::vector<RefCntAutoPtr<ITextureView>>& TextureViews,
                              std::vector<IDeviceObject*>&              TextureBindings,
                              ExternalTextureCache&                     Cache)
 {
-    const std::string ResolvedPath = ResolveExternalTexturePath(AssetsRoot, Desc.LocalPath);
+    const std::string ResolvedPath = ResolveExternalTexturePath(AssetsRoot, Desc.LocalPath, FileSource);
 
     const auto CacheIt = Cache.find(ResolvedPath);
     if (CacheIt != Cache.end())
@@ -247,8 +248,16 @@ Uint32 AppendExternalTexture(IRenderDevice*                            pDevice,
     TextureLoadInfo LoadInfo{"RTXPT material texture"};
     LoadInfo.IsSRGB = Desc.SRGB;
 
+    std::vector<unsigned char> Bytes;
+    std::string                Error;
+    if (!FileSource.ReadBytes(ResolvedPath, Bytes, Error))
+    {
+        LOG_WARNING_MESSAGE("Failed to read RTXPT material texture: ", Error);
+        return InvalidTextureIndex;
+    }
+
     RefCntAutoPtr<ITexture> pTexture;
-    CreateSharedTextureFromFile(ResolvedPath.c_str(), LoadInfo, pDevice, &pTexture);
+    CreateSharedTextureFromMemory(Bytes.data(), Bytes.size(), LoadInfo, pDevice, &pTexture);
     if (!pTexture)
     {
         LOG_WARNING_MESSAGE("Failed to load RTXPT material texture: ", ResolvedPath);
@@ -408,7 +417,10 @@ bool RTXPTMaterials::CreateMaterialBuffer(IRenderDevice* pDevice, const std::vec
     return m_MaterialBuffer != nullptr;
 }
 
-bool RTXPTMaterials::Upload(IRenderDevice* pDevice, const RTXPTSceneGraphData& SceneData, const std::string& AssetsRoot)
+bool RTXPTMaterials::Upload(IRenderDevice*             pDevice,
+                            const RTXPTSceneGraphData& SceneData,
+                            const std::string&         AssetsRoot,
+                            const RTXPTFileSource&     FileSource)
 {
     Reset();
 
@@ -510,7 +522,7 @@ bool RTXPTMaterials::Upload(IRenderDevice* pDevice, const RTXPTSceneGraphData& S
                     if (!Enable || !Desc.HasPath)
                         return;
 
-                    const Uint32 ExtIndex = AppendExternalTexture(pDevice, Desc, AssetsRoot,
+                    const Uint32 ExtIndex = AppendExternalTexture(pDevice, Desc, AssetsRoot, FileSource,
                                                                   m_TextureViews, m_TextureBindings, ExternalCache);
                     if (ExtIndex != InvalidTextureIndex)
                     {

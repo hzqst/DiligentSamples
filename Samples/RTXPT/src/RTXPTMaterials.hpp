@@ -36,6 +36,7 @@
 #include "GLTFLoader.hpp"
 #include "RefCntAutoPtr.hpp"
 #include "RenderDevice.h"
+#include "RTXPTSceneJson.hpp"
 #include "Texture.h"
 #include "TextureView.h"
 
@@ -199,7 +200,12 @@ public:
     void Reset();
     // Uploads the scene's materials and builds the bindless material-texture table. Emissive-textured
     // materials are promoted to NEE area lights (bindless is mandatory, so their textures are GPU-sampleable).
-    bool Upload(IRenderDevice* pDevice, const RTXPTSceneGraphData& SceneData, const std::string& AssetsRoot);
+    // The external textures of the .material.json files are read through FileSource, which reads the disk
+    // when it has no callbacks.
+    bool Upload(IRenderDevice*             pDevice,
+                const RTXPTSceneGraphData& SceneData,
+                const std::string&         AssetsRoot,
+                const RTXPTFileSource&     FileSource = {});
 
     const RTXPTMaterialStats& GetStats() const { return m_Stats; }
     IBuffer*                  GetMaterialBuffer() const { return m_MaterialBuffer; }
