@@ -350,7 +350,7 @@ std::vector<std::string> LoadRTXPTMaterialNames(const std::string& ModelPath, si
         MaterialNames[MatIdx] = "material_" + std::to_string(MatIdx);
 
     RTXPTJsonLoadResult ModelJson;
-    if (!LoadRTXPTRelaxedJsonFile(ModelPath, ModelJson) || !ModelJson.Json.is_object())
+    if (!LoadRTXPTGLTFJsonFile(ModelPath, ModelJson) || !ModelJson.Json.is_object())
         return MaterialNames;
 
     const auto MaterialsIt = ModelJson.Json.find("materials");
