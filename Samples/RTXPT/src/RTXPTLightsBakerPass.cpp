@@ -68,10 +68,10 @@ bool RTXPTLightsBakerPass::Initialize(IRenderDevice* pDevice, IEngineFactory* pE
         return false;
 
     ComputePipelineStateCreateInfo PSOCreateInfo;
-    PSOCreateInfo.PSODesc.Name         = ShaderCI.Desc.Name;
-    PSOCreateInfo.PSODesc.PipelineType = PIPELINE_TYPE_COMPUTE;
+    PSOCreateInfo.PSODesc.Name                 = ShaderCI.Desc.Name;
+    PSOCreateInfo.PSODesc.PipelineType         = PIPELINE_TYPE_COMPUTE;
     PSOCreateInfo.PSODesc.ImmediateContextMask = kRTXPTImmediateContextMask;
-    PSOCreateInfo.pCS                  = pCS;
+    PSOCreateInfo.pCS                          = pCS;
 
     PipelineResourceLayoutDescX ResourceLayout;
     ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE;

@@ -65,18 +65,18 @@ constexpr Uint32 kSubInstanceFlag_Skinned = 0x2u;
 
 struct RTXPTAccelerationStructureStats
 {
-    bool   RayTracingSupported       = false;
-    bool   Built                     = false;
-    Uint32 GeometryCount             = 0;
-    Uint32 InstanceCount             = 0;
-    Uint32 BLASCount                 = 0;
-    Uint32 SubInstanceCount          = 0;
-    Uint32 AlphaTestedGeometryCount  = 0;
+    bool   RayTracingSupported          = false;
+    bool   Built                        = false;
+    Uint32 GeometryCount                = 0;
+    Uint32 InstanceCount                = 0;
+    Uint32 BLASCount                    = 0;
+    Uint32 SubInstanceCount             = 0;
+    Uint32 AlphaTestedGeometryCount     = 0;
     Uint32 ExcludedFromNEEGeometryCount = 0;
-    Uint64 BLASScratchSize           = 0;
-    Uint64 TLASScratchSize           = 0;
-    Uint64 GPUInstanceDataSize       = 0;
-    bool   GPUTLASActive             = false;
+    Uint64 BLASScratchSize              = 0;
+    Uint64 TLASScratchSize              = 0;
+    Uint64 GPUInstanceDataSize          = 0;
+    bool   GPUTLASActive                = false;
 };
 
 class RTXPTAccelerationStructures
@@ -113,7 +113,7 @@ public:
     IBuffer*     GetSubInstanceBuffer() const { return m_SubInstanceBuffer; }
     IBuffer*     GetSubInstanceTransformBuffer() const { return m_SubInstanceTransformBuffer; }
     bool         UploadSubInstanceTransforms(IDeviceContext* Context);
-    bool UpdateTLAS(IDeviceContext* pContext, const RTXPTSceneGraphData& SceneData);
+    bool         UpdateTLAS(IDeviceContext* pContext, const RTXPTSceneGraphData& SceneData);
 
     const RTXPTAccelerationStructureStats& GetStats() const { return m_Stats; }
 

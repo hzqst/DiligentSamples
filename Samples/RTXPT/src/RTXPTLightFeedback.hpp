@@ -63,20 +63,20 @@ public:
         }
         BufferDesc Constants;
         Constants.ImmediateContextMask = kRTXPTImmediateContextMask;
-        Constants.Name      = "RTXPT feedback frame constants";
-        Constants.Size      = 12 * sizeof(Uint32);
-        Constants.BindFlags = BIND_UNIFORM_BUFFER;
+        Constants.Name                 = "RTXPT feedback frame constants";
+        Constants.Size                 = 12 * sizeof(Uint32);
+        Constants.BindFlags            = BIND_UNIFORM_BUFFER;
         pDevice->CreateBuffer(Constants, nullptr, &m_Constants);
         for (size_t I = 0; I < m_Textures.size(); ++I)
         {
             TextureDesc Desc;
             Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
-            Desc.Name      = "RTXPT temporal light feedback";
-            Desc.Type      = RESOURCE_DIM_TEX_2D;
-            Desc.Width     = std::max(Width, 1u);
-            Desc.Height    = std::max(Height, 1u);
-            Desc.Format    = I == 3 ? TEX_FORMAT_R32_FLOAT : TEX_FORMAT_RG32_UINT;
-            Desc.BindFlags = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
+            Desc.Name                 = "RTXPT temporal light feedback";
+            Desc.Type                 = RESOURCE_DIM_TEX_2D;
+            Desc.Width                = std::max(Width, 1u);
+            Desc.Height               = std::max(Height, 1u);
+            Desc.Format               = I == 3 ? TEX_FORMAT_R32_FLOAT : TEX_FORMAT_RG32_UINT;
+            Desc.BindFlags            = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
             pDevice->CreateTexture(Desc, nullptr, &m_Textures[I]);
             if (!m_Textures[I]) return false;
         }
@@ -88,11 +88,11 @@ public:
         m_Counts.Release();
         BufferDesc Desc;
         Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
-        Desc.Name              = "RTXPT per-light temporal feedback counts";
-        Desc.Size              = (Uint64{Count} + 1) * sizeof(Uint32);
-        Desc.Mode              = BUFFER_MODE_STRUCTURED;
-        Desc.ElementByteStride = sizeof(Uint32);
-        Desc.BindFlags         = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
+        Desc.Name                 = "RTXPT per-light temporal feedback counts";
+        Desc.Size                 = (Uint64{Count} + 1) * sizeof(Uint32);
+        Desc.Mode                 = BUFFER_MODE_STRUCTURED;
+        Desc.ElementByteStride    = sizeof(Uint32);
+        Desc.BindFlags            = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
         pDevice->CreateBuffer(Desc, nullptr, &m_Counts);
         m_LightCount = Count;
         return m_Counts != nullptr;

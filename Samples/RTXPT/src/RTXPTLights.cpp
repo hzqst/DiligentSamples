@@ -187,12 +187,12 @@ bool RTXPTLights::UploadLightBuffer(IRenderDevice* pDevice, std::vector<Polymorp
 
     BufferDesc Desc;
     Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
-    Desc.Name              = "RTXPT light buffer";
-    Desc.Usage             = USAGE_IMMUTABLE;
-    Desc.BindFlags         = BIND_SHADER_RESOURCE;
-    Desc.Mode              = BUFFER_MODE_STRUCTURED;
-    Desc.ElementByteStride = sizeof(PolymorphicLightInfo);
-    Desc.Size              = sizeof(PolymorphicLightInfo) * Base.size();
+    Desc.Name                 = "RTXPT light buffer";
+    Desc.Usage                = USAGE_IMMUTABLE;
+    Desc.BindFlags            = BIND_SHADER_RESOURCE;
+    Desc.Mode                 = BUFFER_MODE_STRUCTURED;
+    Desc.ElementByteStride    = sizeof(PolymorphicLightInfo);
+    Desc.Size                 = sizeof(PolymorphicLightInfo) * Base.size();
 
     BufferData Data{Base.data(), Desc.Size};
     pDevice->CreateBuffer(Desc, &Data, &m_LightBuffer);
@@ -222,12 +222,12 @@ bool RTXPTLights::UploadEmissiveTriangleBuffer(IRenderDevice* pDevice, Uint32 Em
 
     BufferDesc Desc;
     Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
-    Desc.Name              = "RTXPT emissive triangle buffer";
-    Desc.Usage             = USAGE_DEFAULT;
-    Desc.BindFlags         = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
-    Desc.Mode              = BUFFER_MODE_STRUCTURED;
-    Desc.ElementByteStride = sizeof(PolymorphicLightInfo);
-    Desc.Size              = Uint64{ElementCount} * sizeof(PolymorphicLightInfo);
+    Desc.Name                 = "RTXPT emissive triangle buffer";
+    Desc.Usage                = USAGE_DEFAULT;
+    Desc.BindFlags            = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
+    Desc.Mode                 = BUFFER_MODE_STRUCTURED;
+    Desc.ElementByteStride    = sizeof(PolymorphicLightInfo);
+    Desc.Size                 = Uint64{ElementCount} * sizeof(PolymorphicLightInfo);
 
     pDevice->CreateBuffer(Desc, nullptr, &m_EmissiveTriangleBuffer);
 

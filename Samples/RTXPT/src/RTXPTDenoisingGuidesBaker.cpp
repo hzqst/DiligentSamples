@@ -137,11 +137,11 @@ bool RTXPTDenoisingGuidesBaker::Initialize(IRenderDevice*     pDevice,
 
     BufferDesc ConstantsDesc;
     ConstantsDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
-    ConstantsDesc.Name           = "RTXPT denoising guides baker constants";
-    ConstantsDesc.Size           = sizeof(DenoisingGuidesBakerConstants);
-    ConstantsDesc.BindFlags      = BIND_UNIFORM_BUFFER;
-    ConstantsDesc.Usage          = USAGE_DYNAMIC;
-    ConstantsDesc.CPUAccessFlags = CPU_ACCESS_WRITE;
+    ConstantsDesc.Name                 = "RTXPT denoising guides baker constants";
+    ConstantsDesc.Size                 = sizeof(DenoisingGuidesBakerConstants);
+    ConstantsDesc.BindFlags            = BIND_UNIFORM_BUFFER;
+    ConstantsDesc.Usage                = USAGE_DYNAMIC;
+    ConstantsDesc.CPUAccessFlags       = CPU_ACCESS_WRITE;
     pDevice->CreateBuffer(ConstantsDesc, nullptr, &m_Constants);
     VERIFY(m_Constants, "Failed to create RTXPT denoising guides baker constants");
     if (!m_Constants)
@@ -190,10 +190,10 @@ bool RTXPTDenoisingGuidesBaker::CreatePass(IRenderDevice*                   pDev
         return false;
 
     ComputePipelineStateCreateInfo PSOCreateInfo;
-    PSOCreateInfo.PSODesc.Name         = GetPassName(Pass);
-    PSOCreateInfo.PSODesc.PipelineType = PIPELINE_TYPE_COMPUTE;
+    PSOCreateInfo.PSODesc.Name                 = GetPassName(Pass);
+    PSOCreateInfo.PSODesc.PipelineType         = PIPELINE_TYPE_COMPUTE;
     PSOCreateInfo.PSODesc.ImmediateContextMask = kRTXPTImmediateContextMask;
-    PSOCreateInfo.pCS                  = pCS;
+    PSOCreateInfo.pCS                          = pCS;
 
     PipelineResourceLayoutDescX ResourceLayout;
     ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE;

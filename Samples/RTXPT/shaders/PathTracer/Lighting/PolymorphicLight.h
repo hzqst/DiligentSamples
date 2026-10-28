@@ -4,27 +4,27 @@
 #ifdef __cplusplus
 namespace Diligent
 {
-#define LIGHT_UINT Uint32
+#    define LIGHT_UINT Uint32
 #else
-#define LIGHT_UINT uint
+#    define LIGHT_UINT uint
 #endif
 
-static const LIGHT_UINT kPolymorphicLightTypeShift = 24;
-static const LIGHT_UINT kPolymorphicLightTypeMask = 0xf;
-static const LIGHT_UINT kPolymorphicLightTypeTriangle = 1;
-static const LIGHT_UINT kPolymorphicLightTypeEnvironment = 5;
-static const LIGHT_UINT kPolymorphicLightTypeCluster = 8;
-static const LIGHT_UINT kPolymorphicLightIsInCluster = 1u << 31;
-static const LIGHT_UINT kPolymorphicLightShapingEnableBit = 1u << 28;
-static const LIGHT_UINT kPolymorphicLightIesProfileEnableBit = 1u << 29;
+static const LIGHT_UINT kPolymorphicLightTypeShift            = 24;
+static const LIGHT_UINT kPolymorphicLightTypeMask             = 0xf;
+static const LIGHT_UINT kPolymorphicLightTypeTriangle         = 1;
+static const LIGHT_UINT kPolymorphicLightTypeEnvironment      = 5;
+static const LIGHT_UINT kPolymorphicLightTypeCluster          = 8;
+static const LIGHT_UINT kPolymorphicLightIsInCluster          = 1u << 31;
+static const LIGHT_UINT kPolymorphicLightShapingEnableBit     = 1u << 28;
+static const LIGHT_UINT kPolymorphicLightIesProfileEnableBit  = 1u << 29;
 static const LIGHT_UINT kPolymorphicLightShapingUseMinFalloff = 1u << 30;
-static const float kPolymorphicLightMinLog2Radiance = -8.0f;
-static const float kPolymorphicLightMaxLog2Radiance = 40.0f;
+static const float      kPolymorphicLightMinLog2Radiance      = -8.0f;
+static const float      kPolymorphicLightMaxLog2Radiance      = 40.0f;
 
 // RTXPT-fork's GPU ABI: two uint4 blocks, plus a separate optional uint4.
 struct PolymorphicLightInfo
 {
-    float3 Center;
+    float3     Center;
     LIGHT_UINT ColorTypeAndFlags;
     LIGHT_UINT Direction1;
     LIGHT_UINT Direction2;
@@ -49,7 +49,7 @@ struct PolymorphicLightInfoEx
 
 struct PolymorphicLightInfoFull
 {
-    PolymorphicLightInfo Base;
+    PolymorphicLightInfo   Base;
     PolymorphicLightInfoEx Extended;
 };
 

@@ -223,15 +223,15 @@ bool CreateCubeTexture(IRenderDevice* pDevice, const char* Name, Uint32 Size, Ui
 
     TextureDesc Desc;
     Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
-    Desc.Name      = Name;
-    Desc.Type      = RESOURCE_DIM_TEX_CUBE;
-    Desc.Usage     = USAGE_IMMUTABLE;
-    Desc.BindFlags = BIND_SHADER_RESOURCE;
-    Desc.Format    = TEX_FORMAT_RGBA8_UNORM;
-    Desc.Width     = Size;
-    Desc.Height    = Size;
-    Desc.MipLevels = 1;
-    Desc.ArraySize = 6;
+    Desc.Name                 = Name;
+    Desc.Type                 = RESOURCE_DIM_TEX_CUBE;
+    Desc.Usage                = USAGE_IMMUTABLE;
+    Desc.BindFlags            = BIND_SHADER_RESOURCE;
+    Desc.Format               = TEX_FORMAT_RGBA8_UNORM;
+    Desc.Width                = Size;
+    Desc.Height               = Size;
+    Desc.MipLevels            = 1;
+    Desc.ArraySize            = 6;
 
     std::vector<Uint32>            Data(static_cast<size_t>(Desc.ArraySize) * Size * Size, Color);
     std::vector<TextureSubResData> SubResData(Desc.ArraySize);
@@ -254,14 +254,14 @@ bool CreateRGBA8Texture(IRenderDevice* pDevice, const char* Name, Uint32 Color, 
 
     TextureDesc Desc;
     Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
-    Desc.Name      = Name;
-    Desc.Type      = RESOURCE_DIM_TEX_2D;
-    Desc.Usage     = USAGE_IMMUTABLE;
-    Desc.BindFlags = BIND_SHADER_RESOURCE;
-    Desc.Format    = TEX_FORMAT_RGBA8_UNORM;
-    Desc.Width     = 1;
-    Desc.Height    = 1;
-    Desc.MipLevels = 1;
+    Desc.Name                 = Name;
+    Desc.Type                 = RESOURCE_DIM_TEX_2D;
+    Desc.Usage                = USAGE_IMMUTABLE;
+    Desc.BindFlags            = BIND_SHADER_RESOURCE;
+    Desc.Format               = TEX_FORMAT_RGBA8_UNORM;
+    Desc.Width                = 1;
+    Desc.Height               = 1;
+    Desc.MipLevels            = 1;
 
     TextureSubResData Subres{&Color, sizeof(Color)};
     TextureData       InitData{&Subres, 1};
@@ -278,14 +278,14 @@ bool CreateR32FloatTexture(IRenderDevice* pDevice, const char* Name, float Value
 
     TextureDesc Desc;
     Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
-    Desc.Name      = Name;
-    Desc.Type      = RESOURCE_DIM_TEX_2D;
-    Desc.Usage     = USAGE_IMMUTABLE;
-    Desc.BindFlags = BIND_SHADER_RESOURCE;
-    Desc.Format    = TEX_FORMAT_R32_FLOAT;
-    Desc.Width     = 1;
-    Desc.Height    = 1;
-    Desc.MipLevels = 1;
+    Desc.Name                 = Name;
+    Desc.Type                 = RESOURCE_DIM_TEX_2D;
+    Desc.Usage                = USAGE_IMMUTABLE;
+    Desc.BindFlags            = BIND_SHADER_RESOURCE;
+    Desc.Format               = TEX_FORMAT_R32_FLOAT;
+    Desc.Width                = 1;
+    Desc.Height               = 1;
+    Desc.MipLevels            = 1;
 
     TextureSubResData Subres{&Value, sizeof(Value)};
     TextureData       InitData{&Subres, 1};
@@ -818,16 +818,16 @@ bool RTXPTEnvMapBaker::BakeHighResEnvironmentCube(IRenderDevice* pDevice, IDevic
 
         TextureDesc CubeDesc;
         CubeDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
-        CubeDesc.Name      = "RTXPT high-resolution environment cube";
-        CubeDesc.Type      = RESOURCE_DIM_TEX_CUBE;
-        CubeDesc.Width     = TargetRes;
-        CubeDesc.Height    = TargetRes;
-        CubeDesc.ArraySize = 6;
-        CubeDesc.Format    = TEX_FORMAT_RGBA16_FLOAT;
-        CubeDesc.MipLevels = ComputeMipLevelsCount(TargetRes, TargetRes);
-        CubeDesc.BindFlags = BIND_SHADER_RESOURCE | BIND_RENDER_TARGET;
-        CubeDesc.MiscFlags = MISC_TEXTURE_FLAG_GENERATE_MIPS;
-        CubeDesc.Usage     = USAGE_DEFAULT;
+        CubeDesc.Name                 = "RTXPT high-resolution environment cube";
+        CubeDesc.Type                 = RESOURCE_DIM_TEX_CUBE;
+        CubeDesc.Width                = TargetRes;
+        CubeDesc.Height               = TargetRes;
+        CubeDesc.ArraySize            = 6;
+        CubeDesc.Format               = TEX_FORMAT_RGBA16_FLOAT;
+        CubeDesc.MipLevels            = ComputeMipLevelsCount(TargetRes, TargetRes);
+        CubeDesc.BindFlags            = BIND_SHADER_RESOURCE | BIND_RENDER_TARGET;
+        CubeDesc.MiscFlags            = MISC_TEXTURE_FLAG_GENERATE_MIPS;
+        CubeDesc.Usage                = USAGE_DEFAULT;
         pDevice->CreateTexture(CubeDesc, nullptr, &m_EnvironmentCube);
         if (!m_EnvironmentCube)
         {
@@ -841,11 +841,11 @@ bool RTXPTEnvMapBaker::BakeHighResEnvironmentCube(IRenderDevice* pDevice, IDevic
     {
         BufferDesc CBDesc;
         CBDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
-        CBDesc.Name           = "RTXPT EnvCube bake constants";
-        CBDesc.Size           = sizeof(float4x4);
-        CBDesc.BindFlags      = BIND_UNIFORM_BUFFER;
-        CBDesc.Usage          = USAGE_DYNAMIC;
-        CBDesc.CPUAccessFlags = CPU_ACCESS_WRITE;
+        CBDesc.Name                 = "RTXPT EnvCube bake constants";
+        CBDesc.Size                 = sizeof(float4x4);
+        CBDesc.BindFlags            = BIND_UNIFORM_BUFFER;
+        CBDesc.Usage                = USAGE_DYNAMIC;
+        CBDesc.CPUAccessFlags       = CPU_ACCESS_WRITE;
         pDevice->CreateBuffer(CBDesc, nullptr, &m_EnvCubeBakeConstants);
         if (!m_EnvCubeBakeConstants)
             return false;
@@ -929,11 +929,11 @@ bool RTXPTEnvMapBaker::CreateImportanceMaps(IRenderDevice* pDevice, IDeviceConte
     RefCntAutoPtr<IBuffer> NewImportanceConstants;
     BufferDesc             ConstantsDesc;
     ConstantsDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
-    ConstantsDesc.Name           = "RTXPT EnvMapBaker importance constants";
-    ConstantsDesc.Size           = sizeof(EnvMapImportanceBakerConstantsCPU);
-    ConstantsDesc.BindFlags      = BIND_UNIFORM_BUFFER;
-    ConstantsDesc.Usage          = USAGE_DYNAMIC;
-    ConstantsDesc.CPUAccessFlags = CPU_ACCESS_WRITE;
+    ConstantsDesc.Name                 = "RTXPT EnvMapBaker importance constants";
+    ConstantsDesc.Size                 = sizeof(EnvMapImportanceBakerConstantsCPU);
+    ConstantsDesc.BindFlags            = BIND_UNIFORM_BUFFER;
+    ConstantsDesc.Usage                = USAGE_DYNAMIC;
+    ConstantsDesc.CPUAccessFlags       = CPU_ACCESS_WRITE;
     pDevice->CreateBuffer(ConstantsDesc, nullptr, &NewImportanceConstants);
     if (!NewImportanceConstants)
         return Fail("Failed to create RTXPT EnvMapBaker importance constants buffer");
@@ -981,14 +981,14 @@ bool RTXPTEnvMapBaker::CreateImportanceTextures(IRenderDevice* pDevice, Uint32 R
 
     TextureDesc ImportanceDesc;
     ImportanceDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
-    ImportanceDesc.Name      = "RTXPT EnvMapBaker importance map";
-    ImportanceDesc.Type      = RESOURCE_DIM_TEX_2D;
-    ImportanceDesc.Usage     = USAGE_DEFAULT;
-    ImportanceDesc.BindFlags = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
-    ImportanceDesc.Format    = TEX_FORMAT_R32_FLOAT;
-    ImportanceDesc.Width     = SafeResolution;
-    ImportanceDesc.Height    = SafeResolution;
-    ImportanceDesc.MipLevels = MipLevels;
+    ImportanceDesc.Name                 = "RTXPT EnvMapBaker importance map";
+    ImportanceDesc.Type                 = RESOURCE_DIM_TEX_2D;
+    ImportanceDesc.Usage                = USAGE_DEFAULT;
+    ImportanceDesc.BindFlags            = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
+    ImportanceDesc.Format               = TEX_FORMAT_R32_FLOAT;
+    ImportanceDesc.Width                = SafeResolution;
+    ImportanceDesc.Height               = SafeResolution;
+    ImportanceDesc.MipLevels            = MipLevels;
 
     RefCntAutoPtr<ITexture>     ImportanceMap;
     RefCntAutoPtr<ITextureView> ImportanceSRV;

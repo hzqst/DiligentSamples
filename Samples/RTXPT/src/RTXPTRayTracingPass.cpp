@@ -195,11 +195,11 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
 
     BufferDesc MiniCBDesc;
     MiniCBDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
-    MiniCBDesc.Name           = "RTXPT SampleMiniConstants";
-    MiniCBDesc.Size           = sizeof(SampleMiniConstants);
-    MiniCBDesc.BindFlags      = BIND_UNIFORM_BUFFER;
-    MiniCBDesc.Usage          = USAGE_DYNAMIC;
-    MiniCBDesc.CPUAccessFlags = CPU_ACCESS_WRITE;
+    MiniCBDesc.Name                 = "RTXPT SampleMiniConstants";
+    MiniCBDesc.Size                 = sizeof(SampleMiniConstants);
+    MiniCBDesc.BindFlags            = BIND_UNIFORM_BUFFER;
+    MiniCBDesc.Usage                = USAGE_DYNAMIC;
+    MiniCBDesc.CPUAccessFlags       = CPU_ACCESS_WRITE;
     pDevice->CreateBuffer(MiniCBDesc, nullptr, &m_MiniConstantsCB);
     if (!m_MiniConstantsCB)
     {
@@ -382,8 +382,8 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
         }
 
         RayTracingPipelineStateCreateInfoX PSOCreateInfo;
-        PSOCreateInfo.PSODesc.Name         = "RTXPT path trace RT PSO";
-        PSOCreateInfo.PSODesc.PipelineType = PIPELINE_TYPE_RAY_TRACING;
+        PSOCreateInfo.PSODesc.Name                 = "RTXPT path trace RT PSO";
+        PSOCreateInfo.PSODesc.PipelineType         = PIPELINE_TYPE_RAY_TRACING;
         PSOCreateInfo.PSODesc.ImmediateContextMask = kRTXPTImmediateContextMask;
         PSOCreateInfo.AddGeneralShader("Main", pRayGen);
         if (!UseHitObject)

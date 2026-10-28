@@ -139,12 +139,12 @@ bool RTXPTSkinnedSceneGeometry::CreateBuffers(IRenderDevice* pDevice)
 
     BufferDesc VertexDesc;
     VertexDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
-    VertexDesc.Name              = "RTXPT current skinned vertex arena";
-    VertexDesc.Usage             = USAGE_DEFAULT;
-    VertexDesc.BindFlags         = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS | BIND_RAY_TRACING;
-    VertexDesc.Mode              = BUFFER_MODE_STRUCTURED;
-    VertexDesc.ElementByteStride = sizeof(RTXPTGeometryVertex);
-    VertexDesc.Size              = Uint64{VertexCountForBuffer} * sizeof(RTXPTGeometryVertex);
+    VertexDesc.Name                 = "RTXPT current skinned vertex arena";
+    VertexDesc.Usage                = USAGE_DEFAULT;
+    VertexDesc.BindFlags            = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS | BIND_RAY_TRACING;
+    VertexDesc.Mode                 = BUFFER_MODE_STRUCTURED;
+    VertexDesc.ElementByteStride    = sizeof(RTXPTGeometryVertex);
+    VertexDesc.Size                 = Uint64{VertexCountForBuffer} * sizeof(RTXPTGeometryVertex);
     pDevice->CreateBuffer(VertexDesc, nullptr, &m_SkinnedVertexBuffer);
     VERIFY(m_SkinnedVertexBuffer, "Failed to create RTXPT skinned vertex arena");
     if (!m_SkinnedVertexBuffer)

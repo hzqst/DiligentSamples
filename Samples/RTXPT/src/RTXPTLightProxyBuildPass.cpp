@@ -103,10 +103,10 @@ bool RTXPTLightProxyBuildPass::CreatePSO(IRenderStateCache*                     
                                          RefCntAutoPtr<IShaderResourceBinding>& SRB)
 {
     ComputePipelineStateCreateInfo PSOCreateInfo;
-    PSOCreateInfo.PSODesc.Name         = Name;
-    PSOCreateInfo.PSODesc.PipelineType = PIPELINE_TYPE_COMPUTE;
+    PSOCreateInfo.PSODesc.Name                 = Name;
+    PSOCreateInfo.PSODesc.PipelineType         = PIPELINE_TYPE_COMPUTE;
     PSOCreateInfo.PSODesc.ImmediateContextMask = kRTXPTImmediateContextMask;
-    PSOCreateInfo.pCS                  = pCS;
+    PSOCreateInfo.pCS                          = pCS;
 
     PipelineResourceLayoutDescX ResourceLayout;
     ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC;
@@ -181,11 +181,11 @@ bool RTXPTLightProxyBuildPass::Initialize(IRenderDevice* pDevice, IEngineFactory
 
     BufferDesc ConstantsDesc;
     ConstantsDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
-    ConstantsDesc.Name           = "RTXPT light proxy build constants";
-    ConstantsDesc.Size           = sizeof(LightProxyBuildConstantsCPU);
-    ConstantsDesc.BindFlags      = BIND_UNIFORM_BUFFER;
-    ConstantsDesc.Usage          = USAGE_DYNAMIC;
-    ConstantsDesc.CPUAccessFlags = CPU_ACCESS_WRITE;
+    ConstantsDesc.Name                 = "RTXPT light proxy build constants";
+    ConstantsDesc.Size                 = sizeof(LightProxyBuildConstantsCPU);
+    ConstantsDesc.BindFlags            = BIND_UNIFORM_BUFFER;
+    ConstantsDesc.Usage                = USAGE_DYNAMIC;
+    ConstantsDesc.CPUAccessFlags       = CPU_ACCESS_WRITE;
     pDevice->CreateBuffer(ConstantsDesc, nullptr, &m_Constants);
     if (!m_Constants)
     {
@@ -272,11 +272,11 @@ bool RTXPTLightProxyBuildPass::Build(IDeviceContext* pContext,
     {
         BufferDesc Desc;
         Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
-        Desc.Name              = "RTXPT historic light weights";
-        Desc.Size              = sizeof(float);
-        Desc.Mode              = BUFFER_MODE_STRUCTURED;
-        Desc.ElementByteStride = sizeof(float);
-        Desc.BindFlags         = BIND_SHADER_RESOURCE;
+        Desc.Name                 = "RTXPT historic light weights";
+        Desc.Size                 = sizeof(float);
+        Desc.Mode                 = BUFFER_MODE_STRUCTURED;
+        Desc.ElementByteStride    = sizeof(float);
+        Desc.BindFlags            = BIND_SHADER_RESOURCE;
         m_Device->CreateBuffer(Desc, nullptr, &m_HistoricLightWeights);
         if (!m_HistoricLightWeights) return false;
     }
@@ -302,22 +302,22 @@ bool RTXPTLightProxyBuildPass::Build(IDeviceContext* pContext,
         m_ProxyJobs.Release();
         BufferDesc Desc;
         Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
-        Desc.Name              = "RTXPT light proxy jobs";
-        Desc.Size              = std::max(JobsSize, Uint64{16});
-        Desc.Mode              = BUFFER_MODE_STRUCTURED;
-        Desc.ElementByteStride = 4 * sizeof(Uint32);
-        Desc.BindFlags         = BIND_UNORDERED_ACCESS;
+        Desc.Name                 = "RTXPT light proxy jobs";
+        Desc.Size                 = std::max(JobsSize, Uint64{16});
+        Desc.Mode                 = BUFFER_MODE_STRUCTURED;
+        Desc.ElementByteStride    = 4 * sizeof(Uint32);
+        Desc.BindFlags            = BIND_UNORDERED_ACCESS;
         m_Device->CreateBuffer(Desc, nullptr, &m_ProxyJobs);
     }
     if (!m_ProxyDispatchArgs)
     {
         BufferDesc Desc;
         Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
-        Desc.Name              = "RTXPT light proxy indirect dispatch";
-        Desc.Size              = 3 * sizeof(Uint32);
-        Desc.Mode              = BUFFER_MODE_STRUCTURED;
-        Desc.ElementByteStride = sizeof(Uint32);
-        Desc.BindFlags         = BIND_UNORDERED_ACCESS | BIND_INDIRECT_DRAW_ARGS;
+        Desc.Name                 = "RTXPT light proxy indirect dispatch";
+        Desc.Size                 = 3 * sizeof(Uint32);
+        Desc.Mode                 = BUFFER_MODE_STRUCTURED;
+        Desc.ElementByteStride    = sizeof(Uint32);
+        Desc.BindFlags            = BIND_UNORDERED_ACCESS | BIND_INDIRECT_DRAW_ARGS;
         m_Device->CreateBuffer(Desc, nullptr, &m_ProxyDispatchArgs);
     }
     if (!m_ProxyJobs || !m_ProxyDispatchArgs) return false;
@@ -400,11 +400,11 @@ bool RTXPTLightProxyBuildPass::Build(IDeviceContext* pContext,
         m_HistoricLightWeights.Release();
         BufferDesc Desc;
         Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
-        Desc.Name              = "RTXPT historic light weights";
-        Desc.Size              = WeightBytes;
-        Desc.Mode              = BUFFER_MODE_STRUCTURED;
-        Desc.ElementByteStride = sizeof(float);
-        Desc.BindFlags         = BIND_SHADER_RESOURCE;
+        Desc.Name                 = "RTXPT historic light weights";
+        Desc.Size                 = WeightBytes;
+        Desc.Mode                 = BUFFER_MODE_STRUCTURED;
+        Desc.ElementByteStride    = sizeof(float);
+        Desc.BindFlags            = BIND_SHADER_RESOURCE;
         m_Device->CreateBuffer(Desc, nullptr, &m_HistoricLightWeights);
         if (!m_HistoricLightWeights) return false;
     }

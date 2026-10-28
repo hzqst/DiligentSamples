@@ -292,12 +292,12 @@ bool BuildRTXPTStaticGeometryBuffers(IRenderDevice*          pDevice,
 
     BufferDesc VertexDesc;
     VertexDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
-    VertexDesc.Name              = "RTXPT scene static vertex buffer";
-    VertexDesc.Usage             = USAGE_DEFAULT;
-    VertexDesc.BindFlags         = BIND_VERTEX_BUFFER | BIND_SHADER_RESOURCE | RayTracingBindFlag;
-    VertexDesc.Mode              = BUFFER_MODE_STRUCTURED;
-    VertexDesc.ElementByteStride = VertexStride;
-    VertexDesc.Size              = TotalVertexCount * VertexStride;
+    VertexDesc.Name                 = "RTXPT scene static vertex buffer";
+    VertexDesc.Usage                = USAGE_DEFAULT;
+    VertexDesc.BindFlags            = BIND_VERTEX_BUFFER | BIND_SHADER_RESOURCE | RayTracingBindFlag;
+    VertexDesc.Mode                 = BUFFER_MODE_STRUCTURED;
+    VertexDesc.ElementByteStride    = VertexStride;
+    VertexDesc.Size                 = TotalVertexCount * VertexStride;
     pDevice->CreateBuffer(VertexDesc, nullptr, &pStaticVertexBuffer);
     VERIFY(pStaticVertexBuffer, "Failed to create RTXPT scene static vertex buffer");
     if (!pStaticVertexBuffer)
@@ -305,12 +305,12 @@ bool BuildRTXPTStaticGeometryBuffers(IRenderDevice*          pDevice,
 
     BufferDesc IndexDesc;
     IndexDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
-    IndexDesc.Name              = "RTXPT scene static index buffer";
-    IndexDesc.Usage             = USAGE_DEFAULT;
-    IndexDesc.BindFlags         = BIND_INDEX_BUFFER | BIND_SHADER_RESOURCE | RayTracingBindFlag;
-    IndexDesc.Mode              = BUFFER_MODE_FORMATTED;
-    IndexDesc.ElementByteStride = IndexSize;
-    IndexDesc.Size              = std::max<Uint64>(TotalIndexCount, 1) * IndexSize;
+    IndexDesc.Name                 = "RTXPT scene static index buffer";
+    IndexDesc.Usage                = USAGE_DEFAULT;
+    IndexDesc.BindFlags            = BIND_INDEX_BUFFER | BIND_SHADER_RESOURCE | RayTracingBindFlag;
+    IndexDesc.Mode                 = BUFFER_MODE_FORMATTED;
+    IndexDesc.ElementByteStride    = IndexSize;
+    IndexDesc.Size                 = std::max<Uint64>(TotalIndexCount, 1) * IndexSize;
 
     Uint32     DummyIndex = 0;
     BufferData DummyIndexData{&DummyIndex, IndexSize};
