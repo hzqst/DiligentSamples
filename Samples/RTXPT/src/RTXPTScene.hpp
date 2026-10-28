@@ -35,6 +35,7 @@
 #include "GLTFLoader.hpp"
 #include "RefCntAutoPtr.hpp"
 #include "RTXPTSceneGraph.hpp"
+#include "RTXPTSceneJson.hpp"
 
 namespace Diligent
 {
@@ -64,13 +65,24 @@ struct RTXPTSceneGeometryStats
     Uint32 SkinnedVertexCount    = 0;
 };
 
+struct RTXPTSceneLoadOptions
+{
+    // Where the scene, material and model files are read from; the disk by default.
+    RTXPTFileSource FileSource;
+
+    // Creates the model and static geometry buffers with BIND_RAY_TRACING, so that acceleration structures can be
+    // built from them. Devices without ray tracing need false.
+    bool RayTracing = true;
+};
+
 class RTXPTScene
 {
 public:
-    bool LoadScene(IRenderDevice*     pDevice,
-                   IDeviceContext*    pContext,
-                   const std::string& AssetsRoot,
-                   const std::string& SceneName);
+    bool LoadScene(IRenderDevice*               pDevice,
+                   IDeviceContext*              pContext,
+                   const std::string&           AssetsRoot,
+                   const std::string&           SceneName,
+                   const RTXPTSceneLoadOptions& Options = {});
     bool LoadDefaultScene(IRenderDevice* pDevice, IDeviceContext* pContext, const std::string& AssetsRoot);
     void Update(double CurrTime, double ElapsedTime);
     bool HasValidContent() const;
@@ -113,6 +125,7 @@ private:
     const RTXPTModelInstance* GetCompatibilityModelInstance() const;
 
     RTXPTSceneGraphData           m_SceneGraph;
+    RTXPTFileSource               m_FileSource;
     RefCntAutoPtr<IBuffer>        m_StaticVertexBuffer;
     RefCntAutoPtr<IBuffer>        m_StaticIndexBuffer;
     GLTF::ModelTransforms         m_Transforms;

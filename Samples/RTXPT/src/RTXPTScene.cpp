@@ -61,20 +61,25 @@ std::string JoinPath(const std::string& Root, const char* RelativePath)
     return FileSystem::SimplifyPath(Path.c_str());
 }
 
-std::unique_ptr<GLTF::Model> LoadRTXPTModelAsset(IRenderDevice*     pDevice,
-                                                 IDeviceContext*    pContext,
-                                                 const std::string& ModelPath,
-                                                 VALUE_TYPE         IndexType)
+// RayTracingBindFlag is BIND_RAY_TRACING when acceleration structures are built from the buffers, else BIND_NONE.
+std::unique_ptr<GLTF::Model> LoadRTXPTModelAsset(IRenderDevice*         pDevice,
+                                                 IDeviceContext*        pContext,
+                                                 const std::string&     ModelPath,
+                                                 VALUE_TYPE             IndexType,
+                                                 const RTXPTFileSource& FileSource,
+                                                 BIND_FLAGS             RayTracingBindFlag)
 {
     GLTF::ModelCreateInfo ModelCI;
-    ModelCI.FileName             = ModelPath.c_str();
-    ModelCI.ComputeBoundingBoxes = true;
-    ModelCI.IndexType            = IndexType;
-    ModelCI.IndBufferBindFlags   = BIND_INDEX_BUFFER | BIND_RAY_TRACING | BIND_SHADER_RESOURCE;
+    ModelCI.FileName              = ModelPath.c_str();
+    ModelCI.ComputeBoundingBoxes  = true;
+    ModelCI.IndexType             = IndexType;
+    ModelCI.FileExistsCallback    = FileSource.FileExists;
+    ModelCI.ReadWholeFileCallback = FileSource.ReadWholeFile;
+    ModelCI.IndBufferBindFlags    = BIND_INDEX_BUFFER | RayTracingBindFlag | BIND_SHADER_RESOURCE;
     for (BIND_FLAGS& BindFlags : ModelCI.VertBufferBindFlags)
-        BindFlags = BIND_VERTEX_BUFFER | BIND_RAY_TRACING;
+        BindFlags = BIND_VERTEX_BUFFER | RayTracingBindFlag;
     // Buffer 0 is the path-tracer vertex stream (POSITION + NORMAL + TEXCOORD_0).
-    ModelCI.VertBufferBindFlags[0] = BIND_VERTEX_BUFFER | BIND_RAY_TRACING | BIND_SHADER_RESOURCE;
+    ModelCI.VertBufferBindFlags[0] = BIND_VERTEX_BUFFER | RayTracingBindFlag | BIND_SHADER_RESOURCE;
     // Buffer 1 is the default GLTF skinning stream (JOINTS_0 + WEIGHTS_0).
     ModelCI.VertBufferBindFlags[1] = BIND_VERTEX_BUFFER | BIND_SHADER_RESOURCE;
 
@@ -181,6 +186,7 @@ bool BuildRTXPTStaticGeometryBuffers(IRenderDevice*          pDevice,
                                      IDeviceContext*         pContext,
                                      RTXPTSceneGraphData&    Data,
                                      VALUE_TYPE              IndexType,
+                                     BIND_FLAGS              RayTracingBindFlag,
                                      RefCntAutoPtr<IBuffer>& pStaticVertexBuffer,
                                      RefCntAutoPtr<IBuffer>& pStaticIndexBuffer,
                                      Uint32&                 VertexStride)
@@ -288,7 +294,7 @@ bool BuildRTXPTStaticGeometryBuffers(IRenderDevice*          pDevice,
     VertexDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
     VertexDesc.Name              = "RTXPT scene static vertex buffer";
     VertexDesc.Usage             = USAGE_DEFAULT;
-    VertexDesc.BindFlags         = BIND_VERTEX_BUFFER | BIND_SHADER_RESOURCE | BIND_RAY_TRACING;
+    VertexDesc.BindFlags         = BIND_VERTEX_BUFFER | BIND_SHADER_RESOURCE | RayTracingBindFlag;
     VertexDesc.Mode              = BUFFER_MODE_STRUCTURED;
     VertexDesc.ElementByteStride = VertexStride;
     VertexDesc.Size              = TotalVertexCount * VertexStride;
@@ -301,7 +307,7 @@ bool BuildRTXPTStaticGeometryBuffers(IRenderDevice*          pDevice,
     IndexDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
     IndexDesc.Name              = "RTXPT scene static index buffer";
     IndexDesc.Usage             = USAGE_DEFAULT;
-    IndexDesc.BindFlags         = BIND_INDEX_BUFFER | BIND_SHADER_RESOURCE | BIND_RAY_TRACING;
+    IndexDesc.BindFlags         = BIND_INDEX_BUFFER | BIND_SHADER_RESOURCE | RayTracingBindFlag;
     IndexDesc.Mode              = BUFFER_MODE_FORMATTED;
     IndexDesc.ElementByteStride = IndexSize;
     IndexDesc.Size              = std::max<Uint64>(TotalIndexCount, 1) * IndexSize;
@@ -343,14 +349,14 @@ bool BuildRTXPTStaticGeometryBuffers(IRenderDevice*          pDevice,
     return true;
 }
 
-std::vector<std::string> LoadRTXPTMaterialNames(const std::string& ModelPath, size_t MaterialCount)
+std::vector<std::string> LoadRTXPTMaterialNames(const std::string& ModelPath, size_t MaterialCount, const RTXPTFileSource& FileSource)
 {
     std::vector<std::string> MaterialNames(MaterialCount);
     for (size_t MatIdx = 0; MatIdx < MaterialNames.size(); ++MatIdx)
         MaterialNames[MatIdx] = "material_" + std::to_string(MatIdx);
 
     RTXPTJsonLoadResult ModelJson;
-    if (!LoadRTXPTGLTFJsonFile(ModelPath, ModelJson) || !ModelJson.Json.is_object())
+    if (!LoadRTXPTGLTFJsonFile(ModelPath, ModelJson, FileSource) || !ModelJson.Json.is_object())
         return MaterialNames;
 
     const auto MaterialsIt = ModelJson.Json.find("materials");
@@ -802,7 +808,7 @@ bool RTXPTScene::LoadSceneCameras(const std::string& ScenePath)
     m_Cameras.clear();
 
     RTXPTJsonLoadResult SceneJsonResult;
-    if (!LoadRTXPTRelaxedJsonFile(ScenePath, SceneJsonResult) || !SceneJsonResult.Json.is_object())
+    if (!LoadRTXPTRelaxedJsonFile(ScenePath, SceneJsonResult, m_FileSource) || !SceneJsonResult.Json.is_object())
         return false;
 
     const auto GraphIt = SceneJsonResult.Json.find("graph");
@@ -820,12 +826,16 @@ bool RTXPTScene::LoadSceneCameras(const std::string& ScenePath)
     return !m_Cameras.empty();
 }
 
-bool RTXPTScene::LoadScene(IRenderDevice*     pDevice,
-                           IDeviceContext*    pContext,
-                           const std::string& AssetsRoot,
-                           const std::string& SceneName)
+bool RTXPTScene::LoadScene(IRenderDevice*               pDevice,
+                           IDeviceContext*              pContext,
+                           const std::string&           AssetsRoot,
+                           const std::string&           SceneName,
+                           const RTXPTSceneLoadOptions& Options)
 {
     ResetLoadedData();
+    m_FileSource = Options.FileSource;
+
+    const BIND_FLAGS RayTracingBindFlag = Options.RayTracing ? BIND_RAY_TRACING : BIND_NONE;
 
     m_AssetsRoot = FileSystem::SimplifyPath(AssetsRoot.c_str());
     if (SceneName.empty())
@@ -835,14 +845,14 @@ bool RTXPTScene::LoadScene(IRenderDevice*     pDevice,
     }
 
     const std::string ScenePath = JoinPath(m_AssetsRoot, SceneName.c_str());
-    if (!FileSystem::FileExists(ScenePath.c_str()))
+    if (!m_FileSource.Exists(ScenePath))
     {
         LOG_ERROR_MESSAGE("Missing scene file: ", ScenePath);
         return false;
     }
 
     RTXPTJsonLoadResult SceneJsonResult;
-    if (!LoadRTXPTRelaxedJsonFile(ScenePath, SceneJsonResult) || !SceneJsonResult.Json.is_object())
+    if (!LoadRTXPTRelaxedJsonFile(ScenePath, SceneJsonResult, m_FileSource) || !SceneJsonResult.Json.is_object())
     {
         LOG_ERROR_MESSAGE("Invalid scene JSON: ", ScenePath);
         return false;
@@ -870,13 +880,13 @@ bool RTXPTScene::LoadScene(IRenderDevice*     pDevice,
         Asset.RelativePath = ModelJson.get<std::string>();
         Asset.ResolvedPath = JoinPath(m_AssetsRoot, Asset.RelativePath.c_str());
         Asset.ModelName    = GetRTXPTModelNameFromPath(Asset.RelativePath);
-        if (!FileSystem::FileExists(Asset.ResolvedPath.c_str()))
+        if (!m_FileSource.Exists(Asset.ResolvedPath))
         {
             LOG_ERROR_MESSAGE("Missing glTF file: ", Asset.ResolvedPath);
             return false;
         }
 
-        Asset.Model = LoadRTXPTModelAsset(pDevice, pContext, Asset.ResolvedPath, m_IndexType);
+        Asset.Model = LoadRTXPTModelAsset(pDevice, pContext, Asset.ResolvedPath, m_IndexType, m_FileSource, RayTracingBindFlag);
         if (!Asset.Model)
         {
             LOG_ERROR_MESSAGE("Failed to load RTXPT glTF model: ", Asset.ResolvedPath);
@@ -887,7 +897,7 @@ bool RTXPTScene::LoadScene(IRenderDevice*     pDevice,
         if (Asset.SceneIndex >= Asset.Model->Scenes.size())
             Asset.SceneIndex = 0;
         Asset.Model->ComputeTransforms(Asset.SceneIndex, Asset.StaticTransforms);
-        Asset.MaterialNames = LoadRTXPTMaterialNames(Asset.ResolvedPath, Asset.Model->Materials.size());
+        Asset.MaterialNames = LoadRTXPTMaterialNames(Asset.ResolvedPath, Asset.Model->Materials.size(), m_FileSource);
         NewData.ModelAssets.emplace_back(std::move(Asset));
     }
 
@@ -916,11 +926,11 @@ bool RTXPTScene::LoadScene(IRenderDevice*     pDevice,
 #if RTXPT_ENABLE_MATERIAL_EXTENSION
             for (const std::string& Candidate : GetRTXPTMaterialCandidates(m_AssetsRoot, SceneName, Asset.ModelName, MaterialName))
             {
-                if (!FileSystem::FileExists(Candidate.c_str()))
+                if (!m_FileSource.Exists(Candidate))
                     continue;
 
                 RTXPTJsonLoadResult MaterialJson;
-                if (LoadRTXPTRelaxedJsonFile(Candidate, MaterialJson) && MaterialJson.Json.is_object())
+                if (LoadRTXPTRelaxedJsonFile(Candidate, MaterialJson, m_FileSource) && MaterialJson.Json.is_object())
                 {
                     Ext = ParseRTXPTMaterialExtension(Candidate, Asset.ModelName, MaterialName, MaterialJson.Json);
                     break;
@@ -952,6 +962,7 @@ bool RTXPTScene::LoadScene(IRenderDevice*     pDevice,
                                          pContext,
                                          NewData,
                                          m_IndexType,
+                                         RayTracingBindFlag,
                                          m_StaticVertexBuffer,
                                          m_StaticIndexBuffer,
                                          m_VertexStride0))

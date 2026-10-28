@@ -13,6 +13,7 @@
 
 #include "BasicTypes.h"
 #include "DebugUtilities.hpp"
+#include "FileSystem.hpp"
 
 namespace Diligent
 {
@@ -27,18 +28,19 @@ constexpr size_t kGLBHeaderSize      = 12;
 constexpr size_t kGLBChunkHeaderSize = 8;
 
 // Reads the file in binary mode: JSON text is unaffected (CR is whitespace), and GLB bytes stay intact.
-std::string ReadWholeFile(const std::string& FilePath, std::string& Error)
+bool ReadDiskFile(const std::string& FilePath, std::string& Data, std::string& Error)
 {
     std::ifstream File{FilePath, std::ios::binary};
     if (!File)
     {
-        Error = "Unable to open JSON file: " + FilePath;
-        return {};
+        Error = "Unable to open file: " + FilePath;
+        return false;
     }
 
     std::ostringstream Strm;
     Strm << File.rdbuf();
-    return Strm.str();
+    Data = Strm.str();
+    return true;
 }
 
 Uint32 ReadLittleEndianUint32(const std::string& Data, size_t Offset)
@@ -137,13 +139,35 @@ bool ParseRelaxedJson(const std::string& Text, const std::string& FilePath, RTXP
 
 } // namespace
 
-bool LoadRTXPTRelaxedJsonFile(const std::string& FilePath, RTXPTJsonLoadResult& Result)
+bool RTXPTFileSource::Exists(const std::string& FilePath) const
+{
+    return FileExists ? FileExists(FilePath.c_str()) : FileSystem::FileExists(FilePath.c_str());
+}
+
+bool RTXPTFileSource::Read(const std::string& FilePath, std::string& Data, std::string& Error) const
+{
+    if (!ReadWholeFile)
+        return ReadDiskFile(FilePath, Data, Error);
+
+    std::vector<unsigned char> Bytes;
+    if (!ReadWholeFile(FilePath.c_str(), Bytes, Error))
+    {
+        if (Error.empty())
+            Error = "Unable to read file: " + FilePath;
+        return false;
+    }
+
+    Data.assign(Bytes.begin(), Bytes.end());
+    return true;
+}
+
+bool LoadRTXPTRelaxedJsonFile(const std::string& FilePath, RTXPTJsonLoadResult& Result, const RTXPTFileSource& Source)
 {
     Result = {};
 
-    std::string       Error;
-    const std::string Text = ReadWholeFile(FilePath, Error);
-    if (!Error.empty())
+    std::string Text;
+    std::string Error;
+    if (!Source.Read(FilePath, Text, Error))
     {
         Result.Error = Error;
         LOG_ERROR_MESSAGE(Result.Error);
@@ -153,13 +177,13 @@ bool LoadRTXPTRelaxedJsonFile(const std::string& FilePath, RTXPTJsonLoadResult& 
     return ParseRelaxedJson(Text, FilePath, Result);
 }
 
-bool LoadRTXPTGLTFJsonFile(const std::string& FilePath, RTXPTJsonLoadResult& Result)
+bool LoadRTXPTGLTFJsonFile(const std::string& FilePath, RTXPTJsonLoadResult& Result, const RTXPTFileSource& Source)
 {
     Result = {};
 
-    std::string       Error;
-    const std::string Data = ReadWholeFile(FilePath, Error);
-    if (!Error.empty())
+    std::string Data;
+    std::string Error;
+    if (!Source.Read(FilePath, Data, Error))
     {
         Result.Error = Error;
         LOG_ERROR_MESSAGE(Result.Error);
