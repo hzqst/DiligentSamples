@@ -79,6 +79,15 @@ struct RTXPTAccelerationStructureStats
     bool   GPUTLASActive                = false;
 };
 
+struct RTXPTAccelerationStructuresBuildAttribs
+{
+    const RTXPTSceneGraphData*       pSceneData          = nullptr;
+    VALUE_TYPE                       IndexType           = VT_UNDEFINED;
+    const RTXPTSkinnedSceneGeometry* pSkinnedGeometry    = nullptr;
+    bool                             RayTracingSupported = false;
+    IEngineFactory*                  pEngineFactory      = nullptr;
+};
+
 class RTXPTAccelerationStructures
 {
 public:
@@ -86,13 +95,7 @@ public:
 
     // The per-sub-instance EmissiveTriangleOffset allocation classifies emitters unconditionally (bindless is
     // mandatory), staying consistent with the material flag and RTXPTLights::UploadEmissiveTriangles.
-    bool BuildScene(IRenderDevice*                   pDevice,
-                    IDeviceContext*                  pContext,
-                    const RTXPTSceneGraphData&       SceneData,
-                    VALUE_TYPE                       IndexType,
-                    const RTXPTSkinnedSceneGeometry* pSkinnedGeometry,
-                    bool                             RayTracingSupported,
-                    IEngineFactory*                  Factory = nullptr);
+    bool BuildScene(IRenderDevice* pDevice, IDeviceContext* pContext, const RTXPTAccelerationStructuresBuildAttribs& BuildAttribs);
 
     bool BuildStaticScene(IRenderDevice*             pDevice,
                           IDeviceContext*            pContext,
@@ -100,7 +103,11 @@ public:
                           VALUE_TYPE                 IndexType,
                           bool                       RayTracingSupported)
     {
-        return BuildScene(pDevice, pContext, SceneData, IndexType, nullptr, RayTracingSupported);
+        RTXPTAccelerationStructuresBuildAttribs BuildAttribs;
+        BuildAttribs.pSceneData          = &SceneData;
+        BuildAttribs.IndexType           = IndexType;
+        BuildAttribs.RayTracingSupported = RayTracingSupported;
+        return BuildScene(pDevice, pContext, BuildAttribs);
     }
 
     bool UpdateDynamicBLAS(IDeviceContext*                  pContext,

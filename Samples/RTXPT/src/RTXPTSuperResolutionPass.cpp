@@ -519,16 +519,16 @@ bool RTXPTSuperResolutionPass::ConvertMotionVectors(IDeviceContext* pContext, co
     return true;
 }
 
-bool RTXPTSuperResolutionPass::Execute(IDeviceContext*                      pContext,
-                                       const RTXPTRenderTargets&            RenderTargets,
-                                       const RTXPTSuperResolutionFrameDesc& FrameDesc,
-                                       float                                CameraNear,
-                                       float                                CameraFar,
-                                       float                                CameraFovAngleVert,
-                                       ITextureView*                        pColorSRV,
-                                       ITextureView*                        pOutputUAV)
+bool RTXPTSuperResolutionPass::Execute(IDeviceContext* pContext, const RTXPTSuperResolutionExecuteAttribs& ExecuteAttribs)
 {
     m_Stats.LastExecute = false;
+    if (ExecuteAttribs.pRenderTargets == nullptr || ExecuteAttribs.pFrameDesc == nullptr)
+    {
+        DEV_ERROR("RTXPT super resolution pass requires render targets and a frame description");
+        return false;
+    }
+    const RTXPTRenderTargets&            RenderTargets = *ExecuteAttribs.pRenderTargets;
+    const RTXPTSuperResolutionFrameDesc& FrameDesc     = *ExecuteAttribs.pFrameDesc;
     if (!FrameDesc.Enabled)
         return true;
 
@@ -540,10 +540,10 @@ bool RTXPTSuperResolutionPass::Execute(IDeviceContext*                      pCon
 
     ExecuteSuperResolutionAttribs Attribs;
     Attribs.pContext            = pContext;
-    Attribs.pColorTextureSRV    = pColorSRV != nullptr ? pColorSRV : RenderTargets.GetSuperResolutionColorSRV();
+    Attribs.pColorTextureSRV    = ExecuteAttribs.pColorSRV != nullptr ? ExecuteAttribs.pColorSRV : RenderTargets.GetSuperResolutionColorSRV();
     Attribs.pDepthTextureSRV    = RenderTargets.GetDepthSRV();
     Attribs.pMotionVectorsSRV   = RenderTargets.GetScreenMotionVectorsSRV();
-    Attribs.pOutputTextureView  = pOutputUAV != nullptr ? pOutputUAV : RenderTargets.GetSuperResolutionOutputUAV();
+    Attribs.pOutputTextureView  = ExecuteAttribs.pOutputUAV != nullptr ? ExecuteAttribs.pOutputUAV : RenderTargets.GetSuperResolutionOutputUAV();
     Attribs.StateTransitionMode = RESOURCE_STATE_TRANSITION_MODE_TRANSITION;
     Attribs.JitterX             = FrameDesc.Jitter.x;
     Attribs.JitterY             = FrameDesc.Jitter.y;
@@ -552,9 +552,9 @@ bool RTXPTSuperResolutionPass::Execute(IDeviceContext*                      pCon
     Attribs.MotionVectorScaleY  = 1.0f;
     Attribs.ExposureScale       = 1.0f;
     Attribs.Sharpness           = FrameDesc.Sharpness;
-    Attribs.CameraNear          = CameraNear;
-    Attribs.CameraFar           = CameraFar;
-    Attribs.CameraFovAngleVert  = CameraFovAngleVert;
+    Attribs.CameraNear          = ExecuteAttribs.CameraNear;
+    Attribs.CameraFar           = ExecuteAttribs.CameraFar;
+    Attribs.CameraFovAngleVert  = ExecuteAttribs.CameraFovAngleVert;
     Attribs.TimeDeltaInSeconds  = FrameDesc.TimeDeltaSeconds;
     Attribs.ResetHistory        = FrameDesc.ResetHistory;
 

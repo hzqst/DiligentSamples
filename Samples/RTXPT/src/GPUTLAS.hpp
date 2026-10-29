@@ -26,11 +26,20 @@ public:
     };
     static_assert(sizeof(InstanceData) == 16, "TLAS input layout");
 
-    bool Initialize(IRenderDevice* Device, IDeviceContext* Context, IEngineFactory* Factory, IBuffer* InstanceBuffer, const InstanceData* Instances, Uint32 Count, const char* ShaderRoot = "shaders")
+    struct CreateInfo
     {
-        if (Count == 0 || (Device->GetDeviceInfo().Type != RENDER_DEVICE_TYPE_D3D12 && Device->GetDeviceInfo().Type != RENDER_DEVICE_TYPE_VULKAN)) return false;
+        IEngineFactory*     Factory        = nullptr;
+        IBuffer*            InstanceBuffer = nullptr;
+        const InstanceData* Instances      = nullptr;
+        Uint32              Count          = 0;
+        const char*         ShaderRoot     = "shaders";
+    };
+
+    bool Initialize(IRenderDevice* Device, IDeviceContext* Context, const CreateInfo& CI)
+    {
+        if (CI.Count == 0 || (Device->GetDeviceInfo().Type != RENDER_DEVICE_TYPE_D3D12 && Device->GetDeviceInfo().Type != RENDER_DEVICE_TYPE_VULKAN)) return false;
         RefCntAutoPtr<IShaderSourceInputStreamFactory> Source;
-        Factory->CreateDefaultShaderSourceStreamFactory(ShaderRoot, &Source);
+        CI.Factory->CreateDefaultShaderSourceStreamFactory(CI.ShaderRoot, &Source);
         ShaderCreateInfo S;
         S.Desc.Name                  = "GPU TLAS instance preparation";
         S.Desc.ShaderType            = SHADER_TYPE_COMPUTE;
@@ -56,24 +65,24 @@ public:
         BufferDesc B;
         B.Name                 = "GPU TLAS descriptor templates";
         B.ImmediateContextMask = kRTXPTImmediateContextMask;
-        B.Size                 = Uint64{Count} * TLAS_INSTANCE_DATA_SIZE;
+        B.Size                 = Uint64{CI.Count} * TLAS_INSTANCE_DATA_SIZE;
         B.BindFlags            = BIND_SHADER_RESOURCE;
         B.Mode                 = BUFFER_MODE_RAW;
         Device->CreateBuffer(B, nullptr, &m_Templates);
         B.Name              = "GPU TLAS instance data";
-        B.Size              = Uint64{Count} * sizeof(InstanceData);
+        B.Size              = Uint64{CI.Count} * sizeof(InstanceData);
         B.Mode              = BUFFER_MODE_STRUCTURED;
         B.ElementByteStride = sizeof(InstanceData);
-        BufferData Data{Instances, B.Size};
+        BufferData Data{CI.Instances, B.Size};
         Device->CreateBuffer(B, &Data, &m_Instances);
         if (!m_Templates || !m_Instances) return false;
-        Context->CopyBuffer(InstanceBuffer, 0, RESOURCE_STATE_TRANSITION_MODE_TRANSITION,
+        Context->CopyBuffer(CI.InstanceBuffer, 0, RESOURCE_STATE_TRANSITION_MODE_TRANSITION,
                             m_Templates, 0, m_Templates->GetDesc().Size, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
         m_PSO->CreateShaderResourceBinding(&m_SRB, true);
         if (!m_SRB) return false;
         m_SRB->GetVariableByName(SHADER_TYPE_COMPUTE, "t_Templates")->Set(m_Templates->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE));
         m_SRB->GetVariableByName(SHADER_TYPE_COMPUTE, "t_InstanceData")->Set(m_Instances->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE));
-        m_Count = Count;
+        m_Count = CI.Count;
         return true;
     }
 

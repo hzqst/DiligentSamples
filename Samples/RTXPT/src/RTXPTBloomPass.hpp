@@ -78,22 +78,36 @@ public:
     const RTXPTBloomPassStats& GetStats() const { return m_Stats; }
 
 private:
+    struct IntermediateTextures
+    {
+        Uint32                  Downscale1Width  = 0;
+        Uint32                  Downscale1Height = 0;
+        Uint32                  Downscale2Width  = 0;
+        Uint32                  Downscale2Height = 0;
+        RefCntAutoPtr<ITexture> Downscale1;
+        RefCntAutoPtr<ITexture> Downscale2;
+        RefCntAutoPtr<ITexture> Blur1;
+        RefCntAutoPtr<ITexture> Blur2;
+    };
+
+    struct CopyAttribs
+    {
+        ITextureView* pSourceSRV   = nullptr;
+        ITextureView* pTargetRTV   = nullptr;
+        Uint32        Width        = 0;
+        Uint32        Height       = 0;
+        bool          BlendEnabled = false;
+        float         BlendFactor  = 1.0f;
+    };
+
     bool CreateSampler(IRenderDevice* pDevice);
     bool CreateShaders(IRenderStateCache* pStateCache, IEngineFactory* pEngineFactory);
     bool CreatePipelines(IRenderDevice* pDevice, TEXTURE_FORMAT Format);
     bool CreateIntermediateTexture(IRenderDevice* pDevice, const char* Name, Uint32 Width, Uint32 Height, TEXTURE_FORMAT Format, RefCntAutoPtr<ITexture>& Texture);
-    bool CreateIntermediateTextures(IRenderDevice*           pDevice,
-                                    Uint32                   Downscale1Width,
-                                    Uint32                   Downscale1Height,
-                                    Uint32                   Downscale2Width,
-                                    Uint32                   Downscale2Height,
-                                    TEXTURE_FORMAT           Format,
-                                    RefCntAutoPtr<ITexture>& Downscale1,
-                                    RefCntAutoPtr<ITexture>& Downscale2,
-                                    RefCntAutoPtr<ITexture>& Blur1,
-                                    RefCntAutoPtr<ITexture>& Blur2);
+    // Creates the textures of Textures at its sizes.
+    bool CreateIntermediateTextures(IRenderDevice* pDevice, TEXTURE_FORMAT Format, IntermediateTextures& Textures);
     bool DrawFullscreen(IDeviceContext* pContext, IPipelineState* pPSO, IShaderResourceBinding* pSRB, ITextureView* pRTV, Uint32 Width, Uint32 Height);
-    bool DrawCopy(IDeviceContext* pContext, ITextureView* pSourceSRV, ITextureView* pTargetRTV, Uint32 Width, Uint32 Height, bool BlendEnabled, float BlendFactor);
+    bool DrawCopy(IDeviceContext* pContext, const CopyAttribs& Attribs);
     bool DrawBlur(IDeviceContext* pContext, IShaderResourceBinding* pSRB, ITextureView* pSourceSRV, ITextureView* pTargetRTV, Uint32 Width, Uint32 Height);
     bool UpdateBlurConstants(IDeviceContext* pContext, IBuffer* pBuffer, const float2& PixStep, float EffectiveSigma);
 

@@ -95,7 +95,7 @@ bool RTXPTEnvMapBakerPass::Initialize(IRenderDevice* pDevice, IEngineFactory* pE
     return m_SRB != nullptr;
 }
 
-bool RTXPTEnvMapBakerPass::Bind(IBuffer* pConstants, ITextureView* pSourceCubeSRV, ITextureView* pSourceImportanceMipSRV, ITextureView* pSourceRadianceMipSRV, ITextureView* pImportanceUAV, ITextureView* pRadianceUAV, ISampler* pLinearSampler)
+bool RTXPTEnvMapBakerPass::Bind(const RTXPTEnvMapBakerPassBindAttribs& Attribs)
 {
     if (!m_SRB)
         return false;
@@ -110,13 +110,13 @@ bool RTXPTEnvMapBakerPass::Bind(IBuffer* pConstants, ITextureView* pSourceCubeSR
         return true;
     };
 
-    return SetVariable("g_EnvMapImportanceBakerConsts", pConstants) &&
-        SetVariable("t_EnvMapCube", pSourceCubeSRV) &&
-        SetVariable("t_SourceImportanceMip", pSourceImportanceMipSRV, true) &&
-        SetVariable("t_SourceRadianceMip", pSourceRadianceMipSRV, true) &&
-        SetVariable("u_ImportanceMap", pImportanceUAV) &&
-        SetVariable("u_RadianceMap", pRadianceUAV) &&
-        SetVariable("s_LinearWrap", pLinearSampler);
+    return SetVariable("g_EnvMapImportanceBakerConsts", Attribs.pConstants) &&
+        SetVariable("t_EnvMapCube", Attribs.pSourceCubeSRV) &&
+        SetVariable("t_SourceImportanceMip", Attribs.pSourceImportanceMipSRV, true) &&
+        SetVariable("t_SourceRadianceMip", Attribs.pSourceRadianceMipSRV, true) &&
+        SetVariable("u_ImportanceMap", Attribs.pImportanceUAV) &&
+        SetVariable("u_RadianceMap", Attribs.pRadianceUAV) &&
+        SetVariable("s_LinearWrap", Attribs.pLinearSampler);
 }
 
 bool RTXPTEnvMapBakerPass::Dispatch(IDeviceContext* pContext, Uint32 ThreadGroupsX, Uint32 ThreadGroupsY, RESOURCE_STATE_TRANSITION_MODE StateTransitionMode)

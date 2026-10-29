@@ -93,6 +93,15 @@ struct RTXPTEnvMapBakerStats
     std::string LastError;
 };
 
+struct RTXPTEnvMapBakerUpdateAttribs
+{
+    IEngineFactory*     pEngineFactory = nullptr;
+    std::string         AssetsRoot;
+    RTXPTEnvMapSettings Settings;
+    bool                ForceRebuild     = false;
+    bool                ComputeSupported = false;
+};
+
 class RTXPTEnvMapBaker
 {
 public:
@@ -104,7 +113,7 @@ public:
     void SetFileSource(const RTXPTFileSource& Source) { m_FileSource = Source; }
 
     bool CreateResources(IRenderDevice* pDevice, IDeviceContext* pContext, IEngineFactory* pEngineFactory, IRenderStateCache* pStateCache, IPipelineStateCache* pPSOCache, bool ComputeSupported);
-    bool Update(IRenderDevice* pDevice, IDeviceContext* pContext, IEngineFactory* pEngineFactory, const std::string& AssetsRoot, const RTXPTEnvMapSettings& Settings, bool ForceRebuild, bool ComputeSupported);
+    bool Update(IRenderDevice* pDevice, IDeviceContext* pContext, const RTXPTEnvMapBakerUpdateAttribs& Attribs);
 
     bool InfoGUI(float Indent);
     bool DebugGUI(float Indent);

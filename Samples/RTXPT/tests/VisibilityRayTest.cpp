@@ -560,8 +560,14 @@ RWStructuredBuffer<uint4> u_Hits;
         const Uint64 CPUVideoMemory    = LocalVideoMemoryUsage(Device->GetAdapterInfo());
         if (Count != 0)
         {
-            GPUTLAS GPU;
-            Require(GPU.Initialize(Device, Context, Factory, InstanceBuffer, GPUInstances.data(), Count, Argv[2]), "GPU TLAS initialization failed");
+            GPUTLAS             GPU;
+            GPUTLAS::CreateInfo GPUCI;
+            GPUCI.Factory        = Factory;
+            GPUCI.InstanceBuffer = InstanceBuffer;
+            GPUCI.Instances      = GPUInstances.data();
+            GPUCI.Count          = Count;
+            GPUCI.ShaderRoot     = Argv[2];
+            Require(GPU.Initialize(Device, Context, GPUCI), "GPU TLAS initialization failed");
             Context->UpdateBuffer(TransformBuffer, 0, sizeof(Transforms), Transforms.data(), RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
             Context->BeginQuery(Timing);
             SubmitStart = std::chrono::steady_clock::now();

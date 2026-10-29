@@ -40,13 +40,25 @@ namespace Diligent
 
 struct IRenderStateCache;
 
+struct RTXPTLightsBakerPassBindAttribs
+{
+    IBuffer*      pControl                = nullptr;
+    IBuffer*      pProxyCounters          = nullptr;
+    IBuffer*      pProxyIndices           = nullptr;
+    IBuffer*      pLocalSamplingBuffer    = nullptr;
+    ITextureView* pFeedbackTotalWeightSRV = nullptr;
+    ITextureView* pFeedbackCandidatesSRV  = nullptr;
+    ITextureView* pFeedbackTotalWeightUAV = nullptr;
+    ITextureView* pFeedbackCandidatesUAV  = nullptr;
+};
+
 class RTXPTLightsBakerPass
 {
 public:
     void Reset();
 
     bool Initialize(IRenderDevice* pDevice, IEngineFactory* pEngineFactory, IRenderStateCache* pStateCache, const char* Name, const char* EntryPoint);
-    bool Bind(IBuffer* pControl, IBuffer* pProxyCounters, IBuffer* pProxyIndices, IBuffer* pLocalSamplingBuffer, ITextureView* pFeedbackTotalWeightSRV, ITextureView* pFeedbackCandidatesSRV, ITextureView* pFeedbackTotalWeightUAV = nullptr, ITextureView* pFeedbackCandidatesUAV = nullptr);
+    bool Bind(const RTXPTLightsBakerPassBindAttribs& Attribs);
     bool Dispatch(IDeviceContext* pContext, Uint32 ThreadGroupsX, Uint32 ThreadGroupsY);
 
 private:

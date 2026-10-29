@@ -89,17 +89,11 @@ void RTXPTNrdIntegration::Reset()
     ResetNrdStats(m_Stats);
 }
 
-bool RTXPTNrdIntegration::Initialize(IRenderDevice*,
-                                     IEngineFactory*,
-                                     IRenderStateCache*,
-                                     RTXPTNrdMethod Method,
-                                     Uint32         Width,
-                                     Uint32         Height,
-                                     bool)
+bool RTXPTNrdIntegration::Initialize(IRenderDevice*, const RTXPTNrdIntegrationCreateInfo& CreateInfo)
 {
-    m_Stats.Method = Method;
-    m_Stats.Width  = Width;
-    m_Stats.Height = Height;
+    m_Stats.Method = CreateInfo.Method;
+    m_Stats.Width  = CreateInfo.Width;
+    m_Stats.Height = CreateInfo.Height;
     return Fail(RTXPTGetNrdUnavailableReason());
 }
 
@@ -315,24 +309,18 @@ void RTXPTNrdIntegration::Reset()
     ResetNrdStats(m_Stats);
 }
 
-bool RTXPTNrdIntegration::Initialize(IRenderDevice*     pDevice,
-                                     IEngineFactory*    pEngineFactory,
-                                     IRenderStateCache* pStateCache,
-                                     RTXPTNrdMethod     Method,
-                                     Uint32             Width,
-                                     Uint32             Height,
-                                     bool               ComputeSupported)
+bool RTXPTNrdIntegration::Initialize(IRenderDevice* pDevice, const RTXPTNrdIntegrationCreateInfo& CreateInfo)
 {
     Reset();
-    m_Stats.Method = Method;
-    m_Stats.Width  = Width;
-    m_Stats.Height = Height;
+    m_Stats.Method = CreateInfo.Method;
+    m_Stats.Width  = CreateInfo.Width;
+    m_Stats.Height = CreateInfo.Height;
 
-    if (!ComputeSupported)
+    if (!CreateInfo.ComputeSupported)
         return Fail("RTXPT NRD requires compute shader support");
-    if (pDevice == nullptr || pEngineFactory == nullptr)
+    if (pDevice == nullptr || CreateInfo.pEngineFactory == nullptr)
         return Fail("RTXPT NRD requires a device and engine factory");
-    if (Width == 0 || Height == 0)
+    if (CreateInfo.Width == 0 || CreateInfo.Height == 0)
         return Fail("RTXPT NRD requires a non-zero render size");
 
     m_Device                    = pDevice;
@@ -351,11 +339,11 @@ bool RTXPTNrdIntegration::Initialize(IRenderDevice*     pDevice,
         m_TransientTextures.clear();
     };
 
-    if (!CreateInstance(Method) ||
+    if (!CreateInstance(CreateInfo.Method) ||
         !CreateConstantBuffer(pDevice) ||
         !CreateSamplers(pDevice) ||
-        !CreatePipelines(pDevice, pEngineFactory, pStateCache) ||
-        !CreatePoolTextures(pDevice, Width, Height))
+        !CreatePipelines(pDevice, CreateInfo.pEngineFactory, CreateInfo.pStateCache) ||
+        !CreatePoolTextures(pDevice, CreateInfo.Width, CreateInfo.Height))
     {
         ReleaseResources();
         return false;

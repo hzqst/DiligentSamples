@@ -23,6 +23,31 @@ struct IPipelineStateCache;
 //and pipelines compiled for earlier ones. Scenes and views keep references to both, which the shaders and pipelines
 //created from them need until they are released.
 
+class RTXPTEmbeddedScene;
+
+//The source of an RTXPTEmbeddedScene and how it compiles shaders. Scene, Materials, Shaders and Cache are required;
+//PSOCache is optional.
+struct RTXPTEmbeddedSceneCreateInfo
+{
+    RTXPTScene*                      Scene     = nullptr;
+    RTXPTMaterials*                  Materials = nullptr;
+    IShaderSourceInputStreamFactory* Shaders   = nullptr;
+    IRenderStateCache*               Cache     = nullptr;
+    IPipelineStateCache*             PSOCache  = nullptr;
+};
+
+//The scene and size of an RTXPTEmbeddedView and how it compiles shaders. Scene, Shaders, Cache and a nonempty size are
+//required; PSOCache is optional.
+struct RTXPTEmbeddedViewCreateInfo
+{
+    const RTXPTEmbeddedScene*        Scene    = nullptr;
+    IShaderSourceInputStreamFactory* Shaders  = nullptr;
+    IRenderStateCache*               Cache    = nullptr;
+    IPipelineStateCache*             PSOCache = nullptr;
+    Uint32                           Width    = 0;
+    Uint32                           Height   = 0;
+};
+
 //Static-scene data of RTXPTScene and RTXPTMaterials. It keeps the GPU objects of both that its views bind, so it
 //does not need them after Initialize. It must outlive every view created for it.
 class RTXPTEmbeddedScene
@@ -33,7 +58,7 @@ public:
     RTXPTEmbeddedScene(const RTXPTEmbeddedScene&) = delete;
     RTXPTEmbeddedScene& operator=(const RTXPTEmbeddedScene&) = delete;
     //Builds the scene and waits for the GPU.
-    bool Initialize(IRenderDevice* Device, IDeviceContext* Context, RTXPTScene& Scene, RTXPTMaterials& Materials, IShaderSourceInputStreamFactory* Shaders, IRenderStateCache* Cache, IPipelineStateCache* PSOCache, std::string& Error);
+    bool Initialize(IRenderDevice* Device, IDeviceContext* Context, const RTXPTEmbeddedSceneCreateInfo& CreateInfo, std::string& Error);
     bool IsReady() const;
 
 private:
@@ -51,8 +76,8 @@ public:
     ~RTXPTEmbeddedView();
     RTXPTEmbeddedView(const RTXPTEmbeddedView&) = delete;
     RTXPTEmbeddedView& operator=(const RTXPTEmbeddedView&) = delete;
-    //Creates the view of Scene at Width x Height and waits for the GPU.
-    bool      Initialize(IRenderDevice* Device, IDeviceContext* Context, const RTXPTEmbeddedScene& Scene, IShaderSourceInputStreamFactory* Shaders, IRenderStateCache* Cache, IPipelineStateCache* PSOCache, Uint32 Width, Uint32 Height, std::string& Error);
+    //Creates the view of CreateInfo.Scene at CreateInfo.Width x CreateInfo.Height and waits for the GPU.
+    bool      Initialize(IRenderDevice* Device, IDeviceContext* Context, const RTXPTEmbeddedViewCreateInfo& CreateInfo, std::string& Error);
     bool      Render(const PathTracerCameraData& Camera, const PathTracerViewData& View, double Time, bool ResetHistory, std::string& Error);
     ITexture* GetOutput() const;
     Uint32    GetTraceCount() const;

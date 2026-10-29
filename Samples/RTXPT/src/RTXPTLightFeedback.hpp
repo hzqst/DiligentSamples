@@ -11,6 +11,19 @@
 namespace Diligent
 {
 
+struct RTXPTLightFeedbackPrepareAttribs
+{
+    IBuffer*      pControl      = nullptr;
+    IBuffer*      pProxies      = nullptr;
+    IBuffer*      pLocal        = nullptr;
+    ITexture*     pWeights      = nullptr;
+    ITexture*     pCandidates   = nullptr;
+    ITextureView* pDepth        = nullptr;
+    ITextureView* pMotion       = nullptr;
+    bool          ResetHistory  = false;
+    IBuffer*      pHistoryRemap = nullptr;
+};
+
 class RTXPTLightFeedback
 {
 public:
@@ -100,18 +113,18 @@ public:
         return m_Counts != nullptr;
     }
 
-    bool Prepare(IDeviceContext* pContext, IBuffer* pControl, IBuffer* pProxies, IBuffer* pLocal, ITexture* pWeights, ITexture* pCandidates, ITextureView* pDepth, ITextureView* pMotion, bool ResetHistory, IBuffer* pHistoryRemap = nullptr)
+    bool Prepare(IDeviceContext* pContext, const RTXPTLightFeedbackPrepareAttribs& Attribs)
     {
-        if (!m_Counts || !m_Constants || !pDepth || !pMotion) return false;
-        m_OutputWeights       = pWeights;
-        m_OutputCandidates    = pCandidates;
-        const auto& DepthDesc = pDepth->GetTexture()->GetDesc();
+        if (!m_Counts || !m_Constants || !Attribs.pDepth || !Attribs.pMotion) return false;
+        m_OutputWeights       = Attribs.pWeights;
+        m_OutputCandidates    = Attribs.pCandidates;
+        const auto& DepthDesc = Attribs.pDepth->GetTexture()->GetDesc();
         m_Width               = DepthDesc.Width;
         m_Height              = DepthDesc.Height;
         if (m_Width > m_Textures[0]->GetDesc().Width || m_Height > m_Textures[0]->GetDesc().Height) return false;
-        ResetHistory |= m_Frame == 0u || m_PreviousWidth != m_Width || m_PreviousHeight != m_Height;
-        m_PreviousWidth  = m_Width;
-        m_PreviousHeight = m_Height;
+        const bool ResetHistory = Attribs.ResetHistory || m_Frame == 0u || m_PreviousWidth != m_Width || m_PreviousHeight != m_Height;
+        m_PreviousWidth         = m_Width;
+        m_PreviousHeight        = m_Height;
         if (ResetHistory)
         {
             m_Frame   = 0;
@@ -126,7 +139,7 @@ public:
         m_JitterX                       = std::min(static_cast<Uint32>(m_JitterFX * 8.0f), 7u);
         m_JitterY                       = std::min(static_cast<Uint32>(m_JitterFY * 8.0f), 7u);
         const Uint32 Constants[]        = {m_Width, m_Height, ++m_Frame, ResetHistory ? 1u : 0u,
-                                    m_JitterX, m_JitterY, PreviousJitterX, PreviousJitterY, pHistoryRemap ? 1u : 0u, 0u, 0u, 0u};
+                                    m_JitterX, m_JitterY, PreviousJitterX, PreviousJitterY, Attribs.pHistoryRemap ? 1u : 0u, 0u, 0u, 0u};
         pContext->UpdateBuffer(m_Constants, 0, sizeof(Constants), Constants, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
         m_TilesX = (m_Width + 14u) / 8u;
         m_TilesY = (m_Height + 14u) / 8u;
@@ -136,24 +149,24 @@ public:
                 if (auto* Variable = SRB->GetVariableByName(SHADER_TYPE_COMPUTE, Name)) Variable->Set(Object);
             };
             Set("g_FeedbackConstants", m_Constants);
-            Set("u_LightingControl", pControl->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS));
+            Set("u_LightingControl", Attribs.pControl->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS));
             Set("u_FeedbackCounts", m_Counts->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS));
-            Set("t_FeedbackTotalWeight", pWeights->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
-            Set("t_FeedbackCandidates", pCandidates->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
-            Set("u_FeedbackTotalWeight", pWeights->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
-            Set("u_FeedbackCandidates", pCandidates->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
+            Set("t_FeedbackTotalWeight", Attribs.pWeights->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
+            Set("t_FeedbackCandidates", Attribs.pCandidates->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
+            Set("u_FeedbackTotalWeight", Attribs.pWeights->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
+            Set("u_FeedbackCandidates", Attribs.pCandidates->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
             Set("u_Filtered", m_Textures[0]->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
             Set("u_Blended", m_Textures[1]->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
             Set("u_Processed", m_Textures[2]->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
             Set("u_HistoryDepth", m_Textures[3]->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
-            Set("t_Depth", pDepth);
-            Set("t_Motion", pMotion);
-            Set("t_LightSamplingProxies", pProxies->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE));
-            Set("t_HistoryRemapPastToCurrent", (pHistoryRemap ? pHistoryRemap : pProxies)->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE));
-            Set("u_LocalSamplingBuffer", pLocal->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS));
+            Set("t_Depth", Attribs.pDepth);
+            Set("t_Motion", Attribs.pMotion);
+            Set("t_LightSamplingProxies", Attribs.pProxies->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE));
+            Set("t_HistoryRemapPastToCurrent", (Attribs.pHistoryRemap ? Attribs.pHistoryRemap : Attribs.pProxies)->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE));
+            Set("u_LocalSamplingBuffer", Attribs.pLocal->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS));
         }
         Dispatch(pContext, 0, (m_LightCount + 256u) / 256u, 1u);
-        Barrier(pContext, pControl);
+        Barrier(pContext, Attribs.pControl);
         Barrier(pContext, m_Counts);
         Dispatch(pContext, 1, (m_Width + 7u) / 8u, (m_Height + 7u) / 8u);
         Barrier(pContext, m_Textures[0]);

@@ -79,6 +79,50 @@ struct RTXPTRayTracingDispatch
     Uint32                     Height                    = 0;
 };
 
+struct RTXPTRayTracingPassCreateInfo
+{
+    IEngineFactory*       pEngineFactory                = nullptr;
+    IRenderStateCache*    pStateCache                   = nullptr;
+    IPipelineStateCache*  pPSOCache                     = nullptr;
+    IBuffer*              pFrameConstants               = nullptr;
+    IBuffer*              pMaterialBuffer               = nullptr;
+    IBuffer*              pSubInstanceBuffer            = nullptr;
+    IBuffer*              pLightBuffer                  = nullptr;
+    IBuffer*              pLightExBuffer                = nullptr;
+    IBuffer*              pLightingControlBuffer        = nullptr;
+    IBuffer*              pLightProxyCounters           = nullptr;
+    IBuffer*              pLightSamplingProxies         = nullptr;
+    IBuffer*              pLocalSamplingBuffer          = nullptr;
+    ITextureView*         pEnvironmentLightLookup       = nullptr;
+    ITextureView*         pFeedbackTotalWeightUAV       = nullptr;
+    ITextureView*         pFeedbackCandidatesUAV        = nullptr;
+    ITextureView*         pEnvironmentMapSRV            = nullptr;
+    ITextureView*         pEnvironmentImportanceMapSRV  = nullptr;
+    ITextureView*         pEnvironmentRadianceMapSRV    = nullptr;
+    ISampler*             pEnvironmentSampler           = nullptr;
+    ISampler*             pEnvironmentImportanceSampler = nullptr;
+    IBuffer*              pVertexBuffer                 = nullptr;
+    IBuffer*              pSkinnedVertexBuffer          = nullptr;
+    IBuffer*              pIndexBuffer                  = nullptr;
+    VALUE_TYPE            IndexValueType                = VT_UNDEFINED;
+    ITopLevelAS*          pTLAS                         = nullptr;
+    IDeviceObject* const* pMaterialTextures             = nullptr;
+    Uint32                MaterialTextureCount          = 0;
+    bool                  EnableMaterialTextures        = false;
+    bool                  EnableAnyHit                  = false;
+    bool                  EnableLDSamplerForBSDF        = false;
+    bool                  RayTracingSupported           = false;
+    bool                  StandaloneRTShadersSupported  = false;
+    bool                  EnableInlineVisibility        = false;
+    Uint32                NEEMISType                    = 0;
+    Uint32                NEECandidateSamples           = 0;
+    Uint32                NEEFullSamples                = 0;
+    bool                  UseFp16Types                  = false;
+    bool                  EnableHitObject               = false;
+    bool                  EnableThreadReorder           = false;
+    bool                  EnableSharc                   = false;
+};
+
 struct RTXPTRayTracingVariantStats
 {
     bool   Ready             = false;
@@ -114,59 +158,13 @@ public:
     void Reset();
     void UnbindSharcBuffers();
 
-    bool Initialize(IRenderDevice*        pDevice,
-                    IDeviceContext*       pContext,
-                    IEngineFactory*       pEngineFactory,
-                    IRenderStateCache*    pStateCache,
-                    IPipelineStateCache*  pPSOCache,
-                    IBuffer*              pFrameConstants,
-                    IBuffer*              pMaterialBuffer,
-                    IBuffer*              pSubInstanceBuffer,
-                    IBuffer*              pLightBuffer,
-                    IBuffer*              pLightExBuffer,
-                    IBuffer*              pLightingControlBuffer,
-                    IBuffer*              pLightProxyCounters,
-                    IBuffer*              pLightSamplingProxies,
-                    IBuffer*              pLocalSamplingBuffer,
-                    ITextureView*         pEnvironmentLightLookup,
-                    ITextureView*         pFeedbackTotalWeightUAV,
-                    ITextureView*         pFeedbackCandidatesUAV,
-                    ITextureView*         pEnvironmentMapSRV,
-                    ITextureView*         pEnvironmentImportanceMapSRV,
-                    ITextureView*         pEnvironmentRadianceMapSRV,
-                    ISampler*             pEnvironmentSampler,
-                    ISampler*             pEnvironmentImportanceSampler,
-                    IBuffer*              pVertexBuffer,
-                    IBuffer*              pSkinnedVertexBuffer,
-                    IBuffer*              pIndexBuffer,
-                    VALUE_TYPE            IndexValueType,
-                    ITopLevelAS*          pTLAS,
-                    IDeviceObject* const* pMaterialTextures,
-                    Uint32                MaterialTextureCount,
-                    bool                  EnableMaterialTextures,
-                    bool                  EnableAnyHit,
-                    bool                  EnableLDSamplerForBSDF,
-                    bool                  RayTracingSupported,
-                    bool                  StandaloneRTShadersSupported,
-                    bool                  EnableInlineVisibility,
-                    Uint32                NEEMISType,
-                    Uint32                NEECandidateSamples,
-                    Uint32                NEEFullSamples,
-                    bool                  UseFp16Types,
-                    bool                  EnableHitObject,
-                    bool                  EnableThreadReorder,
-                    bool                  EnableSharc = false);
+    bool Initialize(IRenderDevice* pDevice, IDeviceContext* pContext, const RTXPTRayTracingPassCreateInfo& CreateInfo);
 
     bool Dispatch(IDeviceContext*                pContext,
                   RTXPTPathTraceVariant          Variant,
                   const RTXPTRayTracingDispatch& Dispatch);
 
-    bool Trace(IDeviceContext* pContext,
-               ITextureView*   pOutputUAV,
-               ITextureView*   pDepthUAV,
-               ITextureView*   pScreenMotionVectorsUAV,
-               Uint32          Width,
-               Uint32          Height);
+    bool Trace(IDeviceContext* pContext, const RTXPTRayTracingDispatch& DispatchInfo);
 
     static void InsertUAVBarrier(IDeviceContext* pContext, ITextureView* pTextureUAV);
     static void InsertUAVBarrier(IDeviceContext* pContext, IBuffer* pBuffer);

@@ -61,6 +61,16 @@ struct RTXPTNrdFrameAttribs
     bool                         EnableValidation = false;
 };
 
+struct RTXPTNrdIntegrationCreateInfo
+{
+    IEngineFactory*    pEngineFactory   = nullptr;
+    IRenderStateCache* pStateCache      = nullptr;
+    RTXPTNrdMethod     Method           = RTXPTNrdMethod::REBLUR;
+    Uint32             Width            = 0;
+    Uint32             Height           = 0;
+    bool               ComputeSupported = false;
+};
+
 struct RTXPTNrdIntegrationStats
 {
     bool           Ready                = false;
@@ -81,13 +91,7 @@ public:
 
     void Reset();
 
-    bool Initialize(IRenderDevice*     pDevice,
-                    IEngineFactory*    pEngineFactory,
-                    IRenderStateCache* pStateCache,
-                    RTXPTNrdMethod     Method,
-                    Uint32             Width,
-                    Uint32             Height,
-                    bool               ComputeSupported);
+    bool Initialize(IRenderDevice* pDevice, const RTXPTNrdIntegrationCreateInfo& CreateInfo);
 
     bool Dispatch(IDeviceContext* pContext, const RTXPTNrdFrameAttribs& Attribs);
 

@@ -49,27 +49,31 @@ struct RTXPTEmissiveTrianglePassStats
     Uint32 DispatchCount        = 0;
 };
 
+struct RTXPTEmissiveTrianglePassCreateInfo
+{
+    IEngineFactory*       pEngineFactory              = nullptr;
+    IRenderStateCache*    pStateCache                 = nullptr;
+    IPipelineStateCache*  pPSOCache                   = nullptr;
+    IBuffer*              pMaterialBuffer             = nullptr;
+    IBuffer*              pSubInstanceBuffer          = nullptr;
+    IBuffer*              pSubInstanceTransformBuffer = nullptr;
+    IBuffer*              pVertexBuffer               = nullptr;
+    IBuffer*              pSkinnedVertexBuffer        = nullptr;
+    IBuffer*              pIndexBuffer                = nullptr;
+    VALUE_TYPE            IndexValueType              = VT_UNDEFINED;
+    IBuffer*              pEmissiveTriangleBuffer     = nullptr;
+    IDeviceObject* const* pMaterialTextures           = nullptr;
+    Uint32                MaterialTextureCount        = 0;
+    bool                  EnableMaterialTextures      = false;
+    bool                  ComputeSupported            = false;
+};
+
 class RTXPTEmissiveTrianglePass
 {
 public:
     void Reset();
 
-    bool Initialize(IRenderDevice*        pDevice,
-                    IEngineFactory*       pEngineFactory,
-                    IRenderStateCache*    pStateCache,
-                    IPipelineStateCache*  pPSOCache,
-                    IBuffer*              pMaterialBuffer,
-                    IBuffer*              pSubInstanceBuffer,
-                    IBuffer*              pSubInstanceTransformBuffer,
-                    IBuffer*              pVertexBuffer,
-                    IBuffer*              pSkinnedVertexBuffer,
-                    IBuffer*              pIndexBuffer,
-                    VALUE_TYPE            IndexValueType,
-                    IBuffer*              pEmissiveTriangleBuffer,
-                    IDeviceObject* const* pMaterialTextures,
-                    Uint32                MaterialTextureCount,
-                    bool                  EnableMaterialTextures,
-                    bool                  ComputeSupported);
+    bool Initialize(IRenderDevice* pDevice, const RTXPTEmissiveTrianglePassCreateInfo& CreateInfo);
 
     bool Dispatch(IDeviceContext* pContext, Uint32 SubInstanceCount);
 

@@ -49,18 +49,22 @@ struct RTXPTComputePassStats
     Uint32 DispatchCount        = 0;
 };
 
+struct RTXPTComputePassCreateInfo
+{
+    IEngineFactory*    pEngineFactory   = nullptr;
+    IRenderStateCache* pStateCache      = nullptr;
+    const char*        PassName         = nullptr;
+    const char*        ShaderFilePath   = nullptr;
+    IBuffer*           pFrameConstants  = nullptr;
+    bool               ComputeSupported = false;
+};
+
 class RTXPTComputePass
 {
 public:
     void Reset();
 
-    bool Initialize(IRenderDevice*     pDevice,
-                    IEngineFactory*    pEngineFactory,
-                    IRenderStateCache* pStateCache,
-                    const char*        PassName,
-                    const char*        ShaderFilePath,
-                    IBuffer*           pFrameConstants,
-                    bool               ComputeSupported);
+    bool Initialize(IRenderDevice* pDevice, const RTXPTComputePassCreateInfo& CreateInfo);
 
     bool Dispatch(IDeviceContext* pContext, ITextureView* pInputSRV, ITextureView* pOutputUAV, Uint32 Width, Uint32 Height);
 
