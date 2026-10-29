@@ -1037,8 +1037,10 @@ RTXPTSample::~RTXPTSample()
         return;
 
     // Persist the render state cache so the next run can reuse compiled shaders and pipelines.
+    // &pCacheData stores the blob only at the end of the full expression, so it is tested in the next one.
     RefCntAutoPtr<IDataBlob> pCacheData;
-    if (m_pStateCache->WriteToBlob(0, &pCacheData) && pCacheData)
+    const bool               Serialized = m_pStateCache->WriteToBlob(0, &pCacheData);
+    if (Serialized && pCacheData)
     {
         FileWrapper CacheDataFile{kStateCachePath, EFileAccessMode::Overwrite};
         if (CacheDataFile->Write(pCacheData->GetConstDataPtr(), pCacheData->GetSize()))
