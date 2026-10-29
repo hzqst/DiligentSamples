@@ -40,6 +40,7 @@ namespace Diligent
 {
 
 struct IRenderStateCache;
+struct IPipelineStateCache;
 
 struct RTXPTEmissiveTrianglePassStats
 {
@@ -56,6 +57,7 @@ public:
     bool Initialize(IRenderDevice*        pDevice,
                     IEngineFactory*       pEngineFactory,
                     IRenderStateCache*    pStateCache,
+                    IPipelineStateCache*  pPSOCache,
                     IBuffer*              pMaterialBuffer,
                     IBuffer*              pSubInstanceBuffer,
                     IBuffer*              pSubInstanceTransformBuffer,

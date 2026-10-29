@@ -27,7 +27,7 @@ public:
         m_PreviousWidth = m_PreviousHeight = 0;
     }
 
-    bool Initialize(IRenderDevice* pDevice, IEngineFactory* pFactory, IRenderStateCache* pCache, Uint32 Width, Uint32 Height)
+    bool Initialize(IRenderDevice* pDevice, IEngineFactory* pFactory, IRenderStateCache* pCache, IPipelineStateCache* pPSOCache, Uint32 Width, Uint32 Height)
     {
         Reset();
         RefCntAutoPtr<IShaderSourceInputStreamFactory> Source;
@@ -55,6 +55,7 @@ public:
             PCI.PSODesc.ImmediateContextMask               = kRTXPTImmediateContextMask;
             PCI.PSODesc.ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC;
             PCI.pCS                                        = Shader;
+            PCI.pPSOCache                                  = SelectRTXPTPipelineStateCache(pDevice, PCI, pPSOCache);
             if (pCache) pCache->CreateComputePipelineState(PCI, &m_PSOs[I]);
             else
                 pDevice->CreateComputePipelineState(PCI, &m_PSOs[I]);

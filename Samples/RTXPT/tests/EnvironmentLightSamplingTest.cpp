@@ -72,9 +72,9 @@ try
     }
     Require(Device && Context, "Cannot create device");
     RTXPTEnvironmentLights Baker;
-    Require(Baker.Initialize(Device, Factory, nullptr), "Cannot initialize production environment baker");
+    Require(Baker.Initialize(Device, Factory, nullptr, nullptr), "Cannot initialize production environment baker");
     RTXPTLightHistory History;
-    Require(History.Initialize(Device, Factory, nullptr), "Cannot initialize production history mapper");
+    Require(History.Initialize(Device, Factory, nullptr, nullptr), "Cannot initialize production history mapper");
     std::vector<Quad>   PreviousNodes;
     std::vector<Uint32> PreviousLookup;
     constexpr Uint32    Resolution = 128, MipCount = 8;

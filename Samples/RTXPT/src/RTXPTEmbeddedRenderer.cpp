@@ -11,6 +11,7 @@
 #include "RTXPTToneMappingPass.hpp"
 #include "RTXPTShaderSource.hpp"
 #include "RenderStateCache.h"
+#include "PipelineStateCache.h"
 #include "ArchiverFactoryLoader.h"
 #include "MapHelper.hpp"
 #include <algorithm>
@@ -23,6 +24,7 @@ struct RTXPTEmbeddedRenderer::Impl
     RefCntAutoPtr<IRenderDevice>                   Device;
     RefCntAutoPtr<IDeviceContext>                  Context;
     RefCntAutoPtr<IRenderStateCache>               Cache;
+    RefCntAutoPtr<IPipelineStateCache>             PSOCache;
     RefCntAutoPtr<IShaderSourceInputStreamFactory> Shaders;
     RefCntAutoPtr<IBuffer>                         Constants;
     RefCntAutoPtr<ITexture>                        Radiance, Depth, Motion, Accumulated, Processed, Output;
@@ -61,7 +63,7 @@ RTXPTEmbeddedRenderer::RTXPTEmbeddedRenderer() :
     m_Impl{std::make_unique<Impl>()} {}
 RTXPTEmbeddedRenderer::~RTXPTEmbeddedRenderer() = default;
 
-bool RTXPTEmbeddedRenderer::Initialize(IRenderDevice* Device, IDeviceContext* Context, RTXPTScene& Scene, RTXPTMaterials& Materials, IShaderSourceInputStreamFactory* Shaders, Uint32 Width, Uint32 Height, std::string& Error)
+bool RTXPTEmbeddedRenderer::Initialize(IRenderDevice* Device, IDeviceContext* Context, RTXPTScene& Scene, RTXPTMaterials& Materials, IShaderSourceInputStreamFactory* Shaders, IRenderStateCache* Cache, IPipelineStateCache* PSOCache, Uint32 Width, Uint32 Height, std::string& Error)
 {
     auto& R = *m_Impl;
     Error   = "RTXPT requires ray tracing, bindless resources, compute and standalone RT shaders";
@@ -72,30 +74,25 @@ bool RTXPTEmbeddedRenderer::Initialize(IRenderDevice* Device, IDeviceContext* Co
         Features.ComputeShaders != DEVICE_FEATURE_STATE_ENABLED ||
         !(Device->GetAdapterInfo().RayTracing.CapFlags & RAY_TRACING_CAP_FLAG_STANDALONE_SHADERS))
         return false;
+    if (!Cache)
+    {
+        Error = "RTXPT embedded reference renderer requires a render state cache";
+        return false;
+    }
     if (Scene.HasSkinnedGeometry())
     {
         Error = "RTXPT embedded reference renderer supports static geometry only";
         return false;
     }
-    R.Device  = Device;
-    R.Context = Context;
-    R.Shaders = Shaders;
-    R.Width   = Width;
-    R.Height  = Height;
+    R.Device   = Device;
+    R.Context  = Context;
+    R.Shaders  = Shaders;
+    R.Cache    = Cache;
+    R.PSOCache = PSOCache;
+    R.Width    = Width;
+    R.Height   = Height;
     RTXPTShaderSourceScope     ShaderScope{Shaders};
     auto*                      Factory = Device->GetEngineFactory();
-    RenderStateCacheCreateInfo CacheInfo;
-    CacheInfo.pDevice          = Device;
-    CacheInfo.pArchiverFactory = LoadAndGetArchiverFactory();
-    //This instance-local cache is never persisted or hot-reloaded. Let DXC preprocess conditional includes so
-    //disabled optional algorithms (for example SHARC) do not require their source packages to be deployed.
-    CacheInfo.FileHashMode = RENDER_STATE_CACHE_FILE_HASH_MODE_BY_NAME;
-    CreateRenderStateCache(CacheInfo, &R.Cache);
-    if (!R.Cache)
-    {
-        Error = "RTXPT render state cache creation failed";
-        return false;
-    }
     BufferDesc ConstantsDesc;
     ConstantsDesc.Name           = "RTXPT embedded frame constants";
     ConstantsDesc.Size           = sizeof(SampleConstants);
@@ -137,13 +134,13 @@ bool RTXPTEmbeddedRenderer::Initialize(IRenderDevice* Device, IDeviceContext* Co
         R.EnvironmentSettings.RadianceScale = float3{0, 0, 0};
     R.Environment.SetFileSource(Scene.GetFileSource());
     Error = "RTXPT scene environment failed to load or bake";
-    if (!R.Environment.CreateResources(Device, Context, Factory, R.Cache, true) ||
+    if (!R.Environment.CreateResources(Device, Context, Factory, R.Cache, R.PSOCache, true) ||
         !R.Environment.Update(Device, Context, Factory, Scene.GetAssetsRoot(), R.EnvironmentSettings, true, true))
         return false;
 
     Error               = "RTXPT emissive geometry preparation failed";
     const bool Textured = Materials.GetTextureCount() != 0;
-    if (!R.Emissive.Initialize(Device, Factory, R.Cache, Materials.GetMaterialBuffer(), R.AS.GetSubInstanceBuffer(),
+    if (!R.Emissive.Initialize(Device, Factory, R.Cache, R.PSOCache, Materials.GetMaterialBuffer(), R.AS.GetSubInstanceBuffer(),
                                R.AS.GetSubInstanceTransformBuffer(), Scene.GetVertexBuffer0(Device, Context), Scene.GetVertexBuffer0(Device, Context),
                                Scene.GetIndexBuffer(Device, Context), Scene.GetIndexType(), R.Lights.GetEmissiveTriangleBuffer(),
                                Materials.GetTextureBindings(), Materials.GetTextureCount(), Textured, true))
@@ -160,12 +157,12 @@ bool RTXPTEmbeddedRenderer::Initialize(IRenderDevice* Device, IDeviceContext* Co
     Lighting.EnvMapImportanceMapMipCount              = R.Environment.GetStats().ImportanceMipLevels;
     Lighting.ResetFeedback                            = true;
     Error                                             = "RTXPT light sampling preparation failed";
-    if (!R.LightsBaker.CreateResources(Device, Factory, R.Cache, Width, Height, true) ||
+    if (!R.LightsBaker.CreateResources(Device, Factory, R.Cache, R.PSOCache, Width, Height, true) ||
         !R.LightsBaker.UpdateBegin(Device, R.Lights, Lighting))
         return false;
 
     Error = "RTXPT ray tracing shaders or bindings failed";
-    if (!R.Rays.Initialize(Device, Context, Factory, R.Cache, R.Constants, Materials.GetMaterialBuffer(),
+    if (!R.Rays.Initialize(Device, Context, Factory, R.Cache, R.PSOCache, R.Constants, Materials.GetMaterialBuffer(),
                            R.AS.GetSubInstanceBuffer(), R.LightsBaker.GetLightBuffer(), R.LightsBaker.GetLightExBuffer(),
                            R.LightsBaker.GetControlBuffer(), R.LightsBaker.GetLightProxyCounters(), R.LightsBaker.GetLightSamplingProxies(),
                            R.LightsBaker.GetLocalSamplingBuffer(), R.LightsBaker.GetEnvironmentLightLookup(),
@@ -177,8 +174,8 @@ bool RTXPTEmbeddedRenderer::Initialize(IRenderDevice* Device, IDeviceContext* Co
                            false, true, true, false, 0, 5, 1, false, false, false, false))
         return false;
     Error = "RTXPT accumulation or tone mapping initialization failed";
-    if (!R.Accumulation.Initialize(Device, Factory, R.Cache, true) ||
-        !R.ToneMapping.Initialize(Device, Factory, R.Cache, TEX_FORMAT_RGBA8_UNORM_SRGB, true) ||
+    if (!R.Accumulation.Initialize(Device, Factory, R.Cache, R.PSOCache, true) ||
+        !R.ToneMapping.Initialize(Device, Factory, R.Cache, R.PSOCache, TEX_FORMAT_RGBA8_UNORM_SRGB, true) ||
         !R.ToneMapping.ResizeResources(Device, Width, Height, TEX_FORMAT_RGBA32_FLOAT))
         return false;
     R.ToneParameters.ToneMapOperator = RTXPTToneMapperOperator::Reinhard;
@@ -265,4 +262,13 @@ bool RTXPTEmbeddedRenderer::Render(const PathTracerCameraData& Camera, const Pat
 ITexture* RTXPTEmbeddedRenderer::GetOutput() const { return m_Impl->Output; }
 Uint32    RTXPTEmbeddedRenderer::GetTraceCount() const { return m_Impl->Rays.GetStats().TraceCount; }
 Uint32    RTXPTEmbeddedRenderer::GetAccumulationCount() const { return m_Impl->Samples; }
+
+void CreateRTXPTEmbeddedStateCache(IRenderDevice* Device, IRenderStateCache** Cache)
+{
+    RenderStateCacheCreateInfo CacheInfo;
+    CacheInfo.pDevice          = Device;
+    CacheInfo.pArchiverFactory = LoadAndGetArchiverFactory();
+    CacheInfo.FileHashMode     = RENDER_STATE_CACHE_FILE_HASH_MODE_BY_NAME;
+    CreateRenderStateCache(CacheInfo, Cache);
+}
 } // namespace Diligent

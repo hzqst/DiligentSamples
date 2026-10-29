@@ -43,6 +43,7 @@ namespace Diligent
 {
 
 struct IRenderStateCache;
+struct IPipelineStateCache;
 
 enum class RTXPTExposureMode : Uint32
 {
@@ -102,11 +103,12 @@ class RTXPTToneMappingPass
 {
 public:
     void Reset();
-    bool Initialize(IRenderDevice*     pDevice,
-                    IEngineFactory*    pEngineFactory,
-                    IRenderStateCache* pStateCache,
-                    TEXTURE_FORMAT     LdrFormat,
-                    bool               ComputeSupported);
+    bool Initialize(IRenderDevice*       pDevice,
+                    IEngineFactory*      pEngineFactory,
+                    IRenderStateCache*   pStateCache,
+                    IPipelineStateCache* pPSOCache,
+                    TEXTURE_FORMAT       LdrFormat,
+                    bool                 ComputeSupported);
     bool ResizeResources(IRenderDevice* pDevice, Uint32 Width, Uint32 Height, TEXTURE_FORMAT SourceFormat);
     bool Render(IDeviceContext* pContext, const RTXPTToneMappingRenderAttribs& Attribs);
 
@@ -121,6 +123,7 @@ private:
     bool UpdateToneMappingConstants(IDeviceContext* pContext, const RTXPTToneMappingParameters& Params, bool Enabled);
 
     IRenderStateCache*                    m_pStateCache = nullptr; // Owned by RTXPTSample; set in Initialize.
+    IPipelineStateCache*                  m_pPSOCache   = nullptr; // Owned by the caller of Initialize; may be null.
     RefCntAutoPtr<IPipelineState>         m_LuminancePSO;
     RefCntAutoPtr<IPipelineState>         m_ToneMapPSO;
     RefCntAutoPtr<IShaderResourceBinding> m_LuminanceSRB;

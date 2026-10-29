@@ -35,7 +35,7 @@ public:
         m_Available                                                               = false;
         m_TableChanged                                                            = true;
     }
-    bool Initialize(IRenderDevice* pDevice, IEngineFactory* pFactory, IRenderStateCache* pCache)
+    bool Initialize(IRenderDevice* pDevice, IEngineFactory* pFactory, IRenderStateCache* pCache, IPipelineStateCache* pPSOCache)
     {
         Reset();
         m_Device = pDevice;
@@ -61,6 +61,7 @@ public:
         PCI.PSODesc.ImmediateContextMask               = kRTXPTImmediateContextMask;
         PCI.PSODesc.ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC;
         PCI.pCS                                        = Shader;
+        PCI.pPSOCache                                  = SelectRTXPTPipelineStateCache(pDevice, PCI, pPSOCache);
         if (pCache) pCache->CreateComputePipelineState(PCI, &m_PSO);
         else
             pDevice->CreateComputePipelineState(PCI, &m_PSO);

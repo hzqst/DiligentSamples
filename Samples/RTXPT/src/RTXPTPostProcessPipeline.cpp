@@ -63,12 +63,13 @@ void RTXPTPostProcessPipeline::Reset()
     m_Stats = {};
 }
 
-bool RTXPTPostProcessPipeline::Initialize(IRenderDevice*     pDevice,
-                                          IEngineFactory*    pEngineFactory,
-                                          IRenderStateCache* pStateCache,
-                                          ISwapChain*        pSwapChain,
-                                          IBuffer*           pFrameConstants,
-                                          bool               ComputeSupported)
+bool RTXPTPostProcessPipeline::Initialize(IRenderDevice*       pDevice,
+                                          IEngineFactory*      pEngineFactory,
+                                          IRenderStateCache*   pStateCache,
+                                          IPipelineStateCache* pPSOCache,
+                                          ISwapChain*          pSwapChain,
+                                          IBuffer*             pFrameConstants,
+                                          bool                 ComputeSupported)
 {
     Reset();
 
@@ -110,7 +111,7 @@ bool RTXPTPostProcessPipeline::Initialize(IRenderDevice*     pDevice,
         LOG_WARNING_MESSAGE("RTXPT temporal AA pass is unavailable: ", m_TemporalAAPass.GetStats().DisabledReason.c_str());
     }
 
-    m_Stats.AccumulationStageReady = m_AccumulationPass.Initialize(pDevice, pEngineFactory, pStateCache, ComputeSupported);
+    m_Stats.AccumulationStageReady = m_AccumulationPass.Initialize(pDevice, pEngineFactory, pStateCache, pPSOCache, ComputeSupported);
     if (!m_Stats.AccumulationStageReady)
     {
         DEV_ERROR("RTXPT accumulation pass failed to initialize");
@@ -126,7 +127,7 @@ bool RTXPTPostProcessPipeline::Initialize(IRenderDevice*     pDevice,
     }
 
     m_Stats.ToneMappingStageReady =
-        m_ToneMappingPass.Initialize(pDevice, pEngineFactory, pStateCache, TEX_FORMAT_RGBA8_UNORM, ComputeSupported);
+        m_ToneMappingPass.Initialize(pDevice, pEngineFactory, pStateCache, pPSOCache, TEX_FORMAT_RGBA8_UNORM, ComputeSupported);
     if (!m_Stats.ToneMappingStageReady)
     {
         DEV_ERROR("RTXPT tone mapping pass failed to initialize");

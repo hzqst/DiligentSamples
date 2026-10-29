@@ -82,6 +82,7 @@ set(INCLUDE
     src/RTXPTTemporalAAPass.hpp
     src/RTXPTToneMappingPass.hpp
     src/RTXPTBlitPass.hpp
+    src/RTXPTPipelineStateCache.hpp
     RTXPT_FORK_MAPPING.md
     tests/RRSceneValidation.hpp
     tests/HDRValidationCapture.hpp

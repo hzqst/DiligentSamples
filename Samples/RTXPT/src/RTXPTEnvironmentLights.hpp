@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 #pragma once
 #include "RTXPTShaderSource.hpp"
+#include "RTXPTPipelineStateCache.hpp"
 
 #include <array>
 #include <algorithm>
@@ -39,7 +40,7 @@ public:
         m_Resolution = 0;
     }
 
-    bool Initialize(IRenderDevice* pDevice, IEngineFactory* pFactory, IRenderStateCache* pCache)
+    bool Initialize(IRenderDevice* pDevice, IEngineFactory* pFactory, IRenderStateCache* pCache, IPipelineStateCache* pPSOCache)
     {
         Reset();
         RefCntAutoPtr<IShaderSourceInputStreamFactory> Source;
@@ -67,6 +68,7 @@ public:
             PCI.PSODesc.ImmediateContextMask               = kRTXPTImmediateContextMask;
             PCI.PSODesc.ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC;
             PCI.pCS                                        = Shader;
+            PCI.pPSOCache                                  = SelectRTXPTPipelineStateCache(pDevice, PCI, pPSOCache);
             if (pCache) pCache->CreateComputePipelineState(PCI, &m_PSOs[I]);
             else
                 pDevice->CreateComputePipelineState(PCI, &m_PSOs[I]);

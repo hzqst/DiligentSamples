@@ -39,6 +39,7 @@ namespace Diligent
 {
 
 struct IRenderStateCache;
+struct IPipelineStateCache;
 
 // Drives the GPU per-triangle, power-proportional light sampling proxy build (shaders/PathTracer/Lighting/
 // LightProxyBuild.hlsl). Replaces the CPU "emissive bucket" proxy build with RTXPT-fork's per-light model:
@@ -50,7 +51,7 @@ class RTXPTLightProxyBuildPass
 public:
     void Reset();
 
-    bool Initialize(IRenderDevice* pDevice, IEngineFactory* pEngineFactory, IRenderStateCache* pStateCache);
+    bool Initialize(IRenderDevice* pDevice, IEngineFactory* pEngineFactory, IRenderStateCache* pStateCache, IPipelineStateCache* pPSOCache);
 
     bool IsReady() const { return m_Ready; }
 
@@ -74,7 +75,7 @@ public:
                const float3*   pCameraPosition            = nullptr);
 
 private:
-    bool CreatePSO(IRenderStateCache* pStateCache, IShader* pCS, const char* Name, RefCntAutoPtr<IPipelineState>& PSO, RefCntAutoPtr<IShaderResourceBinding>& SRB);
+    bool CreatePSO(IRenderStateCache* pStateCache, IPipelineStateCache* pPSOCache, IShader* pCS, const char* Name, RefCntAutoPtr<IPipelineState>& PSO, RefCntAutoPtr<IShaderResourceBinding>& SRB);
     bool BindResources(IShaderResourceBinding* pSRB,
                        IBuffer*                pControl,
                        IBuffer*                pLights,

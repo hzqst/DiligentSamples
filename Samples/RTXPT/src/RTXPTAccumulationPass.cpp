@@ -26,6 +26,7 @@
 
 #include "RTXPTAccumulationPass.hpp"
 #include "RTXPTShaderSource.hpp"
+#include "RTXPTPipelineStateCache.hpp"
 
 #include "DebugUtilities.hpp"
 #include "MapHelper.hpp"
@@ -61,7 +62,7 @@ void RTXPTAccumulationPass::Reset()
     m_Stats = {};
 }
 
-bool RTXPTAccumulationPass::Initialize(IRenderDevice* pDevice, IEngineFactory* pEngineFactory, IRenderStateCache* pStateCache, bool ComputeSupported)
+bool RTXPTAccumulationPass::Initialize(IRenderDevice* pDevice, IEngineFactory* pEngineFactory, IRenderStateCache* pStateCache, IPipelineStateCache* pPSOCache, bool ComputeSupported)
 {
     Reset();
 
@@ -118,6 +119,7 @@ bool RTXPTAccumulationPass::Initialize(IRenderDevice* pDevice, IEngineFactory* p
         .AddVariable(SHADER_TYPE_COMPUTE, "s_LinearSampler", SHADER_RESOURCE_VARIABLE_TYPE_STATIC);
     PSOCreateInfo.PSODesc.ResourceLayout = ResourceLayout;
 
+    PSOCreateInfo.pPSOCache = SelectRTXPTPipelineStateCache(pDevice, PSOCreateInfo, pPSOCache);
     pStateCache->CreateComputePipelineState(PSOCreateInfo, &m_PSO);
     VERIFY(m_PSO, "Failed to create RTXPT accumulation PSO");
     if (!m_PSO)

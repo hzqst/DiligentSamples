@@ -50,6 +50,7 @@ namespace Diligent
 {
 
 struct IRenderStateCache;
+struct IPipelineStateCache;
 
 enum class RTXPTEnvMapSourceKind
 {
@@ -102,7 +103,7 @@ public:
     void SceneReloaded();
     void SetFileSource(const RTXPTFileSource& Source) { m_FileSource = Source; }
 
-    bool CreateResources(IRenderDevice* pDevice, IDeviceContext* pContext, IEngineFactory* pEngineFactory, IRenderStateCache* pStateCache, bool ComputeSupported);
+    bool CreateResources(IRenderDevice* pDevice, IDeviceContext* pContext, IEngineFactory* pEngineFactory, IRenderStateCache* pStateCache, IPipelineStateCache* pPSOCache, bool ComputeSupported);
     bool Update(IRenderDevice* pDevice, IDeviceContext* pContext, IEngineFactory* pEngineFactory, const std::string& AssetsRoot, const RTXPTEnvMapSettings& Settings, bool ForceRebuild, bool ComputeSupported);
 
     bool InfoGUI(float Indent);
@@ -170,6 +171,7 @@ private:
     RefCntAutoPtr<IShaderResourceBinding> m_EnvCubeBakeSRBSphere;
     Uint32                                m_EnvironmentCubeResolution = 0;
     IRenderStateCache*                    m_pStateCache               = nullptr; // Owned by RTXPTSample; set in CreateResources.
+    IPipelineStateCache*                  m_pPSOCache                 = nullptr; // Owned by the caller of CreateResources; may be null.
     RTXPTEnvMapBakerPass                  m_BuildImportanceBasePass;
     RTXPTEnvMapBakerPass                  m_ReduceImportanceMipPass;
 

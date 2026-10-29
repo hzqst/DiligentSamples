@@ -50,6 +50,7 @@ namespace Diligent
 {
 
 struct IRenderStateCache;
+struct IPipelineStateCache;
 
 struct RTXPTFloat3x4
 {
@@ -118,7 +119,7 @@ public:
     // rebuilt the emissive-triangle buffer in place, so the power weights/proxies reflect current geometry).
     void RequestProxyRebuild();
 
-    bool CreateResources(IRenderDevice* pDevice, IEngineFactory* pEngineFactory, IRenderStateCache* pStateCache, Uint32 Width, Uint32 Height, bool ComputeSupported);
+    bool CreateResources(IRenderDevice* pDevice, IEngineFactory* pEngineFactory, IRenderStateCache* pStateCache, IPipelineStateCache* pPSOCache, Uint32 Width, Uint32 Height, bool ComputeSupported);
     bool UpdateBegin(IRenderDevice* pDevice, const RTXPTLights& Lights, const RTXPTLightsBakerSettings& Settings);
     bool PrepareLightBuffers(IDeviceContext* pContext);
     void UpdateFrame(const float4x4& ViewProj, const float3& CameraPosition);

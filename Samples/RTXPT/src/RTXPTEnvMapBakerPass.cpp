@@ -26,6 +26,7 @@
 
 #include "RTXPTEnvMapBakerPass.hpp"
 #include "RTXPTShaderSource.hpp"
+#include "RTXPTPipelineStateCache.hpp"
 
 #include "DebugUtilities.hpp"
 #include "GraphicsTypesX.hpp"
@@ -40,7 +41,7 @@ void RTXPTEnvMapBakerPass::Reset()
     m_SRB.Release();
 }
 
-bool RTXPTEnvMapBakerPass::Initialize(IRenderDevice* pDevice, IEngineFactory* pEngineFactory, IRenderStateCache* pStateCache, const char* Name, const char* EntryPoint)
+bool RTXPTEnvMapBakerPass::Initialize(IRenderDevice* pDevice, IEngineFactory* pEngineFactory, IRenderStateCache* pStateCache, IPipelineStateCache* pPSOCache, const char* Name, const char* EntryPoint)
 {
     Reset();
     if (pDevice == nullptr || pEngineFactory == nullptr || EntryPoint == nullptr)
@@ -83,6 +84,7 @@ bool RTXPTEnvMapBakerPass::Initialize(IRenderDevice* pDevice, IEngineFactory* pE
         .AddVariable(SHADER_TYPE_COMPUTE, "s_LinearWrap", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC);
     PSOCreateInfo.PSODesc.ResourceLayout = ResourceLayout;
 
+    PSOCreateInfo.pPSOCache = SelectRTXPTPipelineStateCache(pDevice, PSOCreateInfo, pPSOCache);
     pStateCache->CreateComputePipelineState(PSOCreateInfo, &m_PSO);
     VERIFY(m_PSO, "Failed to create RTXPT EnvMapBaker PSO");
     if (!m_PSO)

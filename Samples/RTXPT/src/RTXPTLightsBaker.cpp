@@ -186,7 +186,7 @@ void RTXPTLightsBaker::RequestFeedbackReset()
     m_ResetFeedbackPending = true;
 }
 
-bool RTXPTLightsBaker::CreateResources(IRenderDevice* pDevice, IEngineFactory* pEngineFactory, IRenderStateCache* pStateCache, Uint32 Width, Uint32 Height, bool ComputeSupported)
+bool RTXPTLightsBaker::CreateResources(IRenderDevice* pDevice, IEngineFactory* pEngineFactory, IRenderStateCache* pStateCache, IPipelineStateCache* pPSOCache, Uint32 Width, Uint32 Height, bool ComputeSupported)
 {
     if (pDevice == nullptr)
     {
@@ -209,10 +209,10 @@ bool RTXPTLightsBaker::CreateResources(IRenderDevice* pDevice, IEngineFactory* p
 
     const bool FeedbackOk   = CreateFeedbackTextures(pDevice, Width, Height);
     const bool LocalOk      = CreateLocalSamplingBuffer(pDevice, Width, Height);
-    const bool ProxyBuildOk = FeedbackOk && LocalOk && m_ProxyBuildPass.Initialize(pDevice, pEngineFactory, pStateCache) &&
-        m_LightFeedback.Initialize(pDevice, pEngineFactory, pStateCache, Width, Height);
-    const bool EnvBuildOk = m_EnvironmentLights.Initialize(pDevice, pEngineFactory, pStateCache) &&
-        m_LightHistory.Initialize(pDevice, pEngineFactory, pStateCache);
+    const bool ProxyBuildOk = FeedbackOk && LocalOk && m_ProxyBuildPass.Initialize(pDevice, pEngineFactory, pStateCache, pPSOCache) &&
+        m_LightFeedback.Initialize(pDevice, pEngineFactory, pStateCache, pPSOCache, Width, Height);
+    const bool EnvBuildOk = m_EnvironmentLights.Initialize(pDevice, pEngineFactory, pStateCache, pPSOCache) &&
+        m_LightHistory.Initialize(pDevice, pEngineFactory, pStateCache, pPSOCache);
     m_Stats.Ready = FeedbackOk && LocalOk && ProxyBuildOk && EnvBuildOk;
     return m_Stats.Ready;
 }
