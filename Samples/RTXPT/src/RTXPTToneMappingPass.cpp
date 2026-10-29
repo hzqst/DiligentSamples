@@ -26,6 +26,7 @@
 
 #include "RTXPTToneMappingPass.hpp"
 #include "RTXPTShaderSource.hpp"
+#include "RTXPTPipelineStateCache.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -392,11 +393,12 @@ bool RTXPTToneMappingPass::CreateSamplers(IRenderDevice* pDevice)
     return m_LinearSampler && m_PointSampler;
 }
 
-bool RTXPTToneMappingPass::Initialize(IRenderDevice*     pDevice,
-                                      IEngineFactory*    pEngineFactory,
-                                      IRenderStateCache* pStateCache,
-                                      TEXTURE_FORMAT     LdrFormat,
-                                      bool               ComputeSupported)
+bool RTXPTToneMappingPass::Initialize(IRenderDevice*       pDevice,
+                                      IEngineFactory*      pEngineFactory,
+                                      IRenderStateCache*   pStateCache,
+                                      IPipelineStateCache* pPSOCache,
+                                      TEXTURE_FORMAT       LdrFormat,
+                                      bool                 ComputeSupported)
 {
     Reset();
 
@@ -414,6 +416,7 @@ bool RTXPTToneMappingPass::Initialize(IRenderDevice*     pDevice,
 
     m_ComputeSupported = ComputeSupported;
     m_pStateCache      = pStateCache;
+    m_pPSOCache        = pPSOCache;
 
     if (!CreateSamplers(pDevice))
     {
@@ -490,6 +493,7 @@ bool RTXPTToneMappingPass::Initialize(IRenderDevice*     pDevice,
         .AddVariable(SHADER_TYPE_PIXEL, "t_Luminance", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC);
     ToneMapPSOCreateInfo.PSODesc.ResourceLayout = ToneMapLayout;
 
+    ToneMapPSOCreateInfo.pPSOCache = SelectRTXPTPipelineStateCache(pDevice, ToneMapPSOCreateInfo, pPSOCache);
     pStateCache->CreateGraphicsPipelineState(ToneMapPSOCreateInfo, &m_ToneMapPSO);
     if (!m_ToneMapPSO)
     {
@@ -597,6 +601,7 @@ bool RTXPTToneMappingPass::ResizeResources(IRenderDevice* pDevice, Uint32 Width,
 
         m_LuminancePSO.Release();
         m_LuminanceSRB.Release();
+        PSOCreateInfo.pPSOCache = SelectRTXPTPipelineStateCache(pDevice, PSOCreateInfo, m_pPSOCache);
         m_pStateCache->CreateGraphicsPipelineState(PSOCreateInfo, &m_LuminancePSO);
         if (!m_LuminancePSO ||
             !SetStaticVariable(m_LuminancePSO, SHADER_TYPE_PIXEL, "s_ColorSampler", m_LinearSampler, true))

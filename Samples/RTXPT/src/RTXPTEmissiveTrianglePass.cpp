@@ -26,6 +26,7 @@
 
 #include "RTXPTEmissiveTrianglePass.hpp"
 #include "RTXPTShaderSource.hpp"
+#include "RTXPTPipelineStateCache.hpp"
 
 #include "DebugUtilities.hpp"
 #include "GraphicsTypesX.hpp"
@@ -60,6 +61,7 @@ void RTXPTEmissiveTrianglePass::Reset()
 bool RTXPTEmissiveTrianglePass::Initialize(IRenderDevice*        pDevice,
                                            IEngineFactory*       pEngineFactory,
                                            IRenderStateCache*    pStateCache,
+                                           IPipelineStateCache*  pPSOCache,
                                            IBuffer*              pMaterialBuffer,
                                            IBuffer*              pSubInstanceBuffer,
                                            IBuffer*              pSubInstanceTransformBuffer,
@@ -158,6 +160,7 @@ bool RTXPTEmissiveTrianglePass::Initialize(IRenderDevice*        pDevice,
     }
     PSOCreateInfo.PSODesc.ResourceLayout = ResourceLayout;
 
+    PSOCreateInfo.pPSOCache = SelectRTXPTPipelineStateCache(pDevice, PSOCreateInfo, pPSOCache);
     pStateCache->CreateComputePipelineState(PSOCreateInfo, &m_PSO);
     VERIFY(m_PSO, "Failed to create RTXPT emissive triangle build PSO");
     if (!m_PSO)

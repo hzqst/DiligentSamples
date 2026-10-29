@@ -26,6 +26,7 @@
 
 #include "RTXPTRayTracingPass.hpp"
 #include "RTXPTShaderSource.hpp"
+#include "RTXPTPipelineStateCache.hpp"
 #include "DebugUtilities.hpp"
 #include "RTXPTFrameConstants.hpp"
 
@@ -108,6 +109,7 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
                                      IDeviceContext*       pContext,
                                      IEngineFactory*       pEngineFactory,
                                      IRenderStateCache*    pStateCache,
+                                     IPipelineStateCache*  pPSOCache,
                                      IBuffer*              pFrameConstants,
                                      IBuffer*              pMaterialBuffer,
                                      IBuffer*              pSubInstanceBuffer,
@@ -461,6 +463,7 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
         }
         PSOCreateInfo.PSODesc.ResourceLayout = ResourceLayout;
 
+        PSOCreateInfo.pPSOCache = SelectRTXPTPipelineStateCache(pDevice, PSOCreateInfo, pPSOCache);
         pStateCache->CreateRayTracingPipelineState(PSOCreateInfo, &State.PSO);
         VERIFY(State.PSO, "Failed to create RTXPT path trace RT PSO");
         if (!State.PSO)

@@ -63,6 +63,7 @@ namespace Diligent
 {
 
 struct IRenderStateCache;
+struct IPipelineStateCache;
 
 struct RTXPTFeatureCaps
 {
@@ -135,6 +136,7 @@ private:
     bool                                   RunEmbeddedReference();
     bool                                   m_UseEmbeddedReference = false;
     std::unique_ptr<RTXPTEmbeddedRenderer> m_EmbeddedReference;
+    RefCntAutoPtr<IRenderStateCache>       m_pEmbeddedStateCache; // Outlives resizes and scene reloads for recreated embedded renderers.
     RefCntAutoPtr<ITextureView>            m_EmbeddedDisplaySRV;
     RTXPTBlitPass                          m_EmbeddedBlit;
     void                                   DrainAsyncPrefix();
@@ -185,6 +187,7 @@ private:
     void                                   RecordRealtimePathTraceStatus(const char* Status);
 
     RefCntAutoPtr<IRenderStateCache>                           m_pStateCache;
+    RefCntAutoPtr<IPipelineStateCache>                         m_pPSOCache; // Null where the device has no native pipeline cache.
     RTXPTFeatureCaps                                           m_FeatureCaps;
     RTXPTGpuProfiler                                           m_GpuProfiler;
     AsyncPrefix                                                m_AsyncPrefix;

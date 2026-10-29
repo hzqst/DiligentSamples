@@ -1,0 +1,2 @@
+# Render state cache the sample writes on exit (kStateCachePath in src/RTXPTSample.cpp).
+RTXPTCache_*.bin

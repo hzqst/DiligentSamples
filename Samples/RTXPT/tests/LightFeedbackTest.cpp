@@ -114,7 +114,7 @@ try
         return Result;
     };
     RTXPTLightFeedback Feedback;
-    Require(Feedback.Initialize(Device, Factory, nullptr, Width, Height), "Cannot compile production feedback stages");
+    Require(Feedback.Initialize(Device, Factory, nullptr, nullptr, Width, Height), "Cannot compile production feedback stages");
     Require(Feedback.SetLightCount(Device, 8), "Cannot allocate feedback counts");
     const Uint32               GlobalLight = 0;
     auto                       Proxies     = Buffer(4, 4, &GlobalLight);
@@ -203,7 +203,7 @@ try
         std::cout << "Feedback case " << Case << " passed\n";
     }
     RTXPTLightProxyBuildPass ProxyBuild;
-    Require(ProxyBuild.Initialize(Device, Factory, nullptr), "Cannot initialize proxy jobs");
+    Require(ProxyBuild.Initialize(Device, Factory, nullptr, nullptr), "Cannot initialize proxy jobs");
     for (Uint32 Case = 0; Case < 5; ++Case)
     {
         constexpr Uint32                               Triangles = 8, LightCount = Triangles + 1, Budget = 256;
@@ -341,7 +341,7 @@ try
     }
     {
         RTXPTLightProxyBuildPass Boost;
-        Require(Boost.Initialize(Device, Factory, nullptr), "Cannot initialize importance boost");
+        Require(Boost.Initialize(Device, Factory, nullptr, nullptr), "Cannot initialize importance boost");
         constexpr float        Pi               = 3.14159265358979323846f;
         const float            Radiance         = 1.0f / (4.0f * Pi);
         AnalyticLightData      Sources[]        = {{float4{Radiance, Radiance, Radiance, 4}, {}, {}, float4{-1, 0, 0, 0}},
@@ -441,7 +441,7 @@ try
         LightingControlData Control{};
         auto                ControlBuffer = Buffer(sizeof(Control), sizeof(Control), &Control);
         RTXPTLightHistory   History;
-        Require(History.Initialize(Device, Factory, nullptr), "Cannot initialize history mapping");
+        Require(History.Initialize(Device, Factory, nullptr, nullptr), "Cannot initialize history mapping");
         History.SetSources(Old, 6, 2);
         Require(History.Prepare(Context, ControlBuffer, Env, Map->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE)), "Initial history mapping");
         for (Uint32 Index : Read(History.GetCurrentToPast())) Require(Index == ~0u, "First frame must not read undefined history");

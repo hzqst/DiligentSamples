@@ -26,6 +26,7 @@
 
 #include "RTXPTLightProxyBuildPass.hpp"
 #include "RTXPTShaderSource.hpp"
+#include "RTXPTPipelineStateCache.hpp"
 
 #include "DebugUtilities.hpp"
 #include "GraphicsTypesX.hpp"
@@ -98,6 +99,7 @@ void RTXPTLightProxyBuildPass::Reset()
 }
 
 bool RTXPTLightProxyBuildPass::CreatePSO(IRenderStateCache*                     pStateCache,
+                                         IPipelineStateCache*                   pPSOCache,
                                          IShader*                               pCS,
                                          const char*                            Name,
                                          RefCntAutoPtr<IPipelineState>&         PSO,
@@ -121,6 +123,7 @@ bool RTXPTLightProxyBuildPass::CreatePSO(IRenderStateCache*                     
         .AddVariable(SHADER_TYPE_COMPUTE, "u_LightSamplingProxies", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC);
     PSOCreateInfo.PSODesc.ResourceLayout = ResourceLayout;
 
+    PSOCreateInfo.pPSOCache = SelectRTXPTPipelineStateCache(m_Device, PSOCreateInfo, pPSOCache);
     if (pStateCache) pStateCache->CreateComputePipelineState(PSOCreateInfo, &PSO);
     else
         m_Device->CreateComputePipelineState(PSOCreateInfo, &PSO);
@@ -139,7 +142,7 @@ bool RTXPTLightProxyBuildPass::CreatePSO(IRenderStateCache*                     
     return true;
 }
 
-bool RTXPTLightProxyBuildPass::Initialize(IRenderDevice* pDevice, IEngineFactory* pEngineFactory, IRenderStateCache* pStateCache)
+bool RTXPTLightProxyBuildPass::Initialize(IRenderDevice* pDevice, IEngineFactory* pEngineFactory, IRenderStateCache* pStateCache, IPipelineStateCache* pPSOCache)
 {
     Reset();
     if (pDevice == nullptr || pEngineFactory == nullptr)
@@ -195,12 +198,12 @@ bool RTXPTLightProxyBuildPass::Initialize(IRenderDevice* pDevice, IEngineFactory
     }
 
     const bool Ok =
-        CreatePSO(pStateCache, pResetCS, "RTXPT light proxy reset PSO", m_ResetPSO, m_ResetSRB) &&
-        CreatePSO(pStateCache, pWeightsCS, "RTXPT light proxy weights PSO", m_WeightsPSO, m_WeightsSRB) &&
-        CreatePSO(pStateCache, pClustersCS, "RTXPT light clusters PSO", m_ClustersPSO, m_ClustersSRB) &&
-        CreatePSO(pStateCache, pCountsCS, "RTXPT light proxy counts PSO", m_CountsPSO, m_CountsSRB) &&
-        CreatePSO(pStateCache, pFinalizeCS, "RTXPT light proxy jobs PSO", m_FinalizePSO, m_FinalizeSRB) &&
-        CreatePSO(pStateCache, pScatterCS, "RTXPT light proxy scatter PSO", m_ScatterPSO, m_ScatterSRB);
+        CreatePSO(pStateCache, pPSOCache, pResetCS, "RTXPT light proxy reset PSO", m_ResetPSO, m_ResetSRB) &&
+        CreatePSO(pStateCache, pPSOCache, pWeightsCS, "RTXPT light proxy weights PSO", m_WeightsPSO, m_WeightsSRB) &&
+        CreatePSO(pStateCache, pPSOCache, pClustersCS, "RTXPT light clusters PSO", m_ClustersPSO, m_ClustersSRB) &&
+        CreatePSO(pStateCache, pPSOCache, pCountsCS, "RTXPT light proxy counts PSO", m_CountsPSO, m_CountsSRB) &&
+        CreatePSO(pStateCache, pPSOCache, pFinalizeCS, "RTXPT light proxy jobs PSO", m_FinalizePSO, m_FinalizeSRB) &&
+        CreatePSO(pStateCache, pPSOCache, pScatterCS, "RTXPT light proxy scatter PSO", m_ScatterPSO, m_ScatterSRB);
 
     m_Ready = Ok;
     return Ok;

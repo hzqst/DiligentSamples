@@ -844,9 +844,9 @@ bool RTXPTSample::RebuildSceneDependentResources()
     ResourcesReady &= m_Lights.UploadEmissiveTriangles(m_pDevice, SceneData);
 
     const SwapChainDesc& SCDesc = m_pSwapChain->GetDesc();
-    ResourcesReady &= m_EnvMapBaker.CreateResources(m_pDevice, m_pImmediateContext, m_pEngineFactory, m_pStateCache, m_FeatureCaps.ComputeShaders);
+    ResourcesReady &= m_EnvMapBaker.CreateResources(m_pDevice, m_pImmediateContext, m_pEngineFactory, m_pStateCache, m_pPSOCache, m_FeatureCaps.ComputeShaders);
     ResourcesReady &= UpdateEnvMapBaker(true);
-    ResourcesReady &= m_LightsBaker.CreateResources(m_pDevice, m_pEngineFactory, m_pStateCache, SCDesc.Width, SCDesc.Height, m_FeatureCaps.ComputeShaders);
+    ResourcesReady &= m_LightsBaker.CreateResources(m_pDevice, m_pEngineFactory, m_pStateCache, m_pPSOCache, SCDesc.Width, SCDesc.Height, m_FeatureCaps.ComputeShaders);
     ResourcesReady &= UpdateLightsBaker(true);
 
     ResourcesReady &= m_SkinnedGeometry.Initialize(m_pDevice,
@@ -1037,8 +1037,10 @@ RTXPTSample::~RTXPTSample()
         return;
 
     // Persist the render state cache so the next run can reuse compiled shaders and pipelines.
+    // &pCacheData stores the blob only at the end of the full expression, so it is tested in the next one.
     RefCntAutoPtr<IDataBlob> pCacheData;
-    if (m_pStateCache->WriteToBlob(0, &pCacheData) && pCacheData)
+    const bool               Serialized = m_pStateCache->WriteToBlob(0, &pCacheData);
+    if (Serialized && pCacheData)
     {
         FileWrapper CacheDataFile{kStateCachePath, EFileAccessMode::Overwrite};
         if (CacheDataFile->Write(pCacheData->GetConstDataPtr(), pCacheData->GetSize()))
@@ -1090,6 +1092,18 @@ void RTXPTSample::Initialize(const SampleInitInfo& InitInfo)
                 else
                     LOG_ERROR_MESSAGE("Failed to load render state cache from '", kStateCachePath, "'");
             }
+        }
+    }
+
+    // The native pipeline cache is kept in memory only. It lets the passes shared with the embedded renderer
+    // exercise the same pipeline cache path as a host that supplies one.
+    {
+        const RENDER_DEVICE_TYPE DeviceType = m_pDevice->GetDeviceInfo().Type;
+        if (DeviceType == RENDER_DEVICE_TYPE_D3D12 || DeviceType == RENDER_DEVICE_TYPE_VULKAN)
+        {
+            PipelineStateCacheCreateInfo PSOCacheCI;
+            PSOCacheCI.Desc.Name = "RTXPT pipeline state cache";
+            m_pDevice->CreatePipelineStateCache(PSOCacheCI, &m_pPSOCache);
         }
     }
 
@@ -1374,6 +1388,7 @@ void RTXPTSample::CreateSceneIndependentPasses()
     m_PostProcessPipeline.Initialize(m_pDevice,
                                      m_pEngineFactory,
                                      m_pStateCache,
+                                     m_pPSOCache,
                                      m_pSwapChain,
                                      m_FrameConstantsCB,
                                      m_FeatureCaps.ComputeShaders);
@@ -1411,6 +1426,7 @@ void RTXPTSample::CreateSceneDependentPasses()
     m_EmissiveTrianglePass.Initialize(m_pDevice,
                                       m_pEngineFactory,
                                       m_pStateCache,
+                                      m_pPSOCache,
                                       m_Materials.GetMaterialBuffer(),
                                       m_AccelerationStructures.GetSubInstanceBuffer(),
                                       m_AccelerationStructures.GetSubInstanceTransformBuffer(),
@@ -1429,6 +1445,7 @@ void RTXPTSample::CreateSceneDependentPasses()
                                     m_pImmediateContext,
                                     m_pEngineFactory,
                                     m_pStateCache,
+                                    m_pPSOCache,
                                     m_FrameConstantsCB,
                                     m_Materials.GetMaterialBuffer(),
                                     m_AccelerationStructures.GetSubInstanceBuffer(),
@@ -2252,8 +2269,12 @@ bool RTXPTSample::RunEmbeddedReference()
     {
         RefCntAutoPtr<IShaderSourceInputStreamFactory> Shaders;
         m_pEngineFactory->CreateDefaultShaderSourceStreamFactory("shaders;shaders/PathTracer", &Shaders);
+        // m_pStateCache hashes the shader contents, which expands every include, including those of the optional
+        // algorithms the embedded renderer disables (SHARC is not on this factory's paths). Its cache hashes by name.
+        if (!m_pEmbeddedStateCache)
+            CreateRTXPTEmbeddedStateCache(m_pDevice, &m_pEmbeddedStateCache);
         auto Renderer = std::make_unique<RTXPTEmbeddedRenderer>();
-        if (!Renderer->Initialize(m_pDevice, m_pImmediateContext, m_Scene, m_Materials, Shaders, Desc.Width, Desc.Height, Error))
+        if (!Renderer->Initialize(m_pDevice, m_pImmediateContext, m_Scene, m_Materials, Shaders, m_pEmbeddedStateCache, m_pPSOCache, Desc.Width, Desc.Height, Error))
         {
             LOG_ERROR_MESSAGE("Embedded reference: ", Error);
             m_pImmediateContext->WaitForIdle();
@@ -2443,6 +2464,7 @@ void RTXPTSample::WindowResize(Uint32 Width, Uint32 Height)
                 m_LightsBaker.CreateResources(m_pDevice,
                                               m_pEngineFactory,
                                               m_pStateCache,
+                                              m_pPSOCache,
                                               m_CurrentTargetDimensions.DisplayWidth,
                                               m_CurrentTargetDimensions.DisplayHeight,
                                               m_FeatureCaps.ComputeShaders);
