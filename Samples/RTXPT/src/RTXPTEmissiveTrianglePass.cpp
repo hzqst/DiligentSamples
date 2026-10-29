@@ -25,6 +25,7 @@
  */
 
 #include "RTXPTEmissiveTrianglePass.hpp"
+#include "RTXPTShaderSource.hpp"
 
 #include "DebugUtilities.hpp"
 #include "GraphicsTypesX.hpp"
@@ -100,7 +101,7 @@ bool RTXPTEmissiveTrianglePass::Initialize(IRenderDevice*        pDevice,
     }
 
     RefCntAutoPtr<IShaderSourceInputStreamFactory> pShaderSourceFactory;
-    pEngineFactory->CreateDefaultShaderSourceStreamFactory("shaders;shaders\\PathTracer", &pShaderSourceFactory);
+    CreateRTXPTShaderSourceFactory(pEngineFactory, "shaders;shaders\\PathTracer", &pShaderSourceFactory);
 
     ShaderCreateInfo ShaderCI;
     ShaderCI.Desc.ShaderType            = SHADER_TYPE_COMPUTE;

@@ -1,6 +1,7 @@
 // Copyright 2026 Diligent Graphics LLC
 // Licensed under the Apache License, Version 2.0.
 #pragma once
+#include "RTXPTShaderSource.hpp"
 
 #include "RTXPTEnvironmentLights.hpp"
 #include <cmath>
@@ -30,7 +31,7 @@ public:
     {
         Reset();
         RefCntAutoPtr<IShaderSourceInputStreamFactory> Source;
-        pFactory->CreateDefaultShaderSourceStreamFactory("shaders;shaders/PathTracer", &Source);
+        CreateRTXPTShaderSourceFactory(pFactory, "shaders;shaders/PathTracer", &Source);
         const char* Entries[] = {"ResetFeedbackCounts", "PreFilterFeedback", "BlendFeedback", "ReprojectFeedback", "FillFeedbackTile", "RetainFeedbackHistory"};
         for (size_t I = 0; I < m_PSOs.size(); ++I)
         {
@@ -124,7 +125,7 @@ public:
         m_JitterX                       = std::min(static_cast<Uint32>(m_JitterFX * 8.0f), 7u);
         m_JitterY                       = std::min(static_cast<Uint32>(m_JitterFY * 8.0f), 7u);
         const Uint32 Constants[]        = {m_Width, m_Height, ++m_Frame, ResetHistory ? 1u : 0u,
-                                    m_JitterX, m_JitterY, PreviousJitterX, PreviousJitterY, pHistoryRemap ? 1u : 0u, 0u, 0u, 0u};
+                                           m_JitterX, m_JitterY, PreviousJitterX, PreviousJitterY, pHistoryRemap ? 1u : 0u, 0u, 0u, 0u};
         pContext->UpdateBuffer(m_Constants, 0, sizeof(Constants), Constants, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
         m_TilesX = (m_Width + 14u) / 8u;
         m_TilesY = (m_Height + 14u) / 8u;

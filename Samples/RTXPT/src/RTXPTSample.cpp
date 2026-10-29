@@ -484,7 +484,7 @@ std::string ResolveRTXPTAssetsRoot()
             "assets",
             "Samples/RTXPT/assets",
             "DiligentSamples/Samples/RTXPT/assets",
-        };
+    };
 
     for (const char* Candidate : DirectCandidates)
     {
@@ -503,13 +503,13 @@ std::string ResolveRTXPTAssetsRoot()
             "../../../../../../",
             "../../../../../../../",
             "../../../../../../../../",
-        };
+    };
     const char* SourceTreeSuffixes[] =
         {
             "assets",
             "Samples/RTXPT/assets",
             "DiligentSamples/Samples/RTXPT/assets",
-        };
+    };
 
     for (const char* Prefix : AncestorPrefixes)
     {
@@ -554,12 +554,12 @@ std::string ResolveRTXPTSampleRoot(const std::string& AssetsRoot)
             "../../../../../../",
             "../../../../../../../",
             "../../../../../../../../",
-        };
+    };
     const char* SourceTreeSuffixes[] =
         {
             "Samples/RTXPT",
             "DiligentSamples/Samples/RTXPT",
-        };
+    };
 
     for (const char* Prefix : AncestorPrefixes)
     {
@@ -659,6 +659,7 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
 {
     CommandLineParser Args{argc, argv};
     Args.Parse("realtime", m_RealtimeUI.RealtimeMode);
+    Args.Parse("embedded_reference", m_UseEmbeddedReference);
     Args.Parse("asyncPrefix", m_EnableAsyncPrefix);
     Args.Parse("gpu_tlas", m_EnableGPUTLAS);
     Args.Parse("async_queue", m_CreateAsyncQueue);
@@ -766,6 +767,9 @@ void RTXPTSample::ResetSceneDependentResources()
         m_pImmediateContext->WaitForIdle();
         m_pImmediateContext->InvalidateState();
     }
+    m_EmbeddedDisplaySRV.Release();
+    m_EmbeddedReference.reset();
+    m_EmbeddedBlit.Reset();
     m_Materials.Reset();
     m_Lights.Reset();
     m_LightsBaker.SceneReloaded();
@@ -1182,18 +1186,18 @@ void RTXPTSample::UpdateFrameConstants(double CurrTime)
     const float4x4 ViewProj       = CameraView * CameraProj;
 
     const PathTracerCameraData CurrentCamera  = MakePathTracerCameraData(m_Camera,
-                                                                        RenderWidth,
-                                                                        RenderHeight,
-                                                                        DisplayWidth,
-                                                                        DisplayHeight,
-                                                                        m_ReferenceUI.CameraFocalDistance,
-                                                                        m_ReferenceUI.CameraAperture,
-                                                                        CameraJitter);
+                                                                         RenderWidth,
+                                                                         RenderHeight,
+                                                                         DisplayWidth,
+                                                                         DisplayHeight,
+                                                                         m_ReferenceUI.CameraFocalDistance,
+                                                                         m_ReferenceUI.CameraAperture,
+                                                                         CameraJitter);
     const PathTracerViewData   CurrentView    = MakePathTracerViewData(CameraView,
-                                                                  CameraProj,
-                                                                  RenderWidth,
-                                                                  RenderHeight,
-                                                                  CameraJitter);
+                                                                       CameraProj,
+                                                                       RenderWidth,
+                                                                       RenderHeight,
+                                                                       CameraJitter);
     const PathTracerCameraData PreviousCamera = m_HasPreviousFrameConstants ? m_PreviousFrameCamera : CurrentCamera;
     const PathTracerViewData   PreviousView   = m_HasPreviousFrameConstants ? m_PreviousFrameView : CurrentView;
 
@@ -1272,8 +1276,8 @@ void RTXPTSample::UpdateFrameConstants(double CurrTime)
         m_RealtimeUI.DenoisingLayersSuppressPrimaryIndirectSpecularK :
         0.0f;
 
-    PtConsts.denoiserRadianceClampK = m_RealtimeUI.DenoiserRadianceClampK;
-    PtConsts.DLSSRRBrightnessClampK = m_RealtimeUI.DLSSRRBrightnessClampK > 0.0f ?
+    PtConsts.denoiserRadianceClampK                 = m_RealtimeUI.DenoiserRadianceClampK;
+    PtConsts.DLSSRRBrightnessClampK                 = m_RealtimeUI.DLSSRRBrightnessClampK > 0.0f ?
         m_RealtimeUI.DLSSRRBrightnessClampK * PtConsts.preExposedGrayLuminance :
         0.0f;
     PtConsts.denoisingLayersAntiAliasingFallthrough = m_RealtimeUI.DenoisingLayersAntiAliasingFallthrough;
@@ -2234,8 +2238,53 @@ void RTXPTSample::ReleasePrefixResources(IDeviceContext* Context)
     m_LightsBaker.ReleaseQueueResources(Context);
 }
 
+bool RTXPTSample::RunEmbeddedReference()
+{
+    const auto& Desc = m_pSwapChain->GetDesc();
+    if (m_EmbeddedReference && (m_EmbeddedReference->GetOutput()->GetDesc().Width != Desc.Width || m_EmbeddedReference->GetOutput()->GetDesc().Height != Desc.Height))
+    {
+        m_pImmediateContext->WaitForIdle();
+        m_EmbeddedDisplaySRV.Release();
+        m_EmbeddedReference.reset();
+    }
+    std::string Error;
+    if (!m_EmbeddedReference)
+    {
+        RefCntAutoPtr<IShaderSourceInputStreamFactory> Shaders;
+        m_pEngineFactory->CreateDefaultShaderSourceStreamFactory("shaders;shaders/PathTracer", &Shaders);
+        auto Renderer = std::make_unique<RTXPTEmbeddedRenderer>();
+        if (!Renderer->Initialize(m_pDevice, m_pImmediateContext, m_Scene, m_Materials, Shaders, Desc.Width, Desc.Height, Error))
+        {
+            LOG_ERROR_MESSAGE("Embedded reference: ", Error);
+            m_pImmediateContext->WaitForIdle();
+            return false;
+        }
+        TextureViewDesc View;
+        View.ViewType = TEXTURE_VIEW_SHADER_RESOURCE;
+        View.Format   = Desc.ColorBufferFormat == TEX_FORMAT_RGBA8_UNORM_SRGB || Desc.ColorBufferFormat == TEX_FORMAT_BGRA8_UNORM_SRGB ? TEX_FORMAT_RGBA8_UNORM_SRGB : TEX_FORMAT_RGBA8_UNORM;
+        Renderer->GetOutput()->CreateView(View, &m_EmbeddedDisplaySRV);
+        if (!m_EmbeddedDisplaySRV || !m_EmbeddedBlit.Initialize(m_pDevice, m_pEngineFactory, m_pStateCache, m_pSwapChain))
+            return false;
+        m_EmbeddedReference = std::move(Renderer);
+    }
+    const auto Camera = MakePathTracerCameraData(m_Camera, Desc.Width, Desc.Height, Desc.Width, Desc.Height, 1, 0, {});
+    const auto View   = MakePathTracerViewData(m_Camera.GetViewMatrix(), m_Camera.GetProjMatrix(), Desc.Width, Desc.Height, {});
+    if (!m_EmbeddedReference->Render(Camera, View, m_LastFrameConstants.cameraPositionAndTime.w, m_LastFrameConstants.ptConsts.resetAccumulation != 0, Error))
+    {
+        LOG_ERROR_MESSAGE("Embedded reference: ", Error);
+        return false;
+    }
+    return m_EmbeddedBlit.Render(m_pImmediateContext, m_pSwapChain, m_EmbeddedDisplaySRV);
+}
+
 void RTXPTSample::Render()
 {
+    if (m_UseEmbeddedReference)
+    {
+        m_LastFrameSucceeded = RunEmbeddedReference();
+        if (!m_LastFrameSucceeded) ClearFallback(float4{1, 0, 1, 1});
+        return;
+    }
     if (m_EnableGpuProfiling && m_FrameIndex == 120)
     {
         const auto& Pt  = m_LastFrameConstants.ptConsts;

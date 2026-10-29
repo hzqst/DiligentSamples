@@ -4,6 +4,7 @@ project(RTXPT CXX)
 
 set(SOURCE
     src/RTXPTSample.cpp
+    src/RTXPTEmbeddedRenderer.cpp
     src/RTXPTScene.cpp
     src/RTXPTSceneJson.cpp
     src/RTXPTSceneGraph.cpp
@@ -38,6 +39,8 @@ set(SOURCE
 
 set(INCLUDE
     src/RTXPTSample.hpp
+    src/RTXPTEmbeddedRenderer.hpp
+    src/RTXPTShaderSource.hpp
     src/RTXPTCameraBasis.hpp
     src/RTXPTScene.hpp
     src/RTXPTSceneJson.hpp

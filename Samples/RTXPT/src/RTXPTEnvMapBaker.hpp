@@ -44,6 +44,7 @@
 #include "RTXPTFrameConstants.hpp"
 #include "RTXPTEnvMapBakerPass.hpp"
 #include "RTXPTSceneGraph.hpp"
+#include "RTXPTSceneJson.hpp"
 
 namespace Diligent
 {
@@ -94,10 +95,12 @@ struct RTXPTEnvMapBakerStats
 class RTXPTEnvMapBaker
 {
 public:
+    RTXPTEnvMapBaker();
     ~RTXPTEnvMapBaker();
 
     void Reset();
     void SceneReloaded();
+    void SetFileSource(const RTXPTFileSource& Source) { m_FileSource = Source; }
 
     bool CreateResources(IRenderDevice* pDevice, IDeviceContext* pContext, IEngineFactory* pEngineFactory, IRenderStateCache* pStateCache, bool ComputeSupported);
     bool Update(IRenderDevice* pDevice, IDeviceContext* pContext, IEngineFactory* pEngineFactory, const std::string& AssetsRoot, const RTXPTEnvMapSettings& Settings, bool ForceRebuild, bool ComputeSupported);
@@ -121,38 +124,41 @@ public:
     ISampler*     GetImportanceSampler() const { return m_ImportanceSampler; }
 
 private:
-    bool LoadSourceTexture(IRenderDevice* pDevice, const std::string& AssetsRoot, const RTXPTEnvMapSettings& Settings);
-    bool CreateProceduralSourceTexture(IRenderDevice* pDevice, const RTXPTEnvMapSettings& Settings);
-    bool PrecomputeCubemap(IRenderDevice* pDevice, IDeviceContext* pContext, IEngineFactory* pEngineFactory, const RTXPTEnvMapSettings& Settings);
-    bool BakeHighResEnvironmentCube(IRenderDevice* pDevice, IDeviceContext* pContext, IEngineFactory* pEngineFactory);
-    bool EnsureEnvCubeBakePipeline(IRenderDevice* pDevice, IEngineFactory* pEngineFactory, bool SourceIsCube);
-    bool CreateImportanceMaps(IRenderDevice* pDevice, IDeviceContext* pContext, IEngineFactory* pEngineFactory, const RTXPTEnvMapSettings& Settings, bool ComputeSupported);
-    bool CreateImportanceTextures(IRenderDevice* pDevice, Uint32 Resolution);
-    bool DispatchImportanceBuild(IDeviceContext* pContext, Uint32 Resolution);
-    bool DispatchImportanceReduce(IDeviceContext* pContext, Uint32 Resolution, Uint32 MipLevels);
-    void UseFallbackImportanceMaps(Uint32 RequestedResolution);
-    bool CreateFallbackTextures(IRenderDevice* pDevice);
-    bool CreateSamplers(IRenderDevice* pDevice);
-    void UpdateConstants(const RTXPTEnvMapSettings& Settings);
+    RTXPTFileSource m_FileSource;
+    bool            LoadSourceTexture(IRenderDevice* pDevice, const std::string& AssetsRoot, const RTXPTEnvMapSettings& Settings);
+    bool            CreateProceduralSourceTexture(IRenderDevice* pDevice, const RTXPTEnvMapSettings& Settings);
+    bool            PrecomputeCubemap(IRenderDevice* pDevice, IDeviceContext* pContext, IEngineFactory* pEngineFactory, const RTXPTEnvMapSettings& Settings);
+    bool            BakeHighResEnvironmentCube(IRenderDevice* pDevice, IDeviceContext* pContext, IEngineFactory* pEngineFactory);
+    bool            EnsureEnvCubeBakePipeline(IRenderDevice* pDevice, IEngineFactory* pEngineFactory, bool SourceIsCube);
+    bool            CreateImportanceMaps(IRenderDevice* pDevice, IDeviceContext* pContext, IEngineFactory* pEngineFactory, const RTXPTEnvMapSettings& Settings, bool ComputeSupported);
+    bool            CreateImportanceTextures(IRenderDevice* pDevice, Uint32 Resolution);
+    bool            DispatchImportanceBuild(IDeviceContext* pContext, Uint32 Resolution);
+    bool            DispatchImportanceReduce(IDeviceContext* pContext, Uint32 Resolution, Uint32 MipLevels);
+    void            UseFallbackImportanceMaps(Uint32 RequestedResolution);
+    bool            CreateFallbackTextures(IRenderDevice* pDevice);
+    bool            CreateSamplers(IRenderDevice* pDevice);
+    void            UpdateConstants(const RTXPTEnvMapSettings& Settings);
 
-    RefCntAutoPtr<ITexture>             m_SourceTexture;
-    RefCntAutoPtr<ITextureView>         m_SourceSRV;
-    RefCntAutoPtr<ITexture>             m_FallbackEnvironmentMap;
-    RefCntAutoPtr<ITexture>             m_FallbackDiffuseIrradiance;
-    RefCntAutoPtr<ITexture>             m_FallbackImportanceMap;
-    RefCntAutoPtr<ITexture>             m_FallbackRadianceMap;
-    RefCntAutoPtr<ITexture>             m_FallbackBRDFLUT;
-    RefCntAutoPtr<IBuffer>              m_ImportanceConstants;
-    RefCntAutoPtr<ITexture>             m_ImportanceMap;
-    RefCntAutoPtr<ITexture>             m_RadianceMap;
-    RefCntAutoPtr<ITextureView>         m_EnvironmentMapSRV;
-    RefCntAutoPtr<ITextureView>         m_DiffuseIrradianceSRV;
-    RefCntAutoPtr<ITextureView>         m_ImportanceMapSRV;
-    RefCntAutoPtr<ITextureView>         m_RadianceMapSRV;
-    RefCntAutoPtr<ITextureView>         m_BRDFLUTSRV;
-    RefCntAutoPtr<ISampler>             m_EnvironmentSampler;
-    RefCntAutoPtr<ISampler>             m_ImportanceSampler;
+    RefCntAutoPtr<ITexture>     m_SourceTexture;
+    RefCntAutoPtr<ITextureView> m_SourceSRV;
+    RefCntAutoPtr<ITexture>     m_FallbackEnvironmentMap;
+    RefCntAutoPtr<ITexture>     m_FallbackDiffuseIrradiance;
+    RefCntAutoPtr<ITexture>     m_FallbackImportanceMap;
+    RefCntAutoPtr<ITexture>     m_FallbackRadianceMap;
+    RefCntAutoPtr<ITexture>     m_FallbackBRDFLUT;
+    RefCntAutoPtr<IBuffer>      m_ImportanceConstants;
+    RefCntAutoPtr<ITexture>     m_ImportanceMap;
+    RefCntAutoPtr<ITexture>     m_RadianceMap;
+    RefCntAutoPtr<ITextureView> m_EnvironmentMapSRV;
+    RefCntAutoPtr<ITextureView> m_DiffuseIrradianceSRV;
+    RefCntAutoPtr<ITextureView> m_ImportanceMapSRV;
+    RefCntAutoPtr<ITextureView> m_RadianceMapSRV;
+    RefCntAutoPtr<ITextureView> m_BRDFLUTSRV;
+    RefCntAutoPtr<ISampler>     m_EnvironmentSampler;
+    RefCntAutoPtr<ISampler>     m_ImportanceSampler;
+#ifndef RTXPT_PATH_TRACING_ONLY
     std::unique_ptr<class PBR_Renderer> m_IBLPrecompute;
+#endif
     // High-resolution environment cube baked from the source (cube or 2D equirect). Bound to the path
     // tracer's t_EnvironmentMap instead of the low-resolution GGX-prefiltered IBL cube. See
     // BakeHighResEnvironmentCube.

@@ -89,6 +89,7 @@ public:
 
     const std::string&             GetLoadedSceneName() const { return m_LoadedSceneName; }
     const std::string&             GetAssetsRoot() const { return m_AssetsRoot; }
+    const RTXPTFileSource&         GetFileSource() const { return m_FileSource; }
     const std::string&             GetModelPath() const { return m_ModelPath; }
     const GLTF::Model*             GetModel() const;
     const GLTF::ModelTransforms&   GetTransforms() const;

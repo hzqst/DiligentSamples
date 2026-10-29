@@ -304,6 +304,25 @@ bool RTXPTLights::Upload(IRenderDevice* pDevice, const RTXPTSceneGraphData& Scen
         m_AnalyticSources.push_back({{1u, LightMeta.GraphNodeId, 0u, 0u}, static_cast<Uint32>(Lights.size() - 1u), 1u});
     }
 
+    //KHR_lights_punctual belongs to the same instantiated glTF scene as the geometry. Its node matrices already
+    //contain the manifest transform, just like the matrices consumed by RTXPTAccelerationStructures.
+    for (const auto& Instance : SceneData.ModelInstances)
+    {
+        if (Instance.ModelAssetId >= SceneData.ModelAssets.size())
+            continue;
+        const auto& Asset = SceneData.ModelAssets[Instance.ModelAssetId];
+        if (!Asset.Model || Asset.SceneIndex >= Asset.Model->Scenes.size())
+            continue;
+        const auto& Transforms = Instance.Transforms.NodeGlobalMatrices.empty() ? Asset.StaticTransforms : Instance.Transforms;
+        for (const auto* Node : Asset.Model->Scenes[Asset.SceneIndex].LinearNodes)
+        {
+            if (!Node || !Node->pLight || Node->Index < 0 || static_cast<size_t>(Node->Index) >= Transforms.NodeGlobalMatrices.size())
+                continue;
+            m_AnalyticSources.push_back({{0u, Instance.GraphNodeId, reinterpret_cast<Uint64>(Node), 0u}, static_cast<Uint32>(Lights.size()), 1u});
+            Lights.emplace_back(MakeLightData(*Node->pLight, Transforms.NodeGlobalMatrices[Node->Index]));
+        }
+    }
+
     return UploadLightBuffer(pDevice, Lights);
 }
 

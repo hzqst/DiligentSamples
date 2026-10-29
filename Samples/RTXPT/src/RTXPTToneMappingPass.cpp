@@ -25,6 +25,7 @@
  */
 
 #include "RTXPTToneMappingPass.hpp"
+#include "RTXPTShaderSource.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -426,7 +427,7 @@ bool RTXPTToneMappingPass::Initialize(IRenderDevice*     pDevice,
     }
 
     RefCntAutoPtr<IShaderSourceInputStreamFactory> pShaderSourceFactory;
-    pEngineFactory->CreateDefaultShaderSourceStreamFactory("shaders;shaders\\PostProcessing\\ToneMapper", &pShaderSourceFactory);
+    CreateRTXPTShaderSourceFactory(pEngineFactory, "shaders;shaders\\PostProcessing\\ToneMapper", &pShaderSourceFactory);
 
     ShaderCreateInfo ShaderCI;
     ShaderCI.SourceLanguage             = SHADER_SOURCE_LANGUAGE_HLSL;
@@ -668,7 +669,7 @@ float RTXPTToneMappingPass::ComputePreExposedGrayLuminance(const RTXPTToneMappin
 
     const float  Exposure = ComputePreExposedGrayScale(PreparedParams);
     const float3 Gray     = MulRowVector(float3{0.5f, 0.5f, 0.5f} * Exposure,
-                                     ComputeWhiteBalanceTransform(PreparedParams));
+                                         ComputeWhiteBalanceTransform(PreparedParams));
     return std::max(ComputeRec709Luminance(Gray), 1.0e-6f);
 }
 

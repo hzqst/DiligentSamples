@@ -31,7 +31,9 @@
 #include "GraphicsTypesX.hpp"
 #include "RenderStateCache.h"
 
-#include "imgui.h"
+#ifndef RTXPT_NO_UI
+#    include "imgui.h"
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -348,6 +350,7 @@ bool RTXPTLightsBaker::UpdateEnd(IDeviceContext* pContext,
     return true;
 }
 
+#ifndef RTXPT_NO_UI
 bool RTXPTLightsBaker::InfoGUI(float Indent)
 {
     ImGui::Indent(Indent);
@@ -371,6 +374,8 @@ bool RTXPTLightsBaker::DebugGUI(float Indent)
     ImGui::Unindent(Indent);
     return false;
 }
+
+#endif
 
 bool RTXPTLightsBaker::CreateFeedbackTextures(IRenderDevice* pDevice, Uint32 Width, Uint32 Height)
 {
