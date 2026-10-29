@@ -46,6 +46,25 @@ struct IPipelineStateCache;
 // every analytic light and every emissive triangle is weighted by its power and gets sampling proxies in
 // proportion. Owns the compute PSOs/SRBs, constants and indirect jobs; the per-light/proxy storage and
 // the control buffer are owned by RTXPTLightsBaker and passed into Build().
+struct RTXPTLightProxyBuildAttribs
+{
+    IBuffer*      pControl                   = nullptr;
+    IBuffer*      pLights                    = nullptr;
+    IBuffer*      pLightsEx                  = nullptr;
+    IBuffer*      pFeedbackCounts            = nullptr;
+    IBuffer*      pLightWeights              = nullptr;
+    IBuffer*      pLightProxyCounters        = nullptr;
+    IBuffer*      pLightSamplingProxies      = nullptr;
+    Uint32        TotalLightCount            = 0;
+    Uint32        AnalyticLightCount         = 0;
+    Uint32        ProxyBudget                = 0;
+    Uint32        ImportanceSamplingType     = 0;
+    IBuffer*      pHistoryRemapCurrentToPast = nullptr;
+    const float4* pFrustumPlanes             = nullptr;
+    Uint32        ClusterCount               = 0;
+    const float3* pCameraPosition            = nullptr;
+};
+
 class RTXPTLightProxyBuildPass
 {
 public:
@@ -57,33 +76,11 @@ public:
 
     // Runs Reset -> ComputeWeights -> ComputeProxyCounts -> ScatterProxies with UAV barriers between passes.
     // pControl must be a DEFAULT (UAV) buffer; the pass writes WeightsSumUINT/SamplingProxyCount/ProxyBuildTaskCount.
-    bool Build(IDeviceContext* pContext,
-               IBuffer*        pControl,
-               IBuffer*        pLights,
-               IBuffer*        pLightsEx,
-               IBuffer*        pFeedbackCounts,
-               IBuffer*        pLightWeights,
-               IBuffer*        pLightProxyCounters,
-               IBuffer*        pLightSamplingProxies,
-               Uint32          TotalLightCount,
-               Uint32          AnalyticLightCount,
-               Uint32          ProxyBudget,
-               Uint32          ImportanceSamplingType,
-               IBuffer*        pHistoryRemapCurrentToPast = nullptr,
-               const float4*   pFrustumPlanes             = nullptr,
-               Uint32          ClusterCount               = 0,
-               const float3*   pCameraPosition            = nullptr);
+    bool Build(IDeviceContext* pContext, const RTXPTLightProxyBuildAttribs& Attribs);
 
 private:
     bool CreatePSO(IRenderStateCache* pStateCache, IPipelineStateCache* pPSOCache, IShader* pCS, const char* Name, RefCntAutoPtr<IPipelineState>& PSO, RefCntAutoPtr<IShaderResourceBinding>& SRB);
-    bool BindResources(IShaderResourceBinding* pSRB,
-                       IBuffer*                pControl,
-                       IBuffer*                pLights,
-                       IBuffer*                pLightsEx,
-                       IBuffer*                pFeedbackCounts,
-                       IBuffer*                pLightWeights,
-                       IBuffer*                pLightProxyCounters,
-                       IBuffer*                pLightSamplingProxies);
+    bool BindResources(IShaderResourceBinding* pSRB, const RTXPTLightProxyBuildAttribs& Attribs);
 
     RefCntAutoPtr<IPipelineState>         m_ResetPSO;
     RefCntAutoPtr<IPipelineState>         m_WeightsPSO;

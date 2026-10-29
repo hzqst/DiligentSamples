@@ -263,15 +263,7 @@ public:
     TEXTURE_FORMAT                     GetScreenMotionVectorsFormat() const { return m_Formats.ScreenMotionVectors; }
 
 private:
-    bool CreateTarget(IRenderDevice*           pDevice,
-                      const char*              Name,
-                      Uint32                   Width,
-                      Uint32                   Height,
-                      TEXTURE_FORMAT           TargetFormat,
-                      BIND_FLAGS               BindFlags,
-                      RefCntAutoPtr<ITexture>& Target,
-                      RESOURCE_DIMENSION       Type      = RESOURCE_DIM_TEX_2D,
-                      Uint32                   ArraySize = 1);
+    bool CreateTarget(IRenderDevice* pDevice, const TextureDesc& Desc, RefCntAutoPtr<ITexture>& Target);
     bool CreateDenoisingLayersBuffer(IRenderDevice*          pDevice,
                                      Uint64                  ElementCount,
                                      RefCntAutoPtr<IBuffer>& Target);

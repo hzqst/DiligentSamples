@@ -368,9 +368,9 @@ bool RTXPTEnvMapBaker::CreateResources(IRenderDevice* pDevice, IDeviceContext*, 
     return CreateSamplers(pDevice) && CreateFallbackTextures(pDevice);
 }
 
-bool RTXPTEnvMapBaker::Update(IRenderDevice* pDevice, IDeviceContext* pContext, IEngineFactory* pEngineFactory, const std::string& AssetsRoot, const RTXPTEnvMapSettings& Settings, bool ForceRebuild, bool ComputeSupported)
+bool RTXPTEnvMapBaker::Update(IRenderDevice* pDevice, IDeviceContext* pContext, const RTXPTEnvMapBakerUpdateAttribs& Attribs)
 {
-    if (pDevice == nullptr || pContext == nullptr || pEngineFactory == nullptr)
+    if (pDevice == nullptr || pContext == nullptr || Attribs.pEngineFactory == nullptr)
     {
         m_Stats.Ready     = false;
         m_Stats.LastError = "RTXPT EnvMapBaker update requires a render device, device context, and engine factory";
@@ -381,35 +381,35 @@ bool RTXPTEnvMapBaker::Update(IRenderDevice* pDevice, IDeviceContext* pContext, 
     if (!m_EnvironmentSampler || !m_ImportanceSampler || !m_FallbackEnvironmentMap || !m_FallbackDiffuseIrradiance ||
         !m_FallbackImportanceMap || !m_FallbackRadianceMap || !m_FallbackBRDFLUT)
     {
-        if (!CreateResources(pDevice, pContext, pEngineFactory, m_pStateCache, m_pPSOCache, ComputeSupported))
+        if (!CreateResources(pDevice, pContext, Attribs.pEngineFactory, m_pStateCache, m_pPSOCache, Attribs.ComputeSupported))
             return false;
     }
 
-    const Uint32 ImportanceResolution = NormalizeImportanceResolution(Settings.ImportanceMapResolution);
+    const Uint32 ImportanceResolution = NormalizeImportanceResolution(Attribs.Settings.ImportanceMapResolution);
     const Uint32 ImportanceMipLevels  = MipCountForPowerOfTwo(ImportanceResolution);
-    const bool   SourceChanged        = ForceRebuild || !m_SourceTexture || !m_SourceSRV ||
+    const bool   SourceChanged        = Attribs.ForceRebuild || !m_SourceTexture || !m_SourceSRV ||
         !m_EnvironmentMapSRV || !m_DiffuseIrradianceSRV || !m_BRDFLUTSRV ||
-        EnvMapSourceChanged(m_LastSettings, Settings);
+        EnvMapSourceChanged(m_LastSettings, Attribs.Settings);
     bool        UpdateOk = true;
     std::string SourceLoadError;
     if (SourceChanged)
     {
-        UpdateOk = LoadSourceTexture(pDevice, AssetsRoot, Settings) &&
-            PrecomputeCubemap(pDevice, pContext, pEngineFactory, Settings);
-        if (UpdateOk && !IsProceduralSkyPath(Settings.SourceRelativePath) &&
+        UpdateOk = LoadSourceTexture(pDevice, Attribs.AssetsRoot, Attribs.Settings) &&
+            PrecomputeCubemap(pDevice, pContext, Attribs.pEngineFactory, Attribs.Settings);
+        if (UpdateOk && !IsProceduralSkyPath(Attribs.Settings.SourceRelativePath) &&
             m_Stats.Procedural && !m_Stats.LastError.empty())
         {
             SourceLoadError = m_Stats.LastError;
         }
     }
-    if (SourceLoadError.empty() && !IsProceduralSkyPath(Settings.SourceRelativePath) &&
+    if (SourceLoadError.empty() && !IsProceduralSkyPath(Attribs.Settings.SourceRelativePath) &&
         m_Stats.Procedural && IsEnvironmentSourceLoadError(m_Stats.LastError))
     {
         SourceLoadError = m_Stats.LastError;
     }
 
     const bool ImportanceResourceMissing = m_Stats.ImportanceReady && (!m_ImportanceMap || !m_RadianceMap);
-    const bool ImportanceChanged         = ForceRebuild || SourceChanged ||
+    const bool ImportanceChanged         = Attribs.ForceRebuild || SourceChanged ||
         !m_ImportanceMapSRV || !m_RadianceMapSRV ||
         ImportanceResourceMissing ||
         m_Stats.ImportanceResolution != ImportanceResolution ||
@@ -417,7 +417,7 @@ bool RTXPTEnvMapBaker::Update(IRenderDevice* pDevice, IDeviceContext* pContext, 
     bool ImportanceOk = true;
     if (UpdateOk && ImportanceChanged)
     {
-        ImportanceOk = CreateImportanceMaps(pDevice, pContext, pEngineFactory, Settings, ComputeSupported);
+        ImportanceOk = CreateImportanceMaps(pDevice, pContext, Attribs.pEngineFactory, Attribs.Settings, Attribs.ComputeSupported);
         if (!ImportanceOk)
         {
             const std::string ImportanceError = m_Stats.LastError;
@@ -433,7 +433,7 @@ bool RTXPTEnvMapBaker::Update(IRenderDevice* pDevice, IDeviceContext* pContext, 
 
     if (UpdateOk)
     {
-        m_LastSettings = Settings;
+        m_LastSettings = Attribs.Settings;
         if (SourceChanged || ImportanceChanged)
             ++m_Stats.Version;
 
@@ -452,7 +452,7 @@ bool RTXPTEnvMapBaker::Update(IRenderDevice* pDevice, IDeviceContext* pContext, 
         m_EnvironmentMapSRV && m_DiffuseIrradianceSRV && m_BRDFLUTSRV &&
         m_FallbackImportanceMap && m_FallbackRadianceMap &&
         m_ImportanceMapSRV && m_RadianceMapSRV;
-    UpdateConstants(Settings);
+    UpdateConstants(Attribs.Settings);
     return m_Stats.Ready;
 }
 
@@ -1094,8 +1094,13 @@ bool RTXPTEnvMapBaker::DispatchImportanceBuild(IDeviceContext* pContext, Uint32 
         return false;
     }
 
-    if (!m_BuildImportanceBasePass.Bind(m_ImportanceConstants, m_EnvironmentMapSRV, nullptr, nullptr,
-                                        ImportanceMip0UAV, RadianceMip0UAV, m_EnvironmentSampler) ||
+    RTXPTEnvMapBakerPassBindAttribs BaseBindings;
+    BaseBindings.pConstants     = m_ImportanceConstants;
+    BaseBindings.pSourceCubeSRV = m_EnvironmentMapSRV;
+    BaseBindings.pImportanceUAV = ImportanceMip0UAV;
+    BaseBindings.pRadianceUAV   = RadianceMip0UAV;
+    BaseBindings.pLinearSampler = m_EnvironmentSampler;
+    if (!m_BuildImportanceBasePass.Bind(BaseBindings) ||
         !m_BuildImportanceBasePass.Dispatch(pContext, DispatchGroupsForDim(Resolution), DispatchGroupsForDim(Resolution)))
     {
         m_Stats.Ready           = false;
@@ -1165,8 +1170,16 @@ bool RTXPTEnvMapBaker::DispatchImportanceReduce(IDeviceContext* pContext, Uint32
         }
 
         const Uint32 MipDim = std::max(1u, Resolution >> DstMip);
-        if (!m_ReduceImportanceMipPass.Bind(m_ImportanceConstants, m_EnvironmentMapSRV, SrcImportanceSRV, SrcRadianceSRV,
-                                            ImportanceUAV, RadianceUAV, m_EnvironmentSampler) ||
+
+        RTXPTEnvMapBakerPassBindAttribs ReduceBindings;
+        ReduceBindings.pConstants              = m_ImportanceConstants;
+        ReduceBindings.pSourceCubeSRV          = m_EnvironmentMapSRV;
+        ReduceBindings.pSourceImportanceMipSRV = SrcImportanceSRV;
+        ReduceBindings.pSourceRadianceMipSRV   = SrcRadianceSRV;
+        ReduceBindings.pImportanceUAV          = ImportanceUAV;
+        ReduceBindings.pRadianceUAV            = RadianceUAV;
+        ReduceBindings.pLinearSampler          = m_EnvironmentSampler;
+        if (!m_ReduceImportanceMipPass.Bind(ReduceBindings) ||
             !m_ReduceImportanceMipPass.Dispatch(pContext, DispatchGroupsForDim(MipDim), DispatchGroupsForDim(MipDim), RESOURCE_STATE_TRANSITION_MODE_NONE))
         {
             m_Stats.Ready           = false;

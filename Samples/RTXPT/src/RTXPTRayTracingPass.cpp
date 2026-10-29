@@ -105,96 +105,55 @@ void RTXPTRayTracingPass::UnbindSharcBuffers()
     }
 }
 
-bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
-                                     IDeviceContext*       pContext,
-                                     IEngineFactory*       pEngineFactory,
-                                     IRenderStateCache*    pStateCache,
-                                     IPipelineStateCache*  pPSOCache,
-                                     IBuffer*              pFrameConstants,
-                                     IBuffer*              pMaterialBuffer,
-                                     IBuffer*              pSubInstanceBuffer,
-                                     IBuffer*              pLightBuffer,
-                                     IBuffer*              pLightExBuffer,
-                                     IBuffer*              pLightingControlBuffer,
-                                     IBuffer*              pLightProxyCounters,
-                                     IBuffer*              pLightSamplingProxies,
-                                     IBuffer*              pLocalSamplingBuffer,
-                                     ITextureView*         pEnvironmentLightLookup,
-                                     ITextureView*         pFeedbackTotalWeightUAV,
-                                     ITextureView*         pFeedbackCandidatesUAV,
-                                     ITextureView*         pEnvironmentMapSRV,
-                                     ITextureView*         pEnvironmentImportanceMapSRV,
-                                     ITextureView*         pEnvironmentRadianceMapSRV,
-                                     ISampler*             pEnvironmentSampler,
-                                     ISampler*             pEnvironmentImportanceSampler,
-                                     IBuffer*              pVertexBuffer,
-                                     IBuffer*              pSkinnedVertexBuffer,
-                                     IBuffer*              pIndexBuffer,
-                                     VALUE_TYPE            IndexValueType,
-                                     ITopLevelAS*          pTLAS,
-                                     IDeviceObject* const* pMaterialTextures,
-                                     Uint32                MaterialTextureCount,
-                                     bool                  EnableMaterialTextures,
-                                     bool                  EnableAnyHit,
-                                     bool                  EnableLDSamplerForBSDF,
-                                     bool                  RayTracingSupported,
-                                     bool                  StandaloneRTShadersSupported,
-                                     bool                  EnableInlineVisibility,
-                                     Uint32                NEEMISType,
-                                     Uint32                NEECandidateSamples,
-                                     Uint32                NEEFullSamples,
-                                     bool                  UseFp16Types,
-                                     bool                  EnableHitObject,
-                                     bool                  EnableThreadReorder,
-                                     bool                  EnableSharc)
+bool RTXPTRayTracingPass::Initialize(IRenderDevice* pDevice, IDeviceContext* pContext, const RTXPTRayTracingPassCreateInfo& CreateInfo)
 {
     Reset();
 
-    m_Stats.NEECandidateSamples = NEECandidateSamples;
-    m_Stats.NEEFullSamples      = NEEFullSamples;
+    m_Stats.NEECandidateSamples = CreateInfo.NEECandidateSamples;
+    m_Stats.NEEFullSamples      = CreateInfo.NEEFullSamples;
 
-    if (pDevice == nullptr || pContext == nullptr || pEngineFactory == nullptr)
+    if (pDevice == nullptr || pContext == nullptr || CreateInfo.pEngineFactory == nullptr)
     {
         DEV_ERROR("RTXPT path tracer requires device, context, and engine factory");
         return false;
     }
 
-    if (!RayTracingSupported)
+    if (!CreateInfo.RayTracingSupported)
     {
         DEV_ERROR("RTXPT reference path tracer requires ray tracing support");
         return false;
     }
 
-    if (!StandaloneRTShadersSupported)
+    if (!CreateInfo.StandaloneRTShadersSupported)
     {
         DEV_ERROR("RTXPT reference path tracer requires standalone ray tracing shader support");
         return false;
     }
 
-    if (pFrameConstants == nullptr || pTLAS == nullptr)
+    if (CreateInfo.pFrameConstants == nullptr || CreateInfo.pTLAS == nullptr)
     {
         DEV_ERROR("RTXPT reference path tracer requires frame constants and TLAS");
         return false;
     }
 
-    if (pVertexBuffer == nullptr || pSkinnedVertexBuffer == nullptr || pIndexBuffer == nullptr)
+    if (CreateInfo.pVertexBuffer == nullptr || CreateInfo.pSkinnedVertexBuffer == nullptr || CreateInfo.pIndexBuffer == nullptr)
     {
         DEV_ERROR("RTXPT reference path tracer requires vertex, skinned vertex, and index buffers");
         return false;
     }
 
-    const bool UseTextures         = EnableMaterialTextures && pMaterialTextures != nullptr && MaterialTextureCount > 0;
-    const bool UseAnyHit           = EnableAnyHit;
-    const bool UseInlineVisibility = EnableInlineVisibility &&
+    const bool UseTextures         = CreateInfo.EnableMaterialTextures && CreateInfo.pMaterialTextures != nullptr && CreateInfo.MaterialTextureCount > 0;
+    const bool UseAnyHit           = CreateInfo.EnableAnyHit;
+    const bool UseInlineVisibility = CreateInfo.EnableInlineVisibility &&
         (pDevice->GetAdapterInfo().RayTracing.CapFlags & RAY_TRACING_CAP_FLAG_INLINE_RAY_TRACING) != 0;
     const auto& DeviceInfo        = pDevice->GetDeviceInfo();
     const bool  SupportsHitObject = DeviceInfo.Type == RENDER_DEVICE_TYPE_D3D12 &&
         DeviceInfo.MaxShaderVersion.HLSL >= ShaderVersion{6, 9};
-    const bool UseHitObject     = EnableHitObject && SupportsHitObject;
-    const bool UseThreadReorder = UseHitObject && EnableThreadReorder;
+    const bool UseHitObject     = CreateInfo.EnableHitObject && SupportsHitObject;
+    const bool UseThreadReorder = UseHitObject && CreateInfo.EnableThreadReorder;
     LOG_INFO_MESSAGE("RTXPT scatter rays: ", UseHitObject ? (UseThreadReorder ? "HitObject + reorder" : "HitObject") : "TraceRay");
 
-    m_TLAS = pTLAS;
+    m_TLAS = CreateInfo.pTLAS;
 
     BufferDesc MiniCBDesc;
     MiniCBDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
@@ -211,7 +170,7 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
     }
 
     RefCntAutoPtr<IShaderSourceInputStreamFactory> pShaderSourceFactory;
-    CreateRTXPTShaderSourceFactory(pEngineFactory, "shaders;shaders/PathTracer;shaders/SHARC;" RTXPT_SHARC_SHADER_DIR, &pShaderSourceFactory);
+    CreateRTXPTShaderSourceFactory(CreateInfo.pEngineFactory, "shaders;shaders/PathTracer;shaders/SHARC;" RTXPT_SHARC_SHADER_DIR, &pShaderSourceFactory);
     if (!pShaderSourceFactory)
     {
         DEV_ERROR("Failed to create RTXPT shader source factory");
@@ -240,34 +199,34 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
     m_Stats.SkinnedVertexBufferBound = true;
     m_Stats.IndexBufferBound         = true;
     m_Stats.MaterialTexturesBound    = true;
-    m_Stats.MaterialTextureCount     = UseTextures ? MaterialTextureCount : 0;
+    m_Stats.MaterialTextureCount     = UseTextures ? CreateInfo.MaterialTextureCount : 0;
 
-    IDeviceObject* pMaterialsView = pMaterialBuffer != nullptr ? pMaterialBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
+    IDeviceObject* pMaterialsView = CreateInfo.pMaterialBuffer != nullptr ? CreateInfo.pMaterialBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
     IDeviceObject* pSubInstanceView =
-        pSubInstanceBuffer != nullptr ? pSubInstanceBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
-    IDeviceObject* pLightsView   = pLightBuffer != nullptr ? pLightBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
-    IDeviceObject* pLightsExView = pLightExBuffer != nullptr ? pLightExBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
+        CreateInfo.pSubInstanceBuffer != nullptr ? CreateInfo.pSubInstanceBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
+    IDeviceObject* pLightsView   = CreateInfo.pLightBuffer != nullptr ? CreateInfo.pLightBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
+    IDeviceObject* pLightsExView = CreateInfo.pLightExBuffer != nullptr ? CreateInfo.pLightExBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
     IDeviceObject* pLightingControlView =
-        pLightingControlBuffer != nullptr ? pLightingControlBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
+        CreateInfo.pLightingControlBuffer != nullptr ? CreateInfo.pLightingControlBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
     IDeviceObject* pLightProxyCountersView =
-        pLightProxyCounters != nullptr ? pLightProxyCounters->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
+        CreateInfo.pLightProxyCounters != nullptr ? CreateInfo.pLightProxyCounters->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
     IDeviceObject* pLightSamplingProxiesView =
-        pLightSamplingProxies != nullptr ? pLightSamplingProxies->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
+        CreateInfo.pLightSamplingProxies != nullptr ? CreateInfo.pLightSamplingProxies->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
     IDeviceObject* pLocalSamplingView =
-        pLocalSamplingBuffer != nullptr ? pLocalSamplingBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
-    IDeviceObject* pEnvironmentMapView               = pEnvironmentMapSRV;
-    IDeviceObject* pEnvironmentImportanceMapView     = pEnvironmentImportanceMapSRV;
-    IDeviceObject* pEnvironmentRadianceMapView       = pEnvironmentRadianceMapSRV;
-    IDeviceObject* pEnvironmentSamplerView           = pEnvironmentSampler;
-    IDeviceObject* pEnvironmentImportanceSamplerView = pEnvironmentImportanceSampler;
+        CreateInfo.pLocalSamplingBuffer != nullptr ? CreateInfo.pLocalSamplingBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
+    IDeviceObject* pEnvironmentMapView               = CreateInfo.pEnvironmentMapSRV;
+    IDeviceObject* pEnvironmentImportanceMapView     = CreateInfo.pEnvironmentImportanceMapSRV;
+    IDeviceObject* pEnvironmentRadianceMapView       = CreateInfo.pEnvironmentRadianceMapSRV;
+    IDeviceObject* pEnvironmentSamplerView           = CreateInfo.pEnvironmentSampler;
+    IDeviceObject* pEnvironmentImportanceSamplerView = CreateInfo.pEnvironmentImportanceSampler;
     IDeviceObject* pVertexView =
-        pVertexBuffer != nullptr ? pVertexBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
+        CreateInfo.pVertexBuffer != nullptr ? CreateInfo.pVertexBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
     IDeviceObject* pSkinnedVertexView =
-        pSkinnedVertexBuffer != nullptr ? pSkinnedVertexBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
+        CreateInfo.pSkinnedVertexBuffer != nullptr ? CreateInfo.pSkinnedVertexBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
 
     // The GLTF loader creates the index buffer in BUFFER_MODE_FORMATTED but does not pre-create a typed view;
     // create one here so HLSL can declare it as Buffer<uint>.
-    if (IndexValueType != VT_UINT16 && IndexValueType != VT_UINT32)
+    if (CreateInfo.IndexValueType != VT_UINT16 && CreateInfo.IndexValueType != VT_UINT32)
     {
         LOG_ERROR_MESSAGE("Reference path tracer requires VT_UINT16 or VT_UINT32 indices");
         return false;
@@ -275,10 +234,10 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
     BufferViewDesc IndexViewDesc;
     IndexViewDesc.Name                 = "RTXPT reference index buffer SRV";
     IndexViewDesc.ViewType             = BUFFER_VIEW_SHADER_RESOURCE;
-    IndexViewDesc.Format.ValueType     = IndexValueType;
+    IndexViewDesc.Format.ValueType     = CreateInfo.IndexValueType;
     IndexViewDesc.Format.NumComponents = 1;
     IndexViewDesc.Format.IsNormalized  = false;
-    pIndexBuffer->CreateView(IndexViewDesc, &m_IndexBufferView);
+    CreateInfo.pIndexBuffer->CreateView(IndexViewDesc, &m_IndexBufferView);
     VERIFY(m_IndexBufferView, "Failed to create RTXPT index buffer view");
     if (!m_IndexBufferView)
         return false;
@@ -294,7 +253,7 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
         ShaderCI.ShaderCompiler                  = SHADER_COMPILER_DXC;
         ShaderCI.CompileFlags                    = SHADER_COMPILE_FLAG_PACK_MATRIX_ROW_MAJOR;
         const bool SharcVariant                  = Variant == RTXPTPathTraceVariant::SharcTrain || Variant == RTXPTPathTraceVariant::SharcFill;
-        if (UseFp16Types || SharcVariant)
+        if (CreateInfo.UseFp16Types || SharcVariant)
             ShaderCI.CompileFlags |= SHADER_COMPILE_FLAG_ENABLE_16BIT_TYPES;
         ShaderCI.ShaderOptimizationLevel = SHADER_OPTIMIZATION_LEVEL_3;
         ShaderCI.HLSLVersion             = SupportsHitObject ? ShaderVersion{6, 9} : ShaderVersion{6, 5};
@@ -306,19 +265,19 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
         Macros.Add("RTXPT_SHARC_CONSUME", Variant == RTXPTPathTraceVariant::SharcFill ? 1 : 0);
         Macros.Add("USE_DX_HIT_OBJECT_EXTENSION", UseHitObject ? 1 : 0);
         Macros.Add("USE_DX_MAYBE_REORDER_THREADS", UseThreadReorder ? 1 : 0);
-        Macros.Add("RTXPT_LP_TYPES_USE_16BIT_PRECISION", UseFp16Types ? 1 : 0);
+        Macros.Add("RTXPT_LP_TYPES_USE_16BIT_PRECISION", CreateInfo.UseFp16Types ? 1 : 0);
         Macros.Add("PATH_TRACER_MODE", GetVariantModeMacro(Variant));
-        Macros.Add("RTXPT_NEE_TOTAL_CANDIDATE_SAMPLE_COUNT", NEECandidateSamples);
-        Macros.Add("RTXPT_NEE_FULL_SAMPLE_COUNT", NEEFullSamples);
-        Macros.Add("RTXPT_USE_APPROXIMATE_MIS", NEEMISType == 2 || (NEEMISType == 1 && Variant != RTXPTPathTraceVariant::Reference) ? 1 : 0);
+        Macros.Add("RTXPT_NEE_TOTAL_CANDIDATE_SAMPLE_COUNT", CreateInfo.NEECandidateSamples);
+        Macros.Add("RTXPT_NEE_FULL_SAMPLE_COUNT", CreateInfo.NEEFullSamples);
+        Macros.Add("RTXPT_USE_APPROXIMATE_MIS", CreateInfo.NEEMISType == 2 || (CreateInfo.NEEMISType == 1 && Variant != RTXPTPathTraceVariant::Reference) ? 1 : 0);
         Macros.Add("RTXPT_USE_INLINE_VISIBILITY", UseInlineVisibility ? 1 : 0);
-        Macros.Add("RTXPT_INDEX_BUFFER_UINT16", IndexValueType == VT_UINT16 ? 1 : 0);
+        Macros.Add("RTXPT_INDEX_BUFFER_UINT16", CreateInfo.IndexValueType == VT_UINT16 ? 1 : 0);
         if (UseTextures)
         {
             Macros.Add("ENABLE_MATERIAL_TEXTURES", 1);
-            Macros.Add("MATERIAL_TEXTURE_COUNT", static_cast<int>(MaterialTextureCount));
+            Macros.Add("MATERIAL_TEXTURE_COUNT", static_cast<int>(CreateInfo.MaterialTextureCount));
         }
-        Macros.Add("RTXPT_ENABLE_LOW_DISCREPANCY_SAMPLER_FOR_BSDF", EnableLDSamplerForBSDF ? 1 : 0);
+        Macros.Add("RTXPT_ENABLE_LOW_DISCREPANCY_SAMPLER_FOR_BSDF", CreateInfo.EnableLDSamplerForBSDF ? 1 : 0);
         ShaderCI.Macros = Macros;
 
         RefCntAutoPtr<IShader> pRayGen;
@@ -326,7 +285,7 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
         ShaderCI.Desc.Name       = "RTXPT path trace raygen";
         ShaderCI.FilePath        = "PathTracer/PathTracerSample.rgen";
         ShaderCI.EntryPoint      = "main";
-        pStateCache->CreateShader(ShaderCI, &pRayGen);
+        CreateInfo.pStateCache->CreateShader(ShaderCI, &pRayGen);
 
         RefCntAutoPtr<IShader> pMiss;
         if (!UseHitObject)
@@ -335,7 +294,7 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
             ShaderCI.Desc.Name       = "RTXPT path trace miss";
             ShaderCI.FilePath        = "PathTracer/PathTracerMiss.rmiss";
             ShaderCI.EntryPoint      = "main";
-            pStateCache->CreateShader(ShaderCI, &pMiss);
+            CreateInfo.pStateCache->CreateShader(ShaderCI, &pMiss);
         }
 
         RefCntAutoPtr<IShader> pVisibilityMiss;
@@ -345,7 +304,7 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
             ShaderCI.Desc.Name       = "RTXPT path trace visibility miss";
             ShaderCI.FilePath        = "PathTracer/PathTracerVisibilityMiss.rmiss";
             ShaderCI.EntryPoint      = "main";
-            pStateCache->CreateShader(ShaderCI, &pVisibilityMiss);
+            CreateInfo.pStateCache->CreateShader(ShaderCI, &pVisibilityMiss);
         }
 
         RefCntAutoPtr<IShader> pClosestHit;
@@ -353,7 +312,7 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
         ShaderCI.Desc.Name       = "RTXPT path trace closest hit";
         ShaderCI.FilePath        = "PathTracer/PathTracerClosestHit.rchit";
         ShaderCI.EntryPoint      = "main";
-        pStateCache->CreateShader(ShaderCI, &pClosestHit);
+        CreateInfo.pStateCache->CreateShader(ShaderCI, &pClosestHit);
 
         RefCntAutoPtr<IShader> pAnyHit;
         RefCntAutoPtr<IShader> pVisibilityAnyHit;
@@ -364,14 +323,14 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
             ShaderCI.FilePath        = "PathTracer/PathTracerAnyHit.rahit";
             ShaderCI.EntryPoint      = "main";
             if (!UseHitObject)
-                pStateCache->CreateShader(ShaderCI, &pAnyHit);
+                CreateInfo.pStateCache->CreateShader(ShaderCI, &pAnyHit);
             if (!UseInlineVisibility)
             {
                 ShaderCI.Desc.Name  = "RTXPT visibility any hit";
                 ShaderCI.EntryPoint = "VisibilityMain";
                 Macros.Add("RTXPT_VISIBILITY_ANY_HIT", 1);
                 ShaderCI.Macros = Macros;
-                pStateCache->CreateShader(ShaderCI, &pVisibilityAnyHit);
+                CreateInfo.pStateCache->CreateShader(ShaderCI, &pVisibilityAnyHit);
             }
         }
 
@@ -463,8 +422,8 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
         }
         PSOCreateInfo.PSODesc.ResourceLayout = ResourceLayout;
 
-        PSOCreateInfo.pPSOCache = SelectRTXPTPipelineStateCache(pDevice, PSOCreateInfo, pPSOCache);
-        pStateCache->CreateRayTracingPipelineState(PSOCreateInfo, &State.PSO);
+        PSOCreateInfo.pPSOCache = SelectRTXPTPipelineStateCache(pDevice, PSOCreateInfo, CreateInfo.pPSOCache);
+        CreateInfo.pStateCache->CreateRayTracingPipelineState(PSOCreateInfo, &State.PSO);
         VERIFY(State.PSO, "Failed to create RTXPT path trace RT PSO");
         if (!State.PSO)
         {
@@ -507,7 +466,7 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
 
         const bool BuildDenoisingLayersVariant = Variant == RTXPTPathTraceVariant::BuildDenoisingLayers;
         const bool FrameConstantsBound =
-            SetStaticForStages(ConstStages, "g_Const", pFrameConstants, "frame constants");
+            SetStaticForStages(ConstStages, "g_Const", CreateInfo.pFrameConstants, "frame constants");
         // BUILD always reads the current sub-sample from g_MiniConst. FILL may reflect it through
         // hit shaders, but some Fill PSO resource tables omit it, so bind opportunistically there.
         const bool MiniConstantsRequired = BuildDenoisingLayersVariant;
@@ -538,8 +497,8 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
             SetStaticForStages(DirectLightStages, "t_LightProxyCounters", pLightProxyCountersView, "LightsBaker proxy counters", false, &LightProxyCountersFound) &&
             SetStaticForStages(DirectLightStages, "t_LightSamplingProxies", pLightSamplingProxiesView, "LightsBaker sampling proxies", false, &LightSamplingProxiesFound) &&
             SetStaticForStages(DirectLightStages, "t_LocalSamplingBuffer", pLocalSamplingView, "LightsBaker local sampling buffer", false, &LocalSamplingBufferFound) &&
-            SetStaticForStages(DirectLightStages, "u_FeedbackTotalWeight", pFeedbackTotalWeightUAV, "LightsBaker feedback total weight", false, &FeedbackTotalWeightFound) &&
-            SetStaticForStages(DirectLightStages, "u_FeedbackCandidates", pFeedbackCandidatesUAV, "LightsBaker feedback candidates", false, &FeedbackCandidatesFound);
+            SetStaticForStages(DirectLightStages, "u_FeedbackTotalWeight", CreateInfo.pFeedbackTotalWeightUAV, "LightsBaker feedback total weight", false, &FeedbackTotalWeightFound) &&
+            SetStaticForStages(DirectLightStages, "u_FeedbackCandidates", CreateInfo.pFeedbackCandidatesUAV, "LightsBaker feedback candidates", false, &FeedbackCandidatesFound);
         const bool LightsBakerBridgeReflected =
             LightingControlFound || LightProxyCountersFound || LightSamplingProxiesFound ||
             LocalSamplingBufferFound || FeedbackTotalWeightFound || FeedbackCandidatesFound;
@@ -549,7 +508,7 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
         bool       EnvironmentSamplerFound           = false;
         bool       EnvironmentImportanceSamplerFound = false;
         const bool EnvironmentBridgeOk =
-            SetStaticForStages(EnvStages, "t_EnvironmentLightLookup", pEnvironmentLightLookup, "environment light lookup", false) &&
+            SetStaticForStages(EnvStages, "t_EnvironmentLightLookup", CreateInfo.pEnvironmentLightLookup, "environment light lookup", false) &&
             SetStaticForStages(EnvStages, "t_EnvironmentMap", pEnvironmentMapView, "environment map", false, &EnvironmentMapFound) &&
             SetStaticForStages(EnvStages, "t_EnvironmentImportanceMap", pEnvironmentImportanceMapView, "environment importance map", false, &EnvironmentImportanceMapFound) &&
             SetStaticForStages(EnvStages, "t_EnvironmentRadianceMap", pEnvironmentRadianceMapView, "environment radiance map", false, &EnvironmentRadianceMapFound) &&
@@ -602,14 +561,14 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
                 m_Stats.MaterialTexturesBound = false;
                 return false;
             }
-            pClosestHitTexVar->SetArray(pMaterialTextures, 0, MaterialTextureCount);
+            pClosestHitTexVar->SetArray(CreateInfo.pMaterialTextures, 0, CreateInfo.MaterialTextureCount);
             if (UseHitObject)
             {
                 if (auto* pRayGenTexVar = State.SRB->GetVariableByName(SHADER_TYPE_RAY_GEN, "t_BindlessTextures"))
-                    pRayGenTexVar->SetArray(pMaterialTextures, 0, MaterialTextureCount);
+                    pRayGenTexVar->SetArray(CreateInfo.pMaterialTextures, 0, CreateInfo.MaterialTextureCount);
             }
             if (pAnyHitTexVar != nullptr)
-                pAnyHitTexVar->SetArray(pMaterialTextures, 0, MaterialTextureCount);
+                pAnyHitTexVar->SetArray(CreateInfo.pMaterialTextures, 0, CreateInfo.MaterialTextureCount);
         }
 
         ShaderBindingTableDesc SBTDesc;
@@ -657,7 +616,7 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
         }
     }
 
-    if (EnableSharc && (!CreateVariant(RTXPTPathTraceVariant::SharcTrain) || !CreateVariant(RTXPTPathTraceVariant::SharcFill)))
+    if (CreateInfo.EnableSharc && (!CreateVariant(RTXPTPathTraceVariant::SharcTrain) || !CreateVariant(RTXPTPathTraceVariant::SharcFill)))
         return false;
 
     m_Stats.EnvironmentBridgeBound = EnvironmentBridgeReflectedAny && m_Stats.EnvironmentBridgeBound;
@@ -837,19 +796,8 @@ bool RTXPTRayTracingPass::Dispatch(IDeviceContext*                pContext,
     return true;
 }
 
-bool RTXPTRayTracingPass::Trace(IDeviceContext* pContext,
-                                ITextureView*   pOutputUAV,
-                                ITextureView*   pDepthUAV,
-                                ITextureView*   pScreenMotionVectorsUAV,
-                                Uint32          Width,
-                                Uint32          Height)
+bool RTXPTRayTracingPass::Trace(IDeviceContext* pContext, const RTXPTRayTracingDispatch& DispatchInfo)
 {
-    RTXPTRayTracingDispatch DispatchInfo;
-    DispatchInfo.pOutputColorUAV   = pOutputUAV;
-    DispatchInfo.pDepthUAV         = pDepthUAV;
-    DispatchInfo.pMotionVectorsUAV = pScreenMotionVectorsUAV;
-    DispatchInfo.Width             = Width;
-    DispatchInfo.Height            = Height;
     return Dispatch(pContext, RTXPTPathTraceVariant::Reference, DispatchInfo);
 }
 

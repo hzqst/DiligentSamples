@@ -109,6 +109,16 @@ struct RTXPTLightsBakerStats
     std::string LastError;
 };
 
+struct RTXPTLightsBakerCreateInfo
+{
+    IEngineFactory*      pEngineFactory   = nullptr;
+    IRenderStateCache*   pStateCache      = nullptr;
+    IPipelineStateCache* pPSOCache        = nullptr;
+    Uint32               Width            = 0;
+    Uint32               Height           = 0;
+    bool                 ComputeSupported = false;
+};
+
 class RTXPTLightsBaker
 {
 public:
@@ -119,7 +129,7 @@ public:
     // rebuilt the emissive-triangle buffer in place, so the power weights/proxies reflect current geometry).
     void RequestProxyRebuild();
 
-    bool CreateResources(IRenderDevice* pDevice, IEngineFactory* pEngineFactory, IRenderStateCache* pStateCache, IPipelineStateCache* pPSOCache, Uint32 Width, Uint32 Height, bool ComputeSupported);
+    bool CreateResources(IRenderDevice* pDevice, const RTXPTLightsBakerCreateInfo& CreateInfo);
     bool UpdateBegin(IRenderDevice* pDevice, const RTXPTLights& Lights, const RTXPTLightsBakerSettings& Settings);
     bool PrepareLightBuffers(IDeviceContext* pContext);
     void UpdateFrame(const float4x4& ViewProj, const float3& CameraPosition);

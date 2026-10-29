@@ -397,21 +397,12 @@ bool RTXPTBloomPass::CreateIntermediateTexture(IRenderDevice*           pDevice,
         Texture->GetDefaultView(TEXTURE_VIEW_RENDER_TARGET) != nullptr;
 }
 
-bool RTXPTBloomPass::CreateIntermediateTextures(IRenderDevice*           pDevice,
-                                                Uint32                   Downscale1Width,
-                                                Uint32                   Downscale1Height,
-                                                Uint32                   Downscale2Width,
-                                                Uint32                   Downscale2Height,
-                                                TEXTURE_FORMAT           Format,
-                                                RefCntAutoPtr<ITexture>& Downscale1,
-                                                RefCntAutoPtr<ITexture>& Downscale2,
-                                                RefCntAutoPtr<ITexture>& Blur1,
-                                                RefCntAutoPtr<ITexture>& Blur2)
+bool RTXPTBloomPass::CreateIntermediateTextures(IRenderDevice* pDevice, TEXTURE_FORMAT Format, IntermediateTextures& Textures)
 {
-    return CreateIntermediateTexture(pDevice, "RTXPT bloom downscale 1", Downscale1Width, Downscale1Height, Format, Downscale1) &&
-        CreateIntermediateTexture(pDevice, "RTXPT bloom downscale 2", Downscale2Width, Downscale2Height, Format, Downscale2) &&
-        CreateIntermediateTexture(pDevice, "RTXPT bloom blur 1", Downscale2Width, Downscale2Height, Format, Blur1) &&
-        CreateIntermediateTexture(pDevice, "RTXPT bloom blur 2", Downscale2Width, Downscale2Height, Format, Blur2);
+    return CreateIntermediateTexture(pDevice, "RTXPT bloom downscale 1", Textures.Downscale1Width, Textures.Downscale1Height, Format, Textures.Downscale1) &&
+        CreateIntermediateTexture(pDevice, "RTXPT bloom downscale 2", Textures.Downscale2Width, Textures.Downscale2Height, Format, Textures.Downscale2) &&
+        CreateIntermediateTexture(pDevice, "RTXPT bloom blur 1", Textures.Downscale2Width, Textures.Downscale2Height, Format, Textures.Blur1) &&
+        CreateIntermediateTexture(pDevice, "RTXPT bloom blur 2", Textures.Downscale2Width, Textures.Downscale2Height, Format, Textures.Blur2);
 }
 
 bool RTXPTBloomPass::ResizeResources(IRenderDevice* pDevice, Uint32 Width, Uint32 Height, TEXTURE_FORMAT Format)
@@ -419,21 +410,17 @@ bool RTXPTBloomPass::ResizeResources(IRenderDevice* pDevice, Uint32 Width, Uint3
     if (!IsReady() || pDevice == nullptr || Width == 0 || Height == 0 || Format == TEX_FORMAT_UNKNOWN)
         return false;
 
-    const Uint32 Downscale1Width  = std::max(1u, (Width + 1u) / 2u);
-    const Uint32 Downscale1Height = std::max(1u, (Height + 1u) / 2u);
-    const Uint32 Downscale2Width  = std::max(1u, (Downscale1Width + 1u) / 2u);
-    const Uint32 Downscale2Height = std::max(1u, (Downscale1Height + 1u) / 2u);
+    IntermediateTextures Textures;
+    Textures.Downscale1Width  = std::max(1u, (Width + 1u) / 2u);
+    Textures.Downscale1Height = std::max(1u, (Height + 1u) / 2u);
+    Textures.Downscale2Width  = std::max(1u, (Textures.Downscale1Width + 1u) / 2u);
+    Textures.Downscale2Height = std::max(1u, (Textures.Downscale1Height + 1u) / 2u);
 
     const bool FormatChanged    = Format != m_Format;
     const bool RecreateTextures = FormatChanged || m_Width != Width || m_Height != Height ||
         !m_Downscale1 || !m_Downscale2 || !m_Blur1 || !m_Blur2;
 
-    RefCntAutoPtr<ITexture> Downscale1;
-    RefCntAutoPtr<ITexture> Downscale2;
-    RefCntAutoPtr<ITexture> Blur1;
-    RefCntAutoPtr<ITexture> Blur2;
-    if (RecreateTextures &&
-        !CreateIntermediateTextures(pDevice, Downscale1Width, Downscale1Height, Downscale2Width, Downscale2Height, Format, Downscale1, Downscale2, Blur1, Blur2))
+    if (RecreateTextures && !CreateIntermediateTextures(pDevice, Format, Textures))
     {
         DEV_ERROR("RTXPT bloom pass failed to create intermediate textures");
         return false;
@@ -449,17 +436,17 @@ bool RTXPTBloomPass::ResizeResources(IRenderDevice* pDevice, Uint32 Width, Uint3
     if (!RecreateTextures)
         return true;
 
-    m_Downscale1            = std::move(Downscale1);
-    m_Downscale2            = std::move(Downscale2);
-    m_Blur1                 = std::move(Blur1);
-    m_Blur2                 = std::move(Blur2);
+    m_Downscale1            = std::move(Textures.Downscale1);
+    m_Downscale2            = std::move(Textures.Downscale2);
+    m_Blur1                 = std::move(Textures.Blur1);
+    m_Blur2                 = std::move(Textures.Blur2);
     m_Format                = Format;
     m_Width                 = Width;
     m_Height                = Height;
-    m_Stats.DownscaleWidth  = Downscale1Width;
-    m_Stats.DownscaleHeight = Downscale1Height;
-    m_Stats.BlurWidth       = Downscale2Width;
-    m_Stats.BlurHeight      = Downscale2Height;
+    m_Stats.DownscaleWidth  = Textures.Downscale1Width;
+    m_Stats.DownscaleHeight = Textures.Downscale1Height;
+    m_Stats.BlurWidth       = Textures.Downscale2Width;
+    m_Stats.BlurHeight      = Textures.Downscale2Height;
     return true;
 }
 
@@ -482,26 +469,20 @@ bool RTXPTBloomPass::DrawFullscreen(IDeviceContext*         pContext,
     return true;
 }
 
-bool RTXPTBloomPass::DrawCopy(IDeviceContext* pContext,
-                              ITextureView*   pSourceSRV,
-                              ITextureView*   pTargetRTV,
-                              Uint32          Width,
-                              Uint32          Height,
-                              bool            BlendEnabled,
-                              float           BlendFactor)
+bool RTXPTBloomPass::DrawCopy(IDeviceContext* pContext, const CopyAttribs& Attribs)
 {
-    IShaderResourceBinding* pSRB = BlendEnabled ? m_ApplySRB.RawPtr() : m_CopySRB.RawPtr();
-    IPipelineState*         pPSO = BlendEnabled ? m_ApplyPSO.RawPtr() : m_CopyPSO.RawPtr();
-    if (!SetSRBVariable(pSRB, SHADER_TYPE_PIXEL, "t_Source", pSourceSRV, true))
+    IShaderResourceBinding* pSRB = Attribs.BlendEnabled ? m_ApplySRB.RawPtr() : m_CopySRB.RawPtr();
+    IPipelineState*         pPSO = Attribs.BlendEnabled ? m_ApplyPSO.RawPtr() : m_CopyPSO.RawPtr();
+    if (!SetSRBVariable(pSRB, SHADER_TYPE_PIXEL, "t_Source", Attribs.pSourceSRV, true))
         return false;
 
-    if (BlendEnabled)
+    if (Attribs.BlendEnabled)
     {
-        const float BlendFactors[4] = {BlendFactor, BlendFactor, BlendFactor, BlendFactor};
+        const float BlendFactors[4] = {Attribs.BlendFactor, Attribs.BlendFactor, Attribs.BlendFactor, Attribs.BlendFactor};
         pContext->SetBlendFactors(BlendFactors);
     }
 
-    return DrawFullscreen(pContext, pPSO, pSRB, pTargetRTV, Width, Height);
+    return DrawFullscreen(pContext, pPSO, pSRB, Attribs.pTargetRTV, Attribs.Width, Attribs.Height);
 }
 
 bool RTXPTBloomPass::DrawBlur(IDeviceContext*         pContext,
@@ -559,14 +540,34 @@ bool RTXPTBloomPass::Render(IDeviceContext* pContext, const RTXPTBloomRenderAttr
     if (!GetBloomTextureViews(m_Downscale1, m_Downscale2, m_Blur1, m_Blur2, Views))
         return false;
 
+    CopyAttribs Downscale1Copy;
+    Downscale1Copy.pSourceSRV = Attribs.pSourceSRV;
+    Downscale1Copy.pTargetRTV = Views.pDownscale1RTV;
+    Downscale1Copy.Width      = m_Stats.DownscaleWidth;
+    Downscale1Copy.Height     = m_Stats.DownscaleHeight;
+
+    CopyAttribs Downscale2Copy;
+    Downscale2Copy.pSourceSRV = Views.pDownscale1SRV;
+    Downscale2Copy.pTargetRTV = Views.pDownscale2RTV;
+    Downscale2Copy.Width      = m_Stats.BlurWidth;
+    Downscale2Copy.Height     = m_Stats.BlurHeight;
+
+    CopyAttribs ApplyCopy;
+    ApplyCopy.pSourceSRV   = Views.pBlur2SRV;
+    ApplyCopy.pTargetRTV   = Attribs.pTargetRTV;
+    ApplyCopy.Width        = Attribs.Width;
+    ApplyCopy.Height       = Attribs.Height;
+    ApplyCopy.BlendEnabled = true;
+    ApplyCopy.BlendFactor  = Attribs.Params.Intensity;
+
     const bool Rendered =
-        DrawCopy(pContext, Attribs.pSourceSRV, Views.pDownscale1RTV, m_Stats.DownscaleWidth, m_Stats.DownscaleHeight, false, 1.0f) &&
-        DrawCopy(pContext, Views.pDownscale1SRV, Views.pDownscale2RTV, m_Stats.BlurWidth, m_Stats.BlurHeight, false, 1.0f) &&
+        DrawCopy(pContext, Downscale1Copy) &&
+        DrawCopy(pContext, Downscale2Copy) &&
         UpdateBlurConstants(pContext, m_HBlurCB, float2{1.0f / static_cast<float>(m_Stats.BlurWidth), 0.0f}, EffectiveSigma) &&
         UpdateBlurConstants(pContext, m_VBlurCB, float2{0.0f, 1.0f / static_cast<float>(m_Stats.BlurHeight)}, EffectiveSigma) &&
         DrawBlur(pContext, m_HBlurSRB, Views.pDownscale2SRV, Views.pBlur1RTV, m_Stats.BlurWidth, m_Stats.BlurHeight) &&
         DrawBlur(pContext, m_VBlurSRB, Views.pBlur1SRV, Views.pBlur2RTV, m_Stats.BlurWidth, m_Stats.BlurHeight) &&
-        DrawCopy(pContext, Views.pBlur2SRV, Attribs.pTargetRTV, Attribs.Width, Attribs.Height, true, Attribs.Params.Intensity);
+        DrawCopy(pContext, ApplyCopy);
     if (!Rendered)
         return false;
 

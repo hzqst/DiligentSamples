@@ -119,24 +119,19 @@ void RTXPTAccelerationStructures::Reset()
     m_Stats = {};
 }
 
-bool RTXPTAccelerationStructures::BuildScene(IRenderDevice*                   pDevice,
-                                             IDeviceContext*                  pContext,
-                                             const RTXPTSceneGraphData&       SceneData,
-                                             VALUE_TYPE                       IndexType,
-                                             const RTXPTSkinnedSceneGeometry* pSkinnedGeometry,
-                                             bool                             RayTracingSupported,
-                                             IEngineFactory*                  Factory)
+bool RTXPTAccelerationStructures::BuildScene(IRenderDevice* pDevice, IDeviceContext* pContext, const RTXPTAccelerationStructuresBuildAttribs& BuildAttribs)
 {
     Reset();
-    m_Stats.RayTracingSupported = RayTracingSupported;
+    m_Stats.RayTracingSupported = BuildAttribs.RayTracingSupported;
 
-    if (pDevice == nullptr || pContext == nullptr)
+    if (pDevice == nullptr || pContext == nullptr || BuildAttribs.pSceneData == nullptr)
     {
-        DEV_ERROR("RTXPT acceleration structure build requires a device and device context");
+        DEV_ERROR("RTXPT acceleration structure build requires a device, device context and scene data");
         return false;
     }
+    const RTXPTSceneGraphData& SceneData = *BuildAttribs.pSceneData;
 
-    if (!RayTracingSupported)
+    if (!BuildAttribs.RayTracingSupported)
     {
         DEV_ERROR("RTXPT acceleration structure build requires ray tracing support");
         return false;
@@ -148,17 +143,17 @@ bool RTXPTAccelerationStructures::BuildScene(IRenderDevice*                   pD
         return false;
     }
 
-    if (IndexType != VT_UINT16 && IndexType != VT_UINT32)
+    if (BuildAttribs.IndexType != VT_UINT16 && BuildAttribs.IndexType != VT_UINT32)
     {
         LOG_ERROR_MESSAGE("RTXPT index buffer has an unsupported index size");
         return false;
     }
-    const Uint32 IndexSize = GetValueSize(IndexType);
+    const Uint32 IndexSize = GetValueSize(BuildAttribs.IndexType);
 
-    const bool     SkinnedGeometryReady  = pSkinnedGeometry != nullptr && pSkinnedGeometry->IsReady();
-    const Uint32   SkinningDispatchCount = pSkinnedGeometry != nullptr ? pSkinnedGeometry->GetStats().DispatchCount : 0;
+    const bool     SkinnedGeometryReady  = BuildAttribs.pSkinnedGeometry != nullptr && BuildAttribs.pSkinnedGeometry->IsReady();
+    const Uint32   SkinningDispatchCount = BuildAttribs.pSkinnedGeometry != nullptr ? BuildAttribs.pSkinnedGeometry->GetStats().DispatchCount : 0;
     IBuffer* const pSkinnedVertexBuffer  = SkinnedGeometryReady ?
-        pSkinnedGeometry->GetSkinnedVertexBuffer() :
+        BuildAttribs.pSkinnedGeometry->GetSkinnedVertexBuffer() :
         nullptr;
 
     std::vector<SubInstanceData> SubInstances;
@@ -264,12 +259,12 @@ bool RTXPTAccelerationStructures::BuildScene(IRenderDevice*                   pD
                 continue;
 
             const RTXPTSkinnedSceneNodeGeometry* pSkinnedNode =
-                pSkinnedGeometry != nullptr ?
-                pSkinnedGeometry->FindNode(Instance.ModelAssetId, InstanceId, pNode) :
+                BuildAttribs.pSkinnedGeometry != nullptr ?
+                BuildAttribs.pSkinnedGeometry->FindNode(Instance.ModelAssetId, InstanceId, pNode) :
                 nullptr;
             if (pNode->pSkin != nullptr)
             {
-                if (pSkinnedGeometry == nullptr)
+                if (BuildAttribs.pSkinnedGeometry == nullptr)
                 {
                     LOG_ERROR_MESSAGE("RTXPT skinned geometry requires current-frame skinned geometry");
                     return false;
@@ -366,7 +361,7 @@ bool RTXPTAccelerationStructures::BuildScene(IRenderDevice*                   pD
                 TriangleDesc.VertexValueType      = Position.ValueType;
                 TriangleDesc.VertexComponentCount = Position.ComponentCount;
                 TriangleDesc.MaxPrimitiveCount    = TriangleCount;
-                TriangleDesc.IndexType            = IsIndexed ? IndexType : VT_UNDEFINED;
+                TriangleDesc.IndexType            = IsIndexed ? BuildAttribs.IndexType : VT_UNDEFINED;
 
                 BLASBuildTriangleData BuildData;
                 BuildData.GeometryName         = TriangleDesc.GeometryName;
@@ -395,7 +390,7 @@ bool RTXPTAccelerationStructures::BuildScene(IRenderDevice*                   pD
                 {
                     BuildData.pIndexBuffer = pIndexBuffer;
                     BuildData.IndexOffset  = (FirstIndex + Primitive.FirstIndex) * IndexSize;
-                    BuildData.IndexType    = IndexType;
+                    BuildData.IndexType    = BuildAttribs.IndexType;
                 }
 
                 TriangleDescs.emplace_back(TriangleDesc);
@@ -591,13 +586,17 @@ bool RTXPTAccelerationStructures::BuildScene(IRenderDevice*                   pD
 
     if (!UploadSubInstanceTransforms(pContext)) return false;
 
-    if (Factory != nullptr)
+    if (BuildAttribs.pEngineFactory != nullptr)
     {
         std::vector<GPUTLAS::InstanceData> Instances;
         for (const auto& Inst : m_TLASInstances)
             Instances.push_back({Inst.CustomId, Inst.CustomId, Inst.Mask});
-        m_Stats.GPUTLASActive = m_GPUTLAS.Initialize(pDevice, pContext, Factory, m_InstanceBuffer,
-                                                     Instances.data(), static_cast<Uint32>(Instances.size()));
+        GPUTLAS::CreateInfo GPUTLASCI;
+        GPUTLASCI.Factory        = BuildAttribs.pEngineFactory;
+        GPUTLASCI.InstanceBuffer = m_InstanceBuffer;
+        GPUTLASCI.Instances      = Instances.data();
+        GPUTLASCI.Count          = static_cast<Uint32>(Instances.size());
+        m_Stats.GPUTLASActive    = m_GPUTLAS.Initialize(pDevice, pContext, GPUTLASCI);
         if (m_Stats.GPUTLASActive)
         {
             m_Stats.GPUInstanceDataSize          = m_GPUTLAS.GetMemorySize();

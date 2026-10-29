@@ -809,9 +809,14 @@ bool RTXPTSample::UpdateEnvMapBaker(bool ForceRebuild)
     if (m_SelectedEnvMapSource >= 0 && m_SelectedEnvMapSource < static_cast<int>(m_EnvMapSources.size()))
         m_EnvMapSettings.SourceRelativePath = m_EnvMapSources[static_cast<size_t>(m_SelectedEnvMapSource)].RelativePath;
 
-    const bool Updated = m_EnvMapBaker.Update(m_pDevice, m_pImmediateContext, m_pEngineFactory,
-                                              m_AssetsRoot, m_EnvMapSettings, ForceRebuild || m_EnvMapBakerDirty,
-                                              m_FeatureCaps.ComputeShaders);
+    RTXPTEnvMapBakerUpdateAttribs UpdateAttribs;
+    UpdateAttribs.pEngineFactory   = m_pEngineFactory;
+    UpdateAttribs.AssetsRoot       = m_AssetsRoot;
+    UpdateAttribs.Settings         = m_EnvMapSettings;
+    UpdateAttribs.ForceRebuild     = ForceRebuild || m_EnvMapBakerDirty;
+    UpdateAttribs.ComputeSupported = m_FeatureCaps.ComputeShaders;
+
+    const bool Updated = m_EnvMapBaker.Update(m_pDevice, m_pImmediateContext, UpdateAttribs);
     if (Updated)
     {
         m_EnvMapBakerDirty         = false;
@@ -847,7 +852,14 @@ bool RTXPTSample::RebuildSceneDependentResources()
     const SwapChainDesc& SCDesc = m_pSwapChain->GetDesc();
     ResourcesReady &= m_EnvMapBaker.CreateResources(m_pDevice, m_pImmediateContext, m_pEngineFactory, m_pStateCache, m_pPSOCache, m_FeatureCaps.ComputeShaders);
     ResourcesReady &= UpdateEnvMapBaker(true);
-    ResourcesReady &= m_LightsBaker.CreateResources(m_pDevice, m_pEngineFactory, m_pStateCache, m_pPSOCache, SCDesc.Width, SCDesc.Height, m_FeatureCaps.ComputeShaders);
+    RTXPTLightsBakerCreateInfo LightsBakerCI;
+    LightsBakerCI.pEngineFactory   = m_pEngineFactory;
+    LightsBakerCI.pStateCache      = m_pStateCache;
+    LightsBakerCI.pPSOCache        = m_pPSOCache;
+    LightsBakerCI.Width            = SCDesc.Width;
+    LightsBakerCI.Height           = SCDesc.Height;
+    LightsBakerCI.ComputeSupported = m_FeatureCaps.ComputeShaders;
+    ResourcesReady &= m_LightsBaker.CreateResources(m_pDevice, LightsBakerCI);
     ResourcesReady &= UpdateLightsBaker(true);
 
     ResourcesReady &= m_SkinnedGeometry.Initialize(m_pDevice,
@@ -862,14 +874,13 @@ bool RTXPTSample::RebuildSceneDependentResources()
     if (m_SkinnedGeometry.HasSkinnedGeometry() && m_SkinnedGeometry.IsReady())
         ResourcesReady &= m_SkinnedGeometry.Update(m_pImmediateContext, SceneData);
 
-    ResourcesReady &=
-        m_AccelerationStructures.BuildScene(m_pDevice,
-                                            m_pImmediateContext,
-                                            SceneData,
-                                            m_Scene.GetIndexType(),
-                                            &m_SkinnedGeometry,
-                                            m_FeatureCaps.RayTracing,
-                                            m_EnableGPUTLAS ? m_pEngineFactory.RawPtr() : nullptr);
+    RTXPTAccelerationStructuresBuildAttribs BuildAttribs;
+    BuildAttribs.pSceneData          = &SceneData;
+    BuildAttribs.IndexType           = m_Scene.GetIndexType();
+    BuildAttribs.pSkinnedGeometry    = &m_SkinnedGeometry;
+    BuildAttribs.RayTracingSupported = m_FeatureCaps.RayTracing;
+    BuildAttribs.pEngineFactory      = m_EnableGPUTLAS ? m_pEngineFactory.RawPtr() : nullptr;
+    ResourcesReady &= m_AccelerationStructures.BuildScene(m_pDevice, m_pImmediateContext, BuildAttribs);
 
     if (ResourcesReady)
     {
@@ -1386,13 +1397,14 @@ bool RTXPTSample::UpdateLightsBaker(bool ResetFeedback)
 void RTXPTSample::CreateSceneIndependentPasses()
 {
     m_BlitPass.Initialize(m_pDevice, m_pEngineFactory, m_pStateCache, m_pSwapChain);
-    m_PostProcessPipeline.Initialize(m_pDevice,
-                                     m_pEngineFactory,
-                                     m_pStateCache,
-                                     m_pPSOCache,
-                                     m_pSwapChain,
-                                     m_FrameConstantsCB,
-                                     m_FeatureCaps.ComputeShaders);
+    RTXPTPostProcessPipelineCreateInfo PostProcessCI;
+    PostProcessCI.pEngineFactory   = m_pEngineFactory;
+    PostProcessCI.pStateCache      = m_pStateCache;
+    PostProcessCI.pPSOCache        = m_pPSOCache;
+    PostProcessCI.pSwapChain       = m_pSwapChain;
+    PostProcessCI.pFrameConstants  = m_FrameConstantsCB;
+    PostProcessCI.ComputeSupported = m_FeatureCaps.ComputeShaders;
+    m_PostProcessPipeline.Initialize(m_pDevice, PostProcessCI);
     m_DenoisingGuidesBaker.Initialize(m_pDevice,
                                       m_pEngineFactory,
                                       m_pStateCache,
@@ -1424,66 +1436,67 @@ void RTXPTSample::CreateSceneDependentPasses()
     LOG_INFO_MESSAGE("RTXPT native FP16: ", UseFp16Types ? "enabled" : "disabled",
                      "; requested: ", m_ReferenceUI.UseFp16Types ? "yes" : "no");
 
-    m_EmissiveTrianglePass.Initialize(m_pDevice,
-                                      m_pEngineFactory,
-                                      m_pStateCache,
-                                      m_pPSOCache,
-                                      m_Materials.GetMaterialBuffer(),
-                                      m_AccelerationStructures.GetSubInstanceBuffer(),
-                                      m_AccelerationStructures.GetSubInstanceTransformBuffer(),
-                                      m_Scene.GetVertexBuffer0(m_pDevice, m_pImmediateContext),
-                                      m_SkinnedGeometry.GetSkinnedVertexBuffer(),
-                                      m_Scene.GetIndexBuffer(m_pDevice, m_pImmediateContext),
-                                      m_Scene.GetIndexType(),
-                                      m_Lights.GetEmissiveTriangleBuffer(),
-                                      m_Materials.GetTextureBindings(),
-                                      m_Materials.GetTextureCount(),
-                                      EnableMaterialTextures,
-                                      m_FeatureCaps.ComputeShaders);
+    RTXPTEmissiveTrianglePassCreateInfo EmissiveCI;
+    EmissiveCI.pEngineFactory              = m_pEngineFactory;
+    EmissiveCI.pStateCache                 = m_pStateCache;
+    EmissiveCI.pPSOCache                   = m_pPSOCache;
+    EmissiveCI.pMaterialBuffer             = m_Materials.GetMaterialBuffer();
+    EmissiveCI.pSubInstanceBuffer          = m_AccelerationStructures.GetSubInstanceBuffer();
+    EmissiveCI.pSubInstanceTransformBuffer = m_AccelerationStructures.GetSubInstanceTransformBuffer();
+    EmissiveCI.pVertexBuffer               = m_Scene.GetVertexBuffer0(m_pDevice, m_pImmediateContext);
+    EmissiveCI.pSkinnedVertexBuffer        = m_SkinnedGeometry.GetSkinnedVertexBuffer();
+    EmissiveCI.pIndexBuffer                = m_Scene.GetIndexBuffer(m_pDevice, m_pImmediateContext);
+    EmissiveCI.IndexValueType              = m_Scene.GetIndexType();
+    EmissiveCI.pEmissiveTriangleBuffer     = m_Lights.GetEmissiveTriangleBuffer();
+    EmissiveCI.pMaterialTextures           = m_Materials.GetTextureBindings();
+    EmissiveCI.MaterialTextureCount        = m_Materials.GetTextureCount();
+    EmissiveCI.EnableMaterialTextures      = EnableMaterialTextures;
+    EmissiveCI.ComputeSupported            = m_FeatureCaps.ComputeShaders;
+    m_EmissiveTrianglePass.Initialize(m_pDevice, EmissiveCI);
 
+    RTXPTRayTracingPassCreateInfo RaysCI;
+    RaysCI.pEngineFactory                = m_pEngineFactory;
+    RaysCI.pStateCache                   = m_pStateCache;
+    RaysCI.pPSOCache                     = m_pPSOCache;
+    RaysCI.pFrameConstants               = m_FrameConstantsCB;
+    RaysCI.pMaterialBuffer               = m_Materials.GetMaterialBuffer();
+    RaysCI.pSubInstanceBuffer            = m_AccelerationStructures.GetSubInstanceBuffer();
+    RaysCI.pLightBuffer                  = m_LightsBaker.GetLightBuffer();
+    RaysCI.pLightExBuffer                = m_LightsBaker.GetLightExBuffer();
+    RaysCI.pLightingControlBuffer        = m_LightsBaker.GetControlBuffer();
+    RaysCI.pLightProxyCounters           = m_LightsBaker.GetLightProxyCounters();
+    RaysCI.pLightSamplingProxies         = m_LightsBaker.GetLightSamplingProxies();
+    RaysCI.pLocalSamplingBuffer          = m_LightsBaker.GetLocalSamplingBuffer();
+    RaysCI.pEnvironmentLightLookup       = m_LightsBaker.GetEnvironmentLightLookup();
+    RaysCI.pFeedbackTotalWeightUAV       = m_LightsBaker.GetFeedbackTotalWeightUAV();
+    RaysCI.pFeedbackCandidatesUAV        = m_LightsBaker.GetFeedbackCandidatesUAV();
+    RaysCI.pEnvironmentMapSRV            = m_EnvMapBaker.GetEnvironmentMapSRV();
+    RaysCI.pEnvironmentImportanceMapSRV  = m_EnvMapBaker.GetImportanceMapSRV();
+    RaysCI.pEnvironmentRadianceMapSRV    = m_EnvMapBaker.GetRadianceMapSRV();
+    RaysCI.pEnvironmentSampler           = m_EnvMapBaker.GetEnvironmentSampler();
+    RaysCI.pEnvironmentImportanceSampler = m_EnvMapBaker.GetImportanceSampler();
+    RaysCI.pVertexBuffer                 = m_Scene.GetVertexBuffer0(m_pDevice, m_pImmediateContext);
+    RaysCI.pSkinnedVertexBuffer          = m_SkinnedGeometry.GetSkinnedVertexBuffer();
+    RaysCI.pIndexBuffer                  = m_Scene.GetIndexBuffer(m_pDevice, m_pImmediateContext);
+    RaysCI.IndexValueType                = m_Scene.GetIndexType();
+    RaysCI.pTLAS                         = m_AccelerationStructures.GetTLAS();
+    RaysCI.pMaterialTextures             = m_Materials.GetTextureBindings();
+    RaysCI.MaterialTextureCount          = m_Materials.GetTextureCount();
+    RaysCI.EnableMaterialTextures        = EnableMaterialTextures;
+    RaysCI.EnableAnyHit                  = EnableAnyHit;
+    RaysCI.EnableLDSamplerForBSDF        = m_ReferenceUI.EnableLDSamplerForBSDF;
+    RaysCI.RayTracingSupported           = m_FeatureCaps.RayTracing;
+    RaysCI.StandaloneRTShadersSupported  = m_FeatureCaps.StandaloneRayTracingShaders;
+    RaysCI.EnableInlineVisibility        = m_EnableInlineVisibility;
+    RaysCI.NEEMISType                    = static_cast<Uint32>(m_ReferenceUI.NEEMISType);
+    RaysCI.NEECandidateSamples           = static_cast<Uint32>(std::clamp(m_ReferenceUI.NEECandidateSamples, 1, kNEEMaxSampleCount));
+    RaysCI.NEEFullSamples                = static_cast<Uint32>(std::clamp(m_ReferenceUI.NEEFullSamples, 0, kNEEMaxSampleCount));
+    RaysCI.UseFp16Types                  = UseFp16Types;
+    RaysCI.EnableHitObject               = m_EnableHitObject;
+    RaysCI.EnableThreadReorder           = m_EnableThreadReorder;
+    RaysCI.EnableSharc                   = EnableSharc;
     const bool RTReady =
-        m_RayTracingPass.Initialize(m_pDevice,
-                                    m_pImmediateContext,
-                                    m_pEngineFactory,
-                                    m_pStateCache,
-                                    m_pPSOCache,
-                                    m_FrameConstantsCB,
-                                    m_Materials.GetMaterialBuffer(),
-                                    m_AccelerationStructures.GetSubInstanceBuffer(),
-                                    m_LightsBaker.GetLightBuffer(),
-                                    m_LightsBaker.GetLightExBuffer(),
-                                    m_LightsBaker.GetControlBuffer(),
-                                    m_LightsBaker.GetLightProxyCounters(),
-                                    m_LightsBaker.GetLightSamplingProxies(),
-                                    m_LightsBaker.GetLocalSamplingBuffer(),
-                                    m_LightsBaker.GetEnvironmentLightLookup(),
-                                    m_LightsBaker.GetFeedbackTotalWeightUAV(),
-                                    m_LightsBaker.GetFeedbackCandidatesUAV(),
-                                    m_EnvMapBaker.GetEnvironmentMapSRV(),
-                                    m_EnvMapBaker.GetImportanceMapSRV(),
-                                    m_EnvMapBaker.GetRadianceMapSRV(),
-                                    m_EnvMapBaker.GetEnvironmentSampler(),
-                                    m_EnvMapBaker.GetImportanceSampler(),
-                                    m_Scene.GetVertexBuffer0(m_pDevice, m_pImmediateContext),
-                                    m_SkinnedGeometry.GetSkinnedVertexBuffer(),
-                                    m_Scene.GetIndexBuffer(m_pDevice, m_pImmediateContext),
-                                    m_Scene.GetIndexType(),
-                                    m_AccelerationStructures.GetTLAS(),
-                                    m_Materials.GetTextureBindings(),
-                                    m_Materials.GetTextureCount(),
-                                    EnableMaterialTextures,
-                                    EnableAnyHit,
-                                    m_ReferenceUI.EnableLDSamplerForBSDF,
-                                    m_FeatureCaps.RayTracing,
-                                    m_FeatureCaps.StandaloneRayTracingShaders,
-                                    m_EnableInlineVisibility,
-                                    static_cast<Uint32>(m_ReferenceUI.NEEMISType),
-                                    static_cast<Uint32>(std::clamp(m_ReferenceUI.NEECandidateSamples, 1, kNEEMaxSampleCount)),
-                                    static_cast<Uint32>(std::clamp(m_ReferenceUI.NEEFullSamples, 0, kNEEMaxSampleCount)),
-                                    UseFp16Types,
-                                    m_EnableHitObject,
-                                    m_EnableThreadReorder,
-                                    EnableSharc);
+        m_RayTracingPass.Initialize(m_pDevice, m_pImmediateContext, RaysCI);
 
     if (!RTReady)
     {
@@ -1912,13 +1925,14 @@ bool RTXPTSample::PresentRealtimeFinalOutput()
 
         case RTXPTRealtimeAAMode::TAA:
         {
-            if (!m_PostProcessPipeline.RunTemporalAA(m_pImmediateContext,
-                                                     m_RenderTargets,
-                                                     m_LastFrameConstants,
-                                                     m_LastFrameConstants.ptConsts.frameIndex,
-                                                     ResetTaaSrHistory,
-                                                     m_HasPreviousFrameConstants,
-                                                     MakeRealtimeTemporalAASettings()))
+            RTXPTTemporalAAFrameAttribs TAAAttribs;
+            TAAAttribs.pRenderTargets    = &m_RenderTargets;
+            TAAAttribs.pFrameConstants   = &m_LastFrameConstants;
+            TAAAttribs.Settings          = MakeRealtimeTemporalAASettings();
+            TAAAttribs.FrameIndex        = m_LastFrameConstants.ptConsts.frameIndex;
+            TAAAttribs.ResetHistory      = ResetTaaSrHistory;
+            TAAAttribs.PreviousViewValid = m_HasPreviousFrameConstants;
+            if (!m_PostProcessPipeline.RunTemporalAA(m_pImmediateContext, TAAAttribs))
             {
                 const auto& TAAStats = m_PostProcessPipeline.GetTemporalAAPass().GetStats();
                 RecordRealtimePathTraceStatus(
@@ -2026,6 +2040,14 @@ bool RTXPTSample::EnsureNrdIntegrations()
 
     const Uint32 Width  = m_RenderTargets.GetRenderWidth();
     const Uint32 Height = m_RenderTargets.GetRenderHeight();
+
+    RTXPTNrdIntegrationCreateInfo NrdCI;
+    NrdCI.pEngineFactory   = m_pEngineFactory;
+    NrdCI.pStateCache      = m_pStateCache;
+    NrdCI.Method           = m_RealtimeUI.NRDMethod;
+    NrdCI.Width            = Width;
+    NrdCI.Height           = Height;
+    NrdCI.ComputeSupported = m_FeatureCaps.ComputeShaders;
     for (RTXPTNrdIntegration& Integration : m_NrdIntegrations)
     {
         const bool NeedsRecreate =
@@ -2035,13 +2057,7 @@ bool RTXPTSample::EnsureNrdIntegrations()
             Integration.GetHeight() != Height;
 
         if (NeedsRecreate &&
-            !Integration.Initialize(m_pDevice,
-                                    m_pEngineFactory,
-                                    m_pStateCache,
-                                    m_RealtimeUI.NRDMethod,
-                                    Width,
-                                    Height,
-                                    m_FeatureCaps.ComputeShaders))
+            !Integration.Initialize(m_pDevice, NrdCI))
         {
             RecordRealtimePathTraceStatus(Integration.GetLastFailureReason());
             ResetNrdIntegrations();
@@ -2277,8 +2293,15 @@ bool RTXPTSample::RunEmbeddedReference()
             CreateRTXPTEmbeddedStateCache(m_pDevice, &m_pEmbeddedStateCache);
         if (!m_EmbeddedScene)
         {
+            RTXPTEmbeddedSceneCreateInfo SceneCI;
+            SceneCI.Scene     = &m_Scene;
+            SceneCI.Materials = &m_Materials;
+            SceneCI.Shaders   = Shaders;
+            SceneCI.Cache     = m_pEmbeddedStateCache;
+            SceneCI.PSOCache  = m_pPSOCache;
+
             auto Scene = std::make_unique<RTXPTEmbeddedScene>();
-            if (!Scene->Initialize(m_pDevice, m_pImmediateContext, m_Scene, m_Materials, Shaders, m_pEmbeddedStateCache, m_pPSOCache, Error))
+            if (!Scene->Initialize(m_pDevice, m_pImmediateContext, SceneCI, Error))
             {
                 LOG_ERROR_MESSAGE("Embedded reference: ", Error);
                 m_pImmediateContext->WaitForIdle();
@@ -2286,8 +2309,16 @@ bool RTXPTSample::RunEmbeddedReference()
             }
             m_EmbeddedScene = std::move(Scene);
         }
+        RTXPTEmbeddedViewCreateInfo ViewCI;
+        ViewCI.Scene    = m_EmbeddedScene.get();
+        ViewCI.Shaders  = Shaders;
+        ViewCI.Cache    = m_pEmbeddedStateCache;
+        ViewCI.PSOCache = m_pPSOCache;
+        ViewCI.Width    = Desc.Width;
+        ViewCI.Height   = Desc.Height;
+
         auto Renderer = std::make_unique<RTXPTEmbeddedView>();
-        if (!Renderer->Initialize(m_pDevice, m_pImmediateContext, *m_EmbeddedScene, Shaders, m_pEmbeddedStateCache, m_pPSOCache, Desc.Width, Desc.Height, Error))
+        if (!Renderer->Initialize(m_pDevice, m_pImmediateContext, ViewCI, Error))
         {
             LOG_ERROR_MESSAGE("Embedded reference: ", Error);
             m_pImmediateContext->WaitForIdle();
@@ -2472,16 +2503,16 @@ void RTXPTSample::WindowResize(Uint32 Width, Uint32 Height)
                              "Window resized");
         if (m_Scene.HasValidContent())
         {
-            const bool EnvUpdated = UpdateEnvMapBaker(false);
-            const bool LightsResourcesReady =
-                m_LightsBaker.CreateResources(m_pDevice,
-                                              m_pEngineFactory,
-                                              m_pStateCache,
-                                              m_pPSOCache,
-                                              m_CurrentTargetDimensions.DisplayWidth,
-                                              m_CurrentTargetDimensions.DisplayHeight,
-                                              m_FeatureCaps.ComputeShaders);
-            const bool LightsUpdated = LightsResourcesReady && UpdateLightsBaker(true);
+            const bool                 EnvUpdated = UpdateEnvMapBaker(false);
+            RTXPTLightsBakerCreateInfo LightsBakerCI;
+            LightsBakerCI.pEngineFactory    = m_pEngineFactory;
+            LightsBakerCI.pStateCache       = m_pStateCache;
+            LightsBakerCI.pPSOCache         = m_pPSOCache;
+            LightsBakerCI.Width             = m_CurrentTargetDimensions.DisplayWidth;
+            LightsBakerCI.Height            = m_CurrentTargetDimensions.DisplayHeight;
+            LightsBakerCI.ComputeSupported  = m_FeatureCaps.ComputeShaders;
+            const bool LightsResourcesReady = m_LightsBaker.CreateResources(m_pDevice, LightsBakerCI);
+            const bool LightsUpdated        = LightsResourcesReady && UpdateLightsBaker(true);
             if (EnvUpdated && LightsUpdated)
             {
                 CreateSceneDependentPasses();

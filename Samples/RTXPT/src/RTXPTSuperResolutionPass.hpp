@@ -71,6 +71,17 @@ struct RTXPTSuperResolutionFrameDesc
     float                       TimeDeltaSeconds = 0.0f;
 };
 
+struct RTXPTSuperResolutionExecuteAttribs
+{
+    const RTXPTRenderTargets*            pRenderTargets     = nullptr;
+    const RTXPTSuperResolutionFrameDesc* pFrameDesc         = nullptr;
+    float                                CameraNear         = 0.0f;
+    float                                CameraFar          = 0.0f;
+    float                                CameraFovAngleVert = 0.0f;
+    ITextureView*                        pColorSRV          = nullptr;
+    ITextureView*                        pOutputUAV         = nullptr;
+};
+
 struct RTXPTSuperResolutionStats
 {
     bool        FactoryReady      = false;
@@ -98,14 +109,7 @@ public:
                                                    TEXTURE_FORMAT                      OutputFormat,
                                                    bool                                ResetHistory,
                                                    float                               TimeDeltaSeconds);
-    bool                          Execute(IDeviceContext*                      pContext,
-                                          const RTXPTRenderTargets&            RenderTargets,
-                                          const RTXPTSuperResolutionFrameDesc& FrameDesc,
-                                          float                                CameraNear,
-                                          float                                CameraFar,
-                                          float                                CameraFovAngleVert,
-                                          ITextureView*                        pColorSRV  = nullptr,
-                                          ITextureView*                        pOutputUAV = nullptr);
+    bool                          Execute(IDeviceContext* pContext, const RTXPTSuperResolutionExecuteAttribs& ExecuteAttribs);
 
     const std::vector<SuperResolutionInfo>& GetVariants() const { return m_Variants; }
     const RTXPTSuperResolutionStats&        GetStats() const { return m_Stats; }

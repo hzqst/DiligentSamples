@@ -186,7 +186,7 @@ void RTXPTLightsBaker::RequestFeedbackReset()
     m_ResetFeedbackPending = true;
 }
 
-bool RTXPTLightsBaker::CreateResources(IRenderDevice* pDevice, IEngineFactory* pEngineFactory, IRenderStateCache* pStateCache, IPipelineStateCache* pPSOCache, Uint32 Width, Uint32 Height, bool ComputeSupported)
+bool RTXPTLightsBaker::CreateResources(IRenderDevice* pDevice, const RTXPTLightsBakerCreateInfo& CreateInfo)
 {
     if (pDevice == nullptr)
     {
@@ -194,25 +194,25 @@ bool RTXPTLightsBaker::CreateResources(IRenderDevice* pDevice, IEngineFactory* p
         LOG_ERROR_MESSAGE(m_Stats.LastError.c_str());
         return false;
     }
-    if (pEngineFactory == nullptr)
+    if (CreateInfo.pEngineFactory == nullptr)
     {
         m_Stats.LastError = "RTXPT LightsBaker requires an engine factory";
         LOG_ERROR_MESSAGE(m_Stats.LastError.c_str());
         return false;
     }
-    if (!ComputeSupported)
+    if (!CreateInfo.ComputeSupported)
     {
         m_Stats.LastError = "RTXPT LightsBaker requires compute shader support";
         LOG_ERROR_MESSAGE(m_Stats.LastError.c_str());
         return false;
     }
 
-    const bool FeedbackOk   = CreateFeedbackTextures(pDevice, Width, Height);
-    const bool LocalOk      = CreateLocalSamplingBuffer(pDevice, Width, Height);
-    const bool ProxyBuildOk = FeedbackOk && LocalOk && m_ProxyBuildPass.Initialize(pDevice, pEngineFactory, pStateCache, pPSOCache) &&
-        m_LightFeedback.Initialize(pDevice, pEngineFactory, pStateCache, pPSOCache, Width, Height);
-    const bool EnvBuildOk = m_EnvironmentLights.Initialize(pDevice, pEngineFactory, pStateCache, pPSOCache) &&
-        m_LightHistory.Initialize(pDevice, pEngineFactory, pStateCache, pPSOCache);
+    const bool FeedbackOk   = CreateFeedbackTextures(pDevice, CreateInfo.Width, CreateInfo.Height);
+    const bool LocalOk      = CreateLocalSamplingBuffer(pDevice, CreateInfo.Width, CreateInfo.Height);
+    const bool ProxyBuildOk = FeedbackOk && LocalOk && m_ProxyBuildPass.Initialize(pDevice, CreateInfo.pEngineFactory, CreateInfo.pStateCache, CreateInfo.pPSOCache) &&
+        m_LightFeedback.Initialize(pDevice, CreateInfo.pEngineFactory, CreateInfo.pStateCache, CreateInfo.pPSOCache, CreateInfo.Width, CreateInfo.Height);
+    const bool EnvBuildOk = m_EnvironmentLights.Initialize(pDevice, CreateInfo.pEngineFactory, CreateInfo.pStateCache, CreateInfo.pPSOCache) &&
+        m_LightHistory.Initialize(pDevice, CreateInfo.pEngineFactory, CreateInfo.pStateCache, CreateInfo.pPSOCache);
     m_Stats.Ready = FeedbackOk && LocalOk && ProxyBuildOk && EnvBuildOk;
     return m_Stats.Ready;
 }
@@ -318,8 +318,17 @@ bool RTXPTLightsBaker::UpdateEnd(IDeviceContext* pContext,
     }
     // Per-triangle power-proportional proxy build (GPU). Runs after the emissive-triangle build pass (so the
     // emissive radiance is current) and before the local-sampling fill (which reads the proxy table).
-    if (!m_LightFeedback.Prepare(pContext, m_ControlBuffer, m_LightSamplingProxies, m_LocalSamplingBuffer,
-                                 m_FeedbackTotalWeight, m_FeedbackCandidates, pDepthSRV, pMotionVectorsSRV, m_ResetFeedbackPending, m_LightHistory.GetPastToCurrent()))
+    RTXPTLightFeedbackPrepareAttribs Feedback;
+    Feedback.pControl      = m_ControlBuffer;
+    Feedback.pProxies      = m_LightSamplingProxies;
+    Feedback.pLocal        = m_LocalSamplingBuffer;
+    Feedback.pWeights      = m_FeedbackTotalWeight;
+    Feedback.pCandidates   = m_FeedbackCandidates;
+    Feedback.pDepth        = pDepthSRV;
+    Feedback.pMotion       = pMotionVectorsSRV;
+    Feedback.ResetHistory  = m_ResetFeedbackPending;
+    Feedback.pHistoryRemap = m_LightHistory.GetPastToCurrent();
+    if (!m_LightFeedback.Prepare(pContext, Feedback))
     {
         m_Stats.LastError = "RTXPT temporal light feedback preparation failed";
         return false;
@@ -584,22 +593,23 @@ bool RTXPTLightsBaker::RunProxyBuild(IDeviceContext* pContext)
         m_LightSamplingProxies == nullptr)
         return false;
 
-    return m_ProxyBuildPass.Build(pContext,
-                                  m_ControlBuffer,
-                                  m_LightsBuffer,
-                                  m_LightsExBuffer,
-                                  m_LightFeedback.GetCounts(),
-                                  m_LightWeights,
-                                  m_LightProxyCounters,
-                                  m_LightSamplingProxies,
-                                  m_Stats.TotalLightCount,
-                                  m_Stats.AnalyticLightCount,
-                                  m_ProxyBudget,
-                                  m_ProxyImportanceType,
-                                  m_LightHistory.GetCurrentToPast(),
-                                  m_FrustumPlanes.data(),
-                                  m_Stats.TotalLightCount - m_Stats.EnvironmentLightCount - m_Stats.AnalyticLightCount - m_Stats.TriangleLightCount,
-                                  &m_CameraPosition);
+    RTXPTLightProxyBuildAttribs ProxyBuild;
+    ProxyBuild.pControl                   = m_ControlBuffer;
+    ProxyBuild.pLights                    = m_LightsBuffer;
+    ProxyBuild.pLightsEx                  = m_LightsExBuffer;
+    ProxyBuild.pFeedbackCounts            = m_LightFeedback.GetCounts();
+    ProxyBuild.pLightWeights              = m_LightWeights;
+    ProxyBuild.pLightProxyCounters        = m_LightProxyCounters;
+    ProxyBuild.pLightSamplingProxies      = m_LightSamplingProxies;
+    ProxyBuild.TotalLightCount            = m_Stats.TotalLightCount;
+    ProxyBuild.AnalyticLightCount         = m_Stats.AnalyticLightCount;
+    ProxyBuild.ProxyBudget                = m_ProxyBudget;
+    ProxyBuild.ImportanceSamplingType     = m_ProxyImportanceType;
+    ProxyBuild.pHistoryRemapCurrentToPast = m_LightHistory.GetCurrentToPast();
+    ProxyBuild.pFrustumPlanes             = m_FrustumPlanes.data();
+    ProxyBuild.ClusterCount               = m_Stats.TotalLightCount - m_Stats.EnvironmentLightCount - m_Stats.AnalyticLightCount - m_Stats.TriangleLightCount;
+    ProxyBuild.pCameraPosition            = &m_CameraPosition;
+    return m_ProxyBuildPass.Build(pContext, ProxyBuild);
 }
 
 void RTXPTLightsBaker::RequestProxyRebuild()

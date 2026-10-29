@@ -58,26 +58,11 @@ void RTXPTEmissiveTrianglePass::Reset()
     m_Stats = {};
 }
 
-bool RTXPTEmissiveTrianglePass::Initialize(IRenderDevice*        pDevice,
-                                           IEngineFactory*       pEngineFactory,
-                                           IRenderStateCache*    pStateCache,
-                                           IPipelineStateCache*  pPSOCache,
-                                           IBuffer*              pMaterialBuffer,
-                                           IBuffer*              pSubInstanceBuffer,
-                                           IBuffer*              pSubInstanceTransformBuffer,
-                                           IBuffer*              pVertexBuffer,
-                                           IBuffer*              pSkinnedVertexBuffer,
-                                           IBuffer*              pIndexBuffer,
-                                           VALUE_TYPE            IndexValueType,
-                                           IBuffer*              pEmissiveTriangleBuffer,
-                                           IDeviceObject* const* pMaterialTextures,
-                                           Uint32                MaterialTextureCount,
-                                           bool                  EnableMaterialTextures,
-                                           bool                  ComputeSupported)
+bool RTXPTEmissiveTrianglePass::Initialize(IRenderDevice* pDevice, const RTXPTEmissiveTrianglePassCreateInfo& CreateInfo)
 {
     Reset();
 
-    if (!ComputeSupported)
+    if (!CreateInfo.ComputeSupported)
     {
         DEV_ERROR("RTXPT emissive triangle pass requires compute shader support");
         return false;
@@ -85,25 +70,25 @@ bool RTXPTEmissiveTrianglePass::Initialize(IRenderDevice*        pDevice,
 
     // Sample emissive textures on the GPU (matching the closest-hit material bridge) when the scene carries
     // material textures. Bindless is mandatory, so the only factor-only case is a texture-less scene
-    // (MaterialTextureCount == 0), where the textured variant cannot be compiled.
-    const bool UseTextures = EnableMaterialTextures && pMaterialTextures != nullptr && MaterialTextureCount > 0;
+    // (CreateInfo.MaterialTextureCount == 0), where the textured variant cannot be compiled.
+    const bool UseTextures = CreateInfo.EnableMaterialTextures && CreateInfo.pMaterialTextures != nullptr && CreateInfo.MaterialTextureCount > 0;
 
-    if (pDevice == nullptr || pEngineFactory == nullptr || pMaterialBuffer == nullptr || pSubInstanceBuffer == nullptr ||
-        pSubInstanceTransformBuffer == nullptr || pVertexBuffer == nullptr || pSkinnedVertexBuffer == nullptr ||
-        pIndexBuffer == nullptr || pEmissiveTriangleBuffer == nullptr)
+    if (pDevice == nullptr || CreateInfo.pEngineFactory == nullptr || CreateInfo.pMaterialBuffer == nullptr || CreateInfo.pSubInstanceBuffer == nullptr ||
+        CreateInfo.pSubInstanceTransformBuffer == nullptr || CreateInfo.pVertexBuffer == nullptr || CreateInfo.pSkinnedVertexBuffer == nullptr ||
+        CreateInfo.pIndexBuffer == nullptr || CreateInfo.pEmissiveTriangleBuffer == nullptr)
     {
         DEV_ERROR("RTXPT emissive triangle pass requires all scene buffers");
         return false;
     }
 
-    if (IndexValueType != VT_UINT16 && IndexValueType != VT_UINT32)
+    if (CreateInfo.IndexValueType != VT_UINT16 && CreateInfo.IndexValueType != VT_UINT32)
     {
         DEV_ERROR("RTXPT emissive triangle pass requires VT_UINT16 or VT_UINT32 indices");
         return false;
     }
 
     RefCntAutoPtr<IShaderSourceInputStreamFactory> pShaderSourceFactory;
-    CreateRTXPTShaderSourceFactory(pEngineFactory, "shaders;shaders\\PathTracer", &pShaderSourceFactory);
+    CreateRTXPTShaderSourceFactory(CreateInfo.pEngineFactory, "shaders;shaders\\PathTracer", &pShaderSourceFactory);
 
     ShaderCreateInfo ShaderCI;
     ShaderCI.Desc.ShaderType            = SHADER_TYPE_COMPUTE;
@@ -120,12 +105,12 @@ bool RTXPTEmissiveTrianglePass::Initialize(IRenderDevice*        pDevice,
     if (UseTextures)
     {
         Macros.Add("ENABLE_MATERIAL_TEXTURES", 1);
-        Macros.Add("MATERIAL_TEXTURE_COUNT", static_cast<int>(MaterialTextureCount));
+        Macros.Add("MATERIAL_TEXTURE_COUNT", static_cast<int>(CreateInfo.MaterialTextureCount));
     }
     ShaderCI.Macros = Macros;
 
     RefCntAutoPtr<IShader> pCS;
-    pStateCache->CreateShader(ShaderCI, &pCS);
+    CreateInfo.pStateCache->CreateShader(ShaderCI, &pCS);
     VERIFY(pCS, "Failed to create RTXPT emissive triangle build shader");
     if (!pCS)
         return false;
@@ -160,22 +145,22 @@ bool RTXPTEmissiveTrianglePass::Initialize(IRenderDevice*        pDevice,
     }
     PSOCreateInfo.PSODesc.ResourceLayout = ResourceLayout;
 
-    PSOCreateInfo.pPSOCache = SelectRTXPTPipelineStateCache(pDevice, PSOCreateInfo, pPSOCache);
-    pStateCache->CreateComputePipelineState(PSOCreateInfo, &m_PSO);
+    PSOCreateInfo.pPSOCache = SelectRTXPTPipelineStateCache(pDevice, PSOCreateInfo, CreateInfo.pPSOCache);
+    CreateInfo.pStateCache->CreateComputePipelineState(PSOCreateInfo, &m_PSO);
     VERIFY(m_PSO, "Failed to create RTXPT emissive triangle build PSO");
     if (!m_PSO)
         return false;
 
-    if (IndexValueType != VT_UINT16 && IndexValueType != VT_UINT32)
+    if (CreateInfo.IndexValueType != VT_UINT16 && CreateInfo.IndexValueType != VT_UINT32)
         return false;
 
     BufferViewDesc IndexViewDesc;
     IndexViewDesc.Name                 = "RTXPT emissive triangle index buffer SRV";
     IndexViewDesc.ViewType             = BUFFER_VIEW_SHADER_RESOURCE;
-    IndexViewDesc.Format.ValueType     = IndexValueType;
+    IndexViewDesc.Format.ValueType     = CreateInfo.IndexValueType;
     IndexViewDesc.Format.NumComponents = 1;
     IndexViewDesc.Format.IsNormalized  = false;
-    pIndexBuffer->CreateView(IndexViewDesc, &m_IndexBufferView);
+    CreateInfo.pIndexBuffer->CreateView(IndexViewDesc, &m_IndexBufferView);
     VERIFY(m_IndexBufferView, "Failed to create RTXPT emissive triangle index buffer view");
     if (!m_IndexBufferView)
         return false;
@@ -211,13 +196,13 @@ bool RTXPTEmissiveTrianglePass::Initialize(IRenderDevice*        pDevice,
 
     const bool Bound =
         SetStatic("g_EmissiveTriangleBuildConstants", m_Constants) &&
-        SetStatic("t_PTMaterialData", pMaterialBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE)) &&
-        SetStatic("t_SubInstanceData", pSubInstanceBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE)) &&
-        SetStatic("t_SubInstanceTransforms", pSubInstanceTransformBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE)) &&
-        SetStatic("t_VertexBuffer", pVertexBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE)) &&
-        SetStatic("t_SkinnedVertexBuffer", pSkinnedVertexBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE)) &&
+        SetStatic("t_PTMaterialData", CreateInfo.pMaterialBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE)) &&
+        SetStatic("t_SubInstanceData", CreateInfo.pSubInstanceBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE)) &&
+        SetStatic("t_SubInstanceTransforms", CreateInfo.pSubInstanceTransformBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE)) &&
+        SetStatic("t_VertexBuffer", CreateInfo.pVertexBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE)) &&
+        SetStatic("t_SkinnedVertexBuffer", CreateInfo.pSkinnedVertexBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE)) &&
         SetStatic("t_IndexBuffer", m_IndexBufferView) &&
-        SetStatic("u_EmissiveTriangles", pEmissiveTriangleBuffer->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS));
+        SetStatic("u_EmissiveTriangles", CreateInfo.pEmissiveTriangleBuffer->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS));
     VERIFY(Bound, "Failed to bind RTXPT emissive triangle build static resources");
     if (!Bound)
         return false;
@@ -235,7 +220,7 @@ bool RTXPTEmissiveTrianglePass::Initialize(IRenderDevice*        pDevice,
             UNEXPECTED("RTXPT emissive triangle pass material texture array binding is missing");
             return false;
         }
-        pTexVar->SetArray(pMaterialTextures, 0, MaterialTextureCount);
+        pTexVar->SetArray(CreateInfo.pMaterialTextures, 0, CreateInfo.MaterialTextureCount);
     }
 
     m_Stats.Ready = true;

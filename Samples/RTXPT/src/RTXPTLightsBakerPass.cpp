@@ -97,9 +97,9 @@ bool RTXPTLightsBakerPass::Initialize(IRenderDevice* pDevice, IEngineFactory* pE
     return m_SRB != nullptr;
 }
 
-bool RTXPTLightsBakerPass::Bind(IBuffer* pControl, IBuffer* pProxyCounters, IBuffer* pProxyIndices, IBuffer* pLocalSamplingBuffer, ITextureView* pFeedbackTotalWeightSRV, ITextureView* pFeedbackCandidatesSRV, ITextureView* pFeedbackTotalWeightUAV, ITextureView* pFeedbackCandidatesUAV)
+bool RTXPTLightsBakerPass::Bind(const RTXPTLightsBakerPassBindAttribs& Attribs)
 {
-    if (!m_SRB || pControl == nullptr)
+    if (!m_SRB || Attribs.pControl == nullptr)
         return false;
 
     auto SetVariable = [this](const char* Name, IDeviceObject* pObject) {
@@ -112,14 +112,14 @@ bool RTXPTLightsBakerPass::Bind(IBuffer* pControl, IBuffer* pProxyCounters, IBuf
         return true;
     };
 
-    return SetVariable("t_LightingControl", pControl->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE)) &&
-        SetVariable("t_LightProxyCounters", pProxyCounters != nullptr ? pProxyCounters->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr) &&
-        SetVariable("t_LightSamplingProxies", pProxyIndices != nullptr ? pProxyIndices->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr) &&
-        SetVariable("t_FeedbackTotalWeight", pFeedbackTotalWeightSRV) &&
-        SetVariable("t_FeedbackCandidates", pFeedbackCandidatesSRV) &&
-        SetVariable("u_FeedbackTotalWeight", pFeedbackTotalWeightUAV) &&
-        SetVariable("u_FeedbackCandidates", pFeedbackCandidatesUAV) &&
-        SetVariable("u_LocalSamplingBuffer", pLocalSamplingBuffer != nullptr ? pLocalSamplingBuffer->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS) : nullptr);
+    return SetVariable("t_LightingControl", Attribs.pControl->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE)) &&
+        SetVariable("t_LightProxyCounters", Attribs.pProxyCounters != nullptr ? Attribs.pProxyCounters->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr) &&
+        SetVariable("t_LightSamplingProxies", Attribs.pProxyIndices != nullptr ? Attribs.pProxyIndices->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr) &&
+        SetVariable("t_FeedbackTotalWeight", Attribs.pFeedbackTotalWeightSRV) &&
+        SetVariable("t_FeedbackCandidates", Attribs.pFeedbackCandidatesSRV) &&
+        SetVariable("u_FeedbackTotalWeight", Attribs.pFeedbackTotalWeightUAV) &&
+        SetVariable("u_FeedbackCandidates", Attribs.pFeedbackCandidatesUAV) &&
+        SetVariable("u_LocalSamplingBuffer", Attribs.pLocalSamplingBuffer != nullptr ? Attribs.pLocalSamplingBuffer->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS) : nullptr);
 }
 
 bool RTXPTLightsBakerPass::Dispatch(IDeviceContext* pContext, Uint32 ThreadGroupsX, Uint32 ThreadGroupsY)

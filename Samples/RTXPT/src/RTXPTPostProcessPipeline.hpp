@@ -68,18 +68,22 @@ struct RTXPTPostProcessPipelineStats
     bool LdrStageReady               = false;
 };
 
+struct RTXPTPostProcessPipelineCreateInfo
+{
+    IEngineFactory*      pEngineFactory   = nullptr;
+    IRenderStateCache*   pStateCache      = nullptr;
+    IPipelineStateCache* pPSOCache        = nullptr;
+    ISwapChain*          pSwapChain       = nullptr;
+    IBuffer*             pFrameConstants  = nullptr;
+    bool                 ComputeSupported = false;
+};
+
 class RTXPTPostProcessPipeline
 {
 public:
     void Reset();
 
-    bool Initialize(IRenderDevice*       pDevice,
-                    IEngineFactory*      pEngineFactory,
-                    IRenderStateCache*   pStateCache,
-                    IPipelineStateCache* pPSOCache,
-                    ISwapChain*          pSwapChain,
-                    IBuffer*             pFrameConstants,
-                    bool                 ComputeSupported);
+    bool Initialize(IRenderDevice* pDevice, const RTXPTPostProcessPipelineCreateInfo& CreateInfo);
 
     bool ValidateRenderTargets(const RTXPTRenderTargets& RenderTargets);
 
@@ -126,13 +130,8 @@ public:
     bool CopyRealtimeOutputToProcessed(IDeviceContext*           pContext,
                                        const RTXPTRenderTargets& RenderTargets);
 
-    bool RunTemporalAA(IDeviceContext*                pContext,
-                       const RTXPTRenderTargets&      RenderTargets,
-                       const SampleConstants&         FrameConstants,
-                       Uint32                         FrameIndex,
-                       bool                           ResetHistory,
-                       bool                           PreviousViewValid,
-                       const RTXPTTemporalAASettings& Settings);
+    // pDevice and pDeviceContext of FrameAttribs are ignored: the pass runs on the device of the pipeline and pContext.
+    bool RunTemporalAA(IDeviceContext* pContext, const RTXPTTemporalAAFrameAttribs& FrameAttribs);
 
     bool RunRealtimeSuperResolution(IDeviceContext*                      pContext,
                                     const RTXPTRenderTargets&            RenderTargets,

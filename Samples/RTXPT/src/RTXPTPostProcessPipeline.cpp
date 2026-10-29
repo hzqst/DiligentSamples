@@ -63,23 +63,17 @@ void RTXPTPostProcessPipeline::Reset()
     m_Stats = {};
 }
 
-bool RTXPTPostProcessPipeline::Initialize(IRenderDevice*       pDevice,
-                                          IEngineFactory*      pEngineFactory,
-                                          IRenderStateCache*   pStateCache,
-                                          IPipelineStateCache* pPSOCache,
-                                          ISwapChain*          pSwapChain,
-                                          IBuffer*             pFrameConstants,
-                                          bool                 ComputeSupported)
+bool RTXPTPostProcessPipeline::Initialize(IRenderDevice* pDevice, const RTXPTPostProcessPipelineCreateInfo& CreateInfo)
 {
     Reset();
 
-    if (pDevice == nullptr || pEngineFactory == nullptr || pSwapChain == nullptr || pFrameConstants == nullptr)
+    if (pDevice == nullptr || CreateInfo.pEngineFactory == nullptr || CreateInfo.pSwapChain == nullptr || CreateInfo.pFrameConstants == nullptr)
     {
         DEV_ERROR("RTXPT post-process pipeline requires a device, engine factory, swap chain, and frame constants buffer");
         return false;
     }
 
-    if (!ComputeSupported)
+    if (!CreateInfo.ComputeSupported)
     {
         DEV_ERROR("RTXPT post-process pipeline requires compute shader support");
         return false;
@@ -98,20 +92,20 @@ bool RTXPTPostProcessPipeline::Initialize(IRenderDevice*       pDevice,
         return false;
     }
 
-    m_Stats.SuperResolutionStageReady = m_SuperResolutionPass.Initialize(pDevice, pStateCache);
+    m_Stats.SuperResolutionStageReady = m_SuperResolutionPass.Initialize(pDevice, CreateInfo.pStateCache);
     if (!m_Stats.SuperResolutionStageReady)
     {
         DEV_ERROR("RTXPT super-resolution pass failed to initialize");
         return false;
     }
 
-    m_Stats.TemporalAAStageReady = m_TemporalAAPass.Initialize(pDevice, pStateCache);
+    m_Stats.TemporalAAStageReady = m_TemporalAAPass.Initialize(pDevice, CreateInfo.pStateCache);
     if (!m_Stats.TemporalAAStageReady)
     {
         LOG_WARNING_MESSAGE("RTXPT temporal AA pass is unavailable: ", m_TemporalAAPass.GetStats().DisabledReason.c_str());
     }
 
-    m_Stats.AccumulationStageReady = m_AccumulationPass.Initialize(pDevice, pEngineFactory, pStateCache, pPSOCache, ComputeSupported);
+    m_Stats.AccumulationStageReady = m_AccumulationPass.Initialize(pDevice, CreateInfo.pEngineFactory, CreateInfo.pStateCache, CreateInfo.pPSOCache, CreateInfo.ComputeSupported);
     if (!m_Stats.AccumulationStageReady)
     {
         DEV_ERROR("RTXPT accumulation pass failed to initialize");
@@ -119,7 +113,7 @@ bool RTXPTPostProcessPipeline::Initialize(IRenderDevice*       pDevice,
     }
 
     m_Stats.RealtimeMergeStageReady =
-        m_PostProcessPass.Initialize(pDevice, pEngineFactory, pStateCache, pFrameConstants, ComputeSupported);
+        m_PostProcessPass.Initialize(pDevice, CreateInfo.pEngineFactory, CreateInfo.pStateCache, CreateInfo.pFrameConstants, CreateInfo.ComputeSupported);
     if (!m_Stats.RealtimeMergeStageReady)
     {
         DEV_ERROR("RTXPT realtime post-process pass failed to initialize");
@@ -127,14 +121,14 @@ bool RTXPTPostProcessPipeline::Initialize(IRenderDevice*       pDevice,
     }
 
     m_Stats.ToneMappingStageReady =
-        m_ToneMappingPass.Initialize(pDevice, pEngineFactory, pStateCache, pPSOCache, TEX_FORMAT_RGBA8_UNORM, ComputeSupported);
+        m_ToneMappingPass.Initialize(pDevice, CreateInfo.pEngineFactory, CreateInfo.pStateCache, CreateInfo.pPSOCache, TEX_FORMAT_RGBA8_UNORM, CreateInfo.ComputeSupported);
     if (!m_Stats.ToneMappingStageReady)
     {
         DEV_ERROR("RTXPT tone mapping pass failed to initialize");
         return false;
     }
 
-    m_Stats.BloomStageReady = m_BloomPass.Initialize(pDevice, pEngineFactory, pStateCache);
+    m_Stats.BloomStageReady = m_BloomPass.Initialize(pDevice, CreateInfo.pEngineFactory, CreateInfo.pStateCache);
     if (!m_Stats.BloomStageReady)
     {
         DEV_ERROR("RTXPT bloom pass failed to initialize");
@@ -283,7 +277,14 @@ bool RTXPTPostProcessPipeline::RunSuperResolution(IDeviceContext*               
                                                   float                                CameraFar,
                                                   float                                CameraFovAngleVert)
 {
-    const bool  Executed = m_SuperResolutionPass.Execute(pContext, RenderTargets, FrameDesc, CameraNear, CameraFar, CameraFovAngleVert);
+    RTXPTSuperResolutionExecuteAttribs ExecuteAttribs;
+    ExecuteAttribs.pRenderTargets     = &RenderTargets;
+    ExecuteAttribs.pFrameDesc         = &FrameDesc;
+    ExecuteAttribs.CameraNear         = CameraNear;
+    ExecuteAttribs.CameraFar          = CameraFar;
+    ExecuteAttribs.CameraFovAngleVert = CameraFovAngleVert;
+
+    const bool  Executed = m_SuperResolutionPass.Execute(pContext, ExecuteAttribs);
     const auto& SRStats  = m_SuperResolutionPass.GetStats();
 
     m_Stats.SuperResolutionStageReady = !FrameDesc.Enabled || (Executed && SRStats.UpscalerReady);
@@ -355,26 +356,14 @@ bool RTXPTPostProcessPipeline::CopyRealtimeOutputToProcessed(IDeviceContext*    
     return true;
 }
 
-bool RTXPTPostProcessPipeline::RunTemporalAA(IDeviceContext*                pContext,
-                                             const RTXPTRenderTargets&      RenderTargets,
-                                             const SampleConstants&         FrameConstants,
-                                             Uint32                         FrameIndex,
-                                             bool                           ResetHistory,
-                                             bool                           PreviousViewValid,
-                                             const RTXPTTemporalAASettings& Settings)
+bool RTXPTPostProcessPipeline::RunTemporalAA(IDeviceContext* pContext, const RTXPTTemporalAAFrameAttribs& FrameAttribs)
 {
     m_Stats.LastRealtimeCopyExecuted  = false;
     m_Stats.LastSuperResolutionActive = false;
 
-    RTXPTTemporalAAFrameAttribs Attribs;
-    Attribs.pDevice           = m_Device;
-    Attribs.pDeviceContext    = pContext;
-    Attribs.pRenderTargets    = &RenderTargets;
-    Attribs.pFrameConstants   = &FrameConstants;
-    Attribs.Settings          = Settings;
-    Attribs.FrameIndex        = FrameIndex;
-    Attribs.ResetHistory      = ResetHistory;
-    Attribs.PreviousViewValid = PreviousViewValid;
+    RTXPTTemporalAAFrameAttribs Attribs = FrameAttribs;
+    Attribs.pDevice                     = m_Device;
+    Attribs.pDeviceContext              = pContext;
 
     const bool Executed          = m_TemporalAAPass.Execute(Attribs);
     m_Stats.TemporalAAStageReady = m_TemporalAAPass.IsReady();
@@ -394,15 +383,16 @@ bool RTXPTPostProcessPipeline::RunRealtimeSuperResolution(IDeviceContext*       
     m_Stats.LastRealtimeCopyExecuted = false;
     m_Stats.LastTemporalAAActive     = false;
 
-    const bool Executed =
-        m_SuperResolutionPass.Execute(pContext,
-                                      RenderTargets,
-                                      FrameDesc,
-                                      CameraNear,
-                                      CameraFar,
-                                      CameraFovAngleVert,
-                                      RenderTargets.GetOutputColorSRV(),
-                                      RenderTargets.GetProcessedOutputColorUAV());
+    RTXPTSuperResolutionExecuteAttribs ExecuteAttribs;
+    ExecuteAttribs.pRenderTargets     = &RenderTargets;
+    ExecuteAttribs.pFrameDesc         = &FrameDesc;
+    ExecuteAttribs.CameraNear         = CameraNear;
+    ExecuteAttribs.CameraFar          = CameraFar;
+    ExecuteAttribs.CameraFovAngleVert = CameraFovAngleVert;
+    ExecuteAttribs.pColorSRV          = RenderTargets.GetOutputColorSRV();
+    ExecuteAttribs.pOutputUAV         = RenderTargets.GetProcessedOutputColorUAV();
+
+    const bool  Executed              = m_SuperResolutionPass.Execute(pContext, ExecuteAttribs);
     const auto& SRStats               = m_SuperResolutionPass.GetStats();
     m_Stats.SuperResolutionStageReady = !FrameDesc.Enabled || (Executed && SRStats.UpscalerReady);
     m_Stats.LastSuperResolutionActive = Executed && SRStats.LastExecute && FrameDesc.Enabled;

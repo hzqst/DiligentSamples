@@ -42,13 +42,24 @@ namespace Diligent
 struct IRenderStateCache;
 struct IPipelineStateCache;
 
+struct RTXPTEnvMapBakerPassBindAttribs
+{
+    IBuffer*      pConstants              = nullptr;
+    ITextureView* pSourceCubeSRV          = nullptr;
+    ITextureView* pSourceImportanceMipSRV = nullptr;
+    ITextureView* pSourceRadianceMipSRV   = nullptr;
+    ITextureView* pImportanceUAV          = nullptr;
+    ITextureView* pRadianceUAV            = nullptr;
+    ISampler*     pLinearSampler          = nullptr;
+};
+
 class RTXPTEnvMapBakerPass
 {
 public:
     void Reset();
 
     bool Initialize(IRenderDevice* pDevice, IEngineFactory* pEngineFactory, IRenderStateCache* pStateCache, IPipelineStateCache* pPSOCache, const char* Name, const char* EntryPoint);
-    bool Bind(IBuffer* pConstants, ITextureView* pSourceCubeSRV, ITextureView* pSourceImportanceMipSRV, ITextureView* pSourceRadianceMipSRV, ITextureView* pImportanceUAV, ITextureView* pRadianceUAV, ISampler* pLinearSampler);
+    bool Bind(const RTXPTEnvMapBakerPassBindAttribs& Attribs);
     bool Dispatch(IDeviceContext* pContext, Uint32 ThreadGroupsX, Uint32 ThreadGroupsY, RESOURCE_STATE_TRANSITION_MODE StateTransitionMode = RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
 
 private:

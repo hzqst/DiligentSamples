@@ -135,11 +135,18 @@ try
         auto ControlBuffer              = Buffer(sizeof(Control), sizeof(Control), &Control);
         auto Local                      = Buffer(Entries * 4, 4, nullptr);
         Candidates.fill(RTXPT_INVALID_LIGHT_INDEX);
-        auto RawWeights    = Texture(TEX_FORMAT_R32_FLOAT, 4, Weights.data());
-        auto RawCandidates = Texture(TEX_FORMAT_R32_UINT, 4, Candidates.data());
-        Require(Feedback.Prepare(Context, ControlBuffer, Proxies, Local, RawWeights, RawCandidates,
-                                 Depth->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE), Motion->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE), true),
-                "Reset prepare");
+        auto                             RawWeights    = Texture(TEX_FORMAT_R32_FLOAT, 4, Weights.data());
+        auto                             RawCandidates = Texture(TEX_FORMAT_R32_UINT, 4, Candidates.data());
+        RTXPTLightFeedbackPrepareAttribs ResetPrepare;
+        ResetPrepare.pControl     = ControlBuffer;
+        ResetPrepare.pProxies     = Proxies;
+        ResetPrepare.pLocal       = Local;
+        ResetPrepare.pWeights     = RawWeights;
+        ResetPrepare.pCandidates  = RawCandidates;
+        ResetPrepare.pDepth       = Depth->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
+        ResetPrepare.pMotion      = Motion->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
+        ResetPrepare.ResetHistory = true;
+        Require(Feedback.Prepare(Context, ResetPrepare), "Reset prepare");
         Require(Feedback.Finish(Context, Local), "Reset finish");
         for (Uint32 Packed : Read(Local)) Require(Packed == 127u, "Reset must fill the only global light with multiplicity 128");
         Candidates.fill(7u | (Case == 1 ? 0u : 0x80000000u));
@@ -163,9 +170,16 @@ try
             Control.SamplingProxyCount = 0;
             Context->UpdateBuffer(ControlBuffer, 0, sizeof(Control), &Control, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
         }
-        Require(Feedback.Prepare(Context, ControlBuffer, Proxies, Local, RawWeights, RawCandidates,
-                                 CurrentDepth->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE), CurrentMotion->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE), false, Case >= 5 ? RemapBuffer.RawPtr() : nullptr),
-                "History prepare");
+        RTXPTLightFeedbackPrepareAttribs HistoryPrepare;
+        HistoryPrepare.pControl      = ControlBuffer;
+        HistoryPrepare.pProxies      = Proxies;
+        HistoryPrepare.pLocal        = Local;
+        HistoryPrepare.pWeights      = RawWeights;
+        HistoryPrepare.pCandidates   = RawCandidates;
+        HistoryPrepare.pDepth        = CurrentDepth->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
+        HistoryPrepare.pMotion       = CurrentMotion->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
+        HistoryPrepare.pHistoryRemap = Case >= 5 ? RemapBuffer.RawPtr() : nullptr;
+        Require(Feedback.Prepare(Context, HistoryPrepare), "History prepare");
         const auto   Counts     = Read(Feedback.GetCounts());
         const Uint32 CountIndex = Case < 5 ? 7u : Case == 5 ? 3u : 8u;
         Require(Counts[CountIndex] == Pixels, "Feedback counts must follow source remapping and reject removed IDs");
@@ -236,9 +250,19 @@ try
         auto                               Table           = Buffer(Budget * 4, 4, nullptr);
         std::array<Uint32, LightCount + 1> FeedbackCounts{};
         auto                               HistoryCounts = Buffer(sizeof(FeedbackCounts), 4, FeedbackCounts.data());
-        Require(ProxyBuild.Build(Context, ControlBuffer, LightBuffer, ExtensionBuffer, HistoryCounts, LightWeights, Counts, Table,
-                                 LightCount, 0, Budget, 2, nullptr, nullptr, 1),
-                "Cluster build failed");
+        RTXPTLightProxyBuildAttribs        ClusterBuild;
+        ClusterBuild.pControl               = ControlBuffer;
+        ClusterBuild.pLights                = LightBuffer;
+        ClusterBuild.pLightsEx              = ExtensionBuffer;
+        ClusterBuild.pFeedbackCounts        = HistoryCounts;
+        ClusterBuild.pLightWeights          = LightWeights;
+        ClusterBuild.pLightProxyCounters    = Counts;
+        ClusterBuild.pLightSamplingProxies  = Table;
+        ClusterBuild.TotalLightCount        = LightCount;
+        ClusterBuild.ProxyBudget            = Budget;
+        ClusterBuild.ImportanceSamplingType = 2;
+        ClusterBuild.ClusterCount           = 1;
+        Require(ProxyBuild.Build(Context, ClusterBuild), "Cluster build failed");
         const auto Stored        = Read(LightBuffer);
         const auto ActualCounts  = Read(Counts);
         const auto ActualControl = Read(ControlBuffer);
@@ -312,11 +336,21 @@ try
         auto                Counts                 = Buffer(LightCount * 4, 4, nullptr);
         auto                Table                  = Buffer(Budget * 4, 4, nullptr);
         std::vector<Uint32> FeedbackCounts(LightCount + 1u);
-        FeedbackCounts[7]  = Pixels;
-        auto HistoryCounts = Buffer(static_cast<Uint32>(FeedbackCounts.size()) * 4, 4, FeedbackCounts.data());
-        Require(ProxyBuild.Build(Context, ControlBuffer, LightBuffer, ExtensionBuffer, HistoryCounts, LightWeights, Counts, Table,
-                                 LightCount, Control.AnalyticLightCount, Budget, Uniform ? 0 : 2),
-                "Proxy build failed");
+        FeedbackCounts[7]                         = Pixels;
+        auto                        HistoryCounts = Buffer(static_cast<Uint32>(FeedbackCounts.size()) * 4, 4, FeedbackCounts.data());
+        RTXPTLightProxyBuildAttribs BuildAttribs;
+        BuildAttribs.pControl               = ControlBuffer;
+        BuildAttribs.pLights                = LightBuffer;
+        BuildAttribs.pLightsEx              = ExtensionBuffer;
+        BuildAttribs.pFeedbackCounts        = HistoryCounts;
+        BuildAttribs.pLightWeights          = LightWeights;
+        BuildAttribs.pLightProxyCounters    = Counts;
+        BuildAttribs.pLightSamplingProxies  = Table;
+        BuildAttribs.TotalLightCount        = LightCount;
+        BuildAttribs.AnalyticLightCount     = Control.AnalyticLightCount;
+        BuildAttribs.ProxyBudget            = Budget;
+        BuildAttribs.ImportanceSamplingType = Uniform ? 0 : 2;
+        Require(ProxyBuild.Build(Context, BuildAttribs), "Proxy build failed");
         const auto   ActualControl = Read(ControlBuffer);
         const Uint32 ProxyCount    = ActualControl[4];
         Require(ProxyCount <= Budget, "Proxy capacity exceeded");
@@ -395,7 +429,21 @@ try
             }
             Control.BakerConstants.FrustumPlanes[0] = Frame == 1 ? float4{} : FramePlanes[0];
             Context->UpdateBuffer(ControlBuffer, 0, sizeof(Control), &Control, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-            Require(Boost.Build(Context, ControlBuffer, LightBuffer, ExtensionBuffer, FeedbackCounts, WeightsBuffer, Counts, Table, 4, 2, 10000, 2, Frame == 1 ? Remap.RawPtr() : nullptr, Frame == 1 ? FramePlanes : nullptr), "Importance boost build");
+            RTXPTLightProxyBuildAttribs BoostBuild;
+            BoostBuild.pControl                   = ControlBuffer;
+            BoostBuild.pLights                    = LightBuffer;
+            BoostBuild.pLightsEx                  = ExtensionBuffer;
+            BoostBuild.pFeedbackCounts            = FeedbackCounts;
+            BoostBuild.pLightWeights              = WeightsBuffer;
+            BoostBuild.pLightProxyCounters        = Counts;
+            BoostBuild.pLightSamplingProxies      = Table;
+            BoostBuild.TotalLightCount            = 4;
+            BoostBuild.AnalyticLightCount         = 2;
+            BoostBuild.ProxyBudget                = 10000;
+            BoostBuild.ImportanceSamplingType     = 2;
+            BoostBuild.pHistoryRemapCurrentToPast = Frame == 1 ? Remap.RawPtr() : nullptr;
+            BoostBuild.pFrustumPlanes             = Frame == 1 ? FramePlanes : nullptr;
+            Require(Boost.Build(Context, BoostBuild), "Importance boost build");
             const auto Bits = Read(WeightsBuffer);
             float      Actual[4];
             std::memcpy(Actual, Bits.data(), sizeof(Actual));
