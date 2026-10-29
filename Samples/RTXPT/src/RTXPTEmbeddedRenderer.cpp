@@ -91,9 +91,9 @@ bool RTXPTEmbeddedRenderer::Initialize(IRenderDevice* Device, IDeviceContext* Co
     R.PSOCache = PSOCache;
     R.Width    = Width;
     R.Height   = Height;
-    RTXPTShaderSourceScope     ShaderScope{Shaders};
-    auto*                      Factory = Device->GetEngineFactory();
-    BufferDesc ConstantsDesc;
+    RTXPTShaderSourceScope ShaderScope{Shaders};
+    auto*                  Factory = Device->GetEngineFactory();
+    BufferDesc             ConstantsDesc;
     ConstantsDesc.Name           = "RTXPT embedded frame constants";
     ConstantsDesc.Size           = sizeof(SampleConstants);
     ConstantsDesc.BindFlags      = BIND_UNIFORM_BUFFER;

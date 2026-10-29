@@ -136,8 +136,7 @@ private:
     bool                                   RunEmbeddedReference();
     bool                                   m_UseEmbeddedReference = false;
     std::unique_ptr<RTXPTEmbeddedRenderer> m_EmbeddedReference;
-    // Kept across resizes and scene reloads, so a recreated embedded renderer reuses its shaders and pipelines.
-    RefCntAutoPtr<IRenderStateCache>       m_pEmbeddedStateCache;
+    RefCntAutoPtr<IRenderStateCache>       m_pEmbeddedStateCache; // Outlives resizes and scene reloads for recreated embedded renderers.
     RefCntAutoPtr<ITextureView>            m_EmbeddedDisplaySRV;
     RTXPTBlitPass                          m_EmbeddedBlit;
     void                                   DrainAsyncPrefix();
