@@ -769,6 +769,7 @@ void RTXPTSample::ResetSceneDependentResources()
     }
     m_EmbeddedDisplaySRV.Release();
     m_EmbeddedReference.reset();
+    m_EmbeddedScene.reset();
     m_EmbeddedBlit.Reset();
     m_Materials.Reset();
     m_Lights.Reset();
@@ -2258,6 +2259,7 @@ void RTXPTSample::ReleasePrefixResources(IDeviceContext* Context)
 bool RTXPTSample::RunEmbeddedReference()
 {
     const auto& Desc = m_pSwapChain->GetDesc();
+    // A new size needs only a new view; the scene keeps its acceleration structures, lights and environment.
     if (m_EmbeddedReference && (m_EmbeddedReference->GetOutput()->GetDesc().Width != Desc.Width || m_EmbeddedReference->GetOutput()->GetDesc().Height != Desc.Height))
     {
         m_pImmediateContext->WaitForIdle();
@@ -2273,8 +2275,19 @@ bool RTXPTSample::RunEmbeddedReference()
         // algorithms the embedded renderer disables (SHARC is not on this factory's paths). Its cache hashes by name.
         if (!m_pEmbeddedStateCache)
             CreateRTXPTEmbeddedStateCache(m_pDevice, &m_pEmbeddedStateCache);
-        auto Renderer = std::make_unique<RTXPTEmbeddedRenderer>();
-        if (!Renderer->Initialize(m_pDevice, m_pImmediateContext, m_Scene, m_Materials, Shaders, m_pEmbeddedStateCache, m_pPSOCache, Desc.Width, Desc.Height, Error))
+        if (!m_EmbeddedScene)
+        {
+            auto Scene = std::make_unique<RTXPTEmbeddedScene>();
+            if (!Scene->Initialize(m_pDevice, m_pImmediateContext, m_Scene, m_Materials, Shaders, m_pEmbeddedStateCache, m_pPSOCache, Error))
+            {
+                LOG_ERROR_MESSAGE("Embedded reference: ", Error);
+                m_pImmediateContext->WaitForIdle();
+                return false;
+            }
+            m_EmbeddedScene = std::move(Scene);
+        }
+        auto Renderer = std::make_unique<RTXPTEmbeddedView>();
+        if (!Renderer->Initialize(m_pDevice, m_pImmediateContext, *m_EmbeddedScene, Shaders, m_pEmbeddedStateCache, m_pPSOCache, Desc.Width, Desc.Height, Error))
         {
             LOG_ERROR_MESSAGE("Embedded reference: ", Error);
             m_pImmediateContext->WaitForIdle();

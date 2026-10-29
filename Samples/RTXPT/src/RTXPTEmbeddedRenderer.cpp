@@ -16,33 +16,127 @@
 #include "MapHelper.hpp"
 #include <algorithm>
 #include <cstring>
+#include <vector>
 
 namespace Diligent
 {
-struct RTXPTEmbeddedRenderer::Impl
+struct RTXPTEmbeddedScene::Impl
 {
-    RefCntAutoPtr<IRenderDevice>                   Device;
-    RefCntAutoPtr<IDeviceContext>                  Context;
-    RefCntAutoPtr<IRenderStateCache>               Cache;
-    RefCntAutoPtr<IPipelineStateCache>             PSOCache;
-    RefCntAutoPtr<IShaderSourceInputStreamFactory> Shaders;
-    RefCntAutoPtr<IBuffer>                         Constants;
-    RefCntAutoPtr<ITexture>                        Radiance, Depth, Motion, Accumulated, Processed, Output;
-    RefCntAutoPtr<ITextureView>                    DisplayRTV;
-    RTXPTLights                                    Lights;
-    RTXPTLightsBaker                               LightsBaker;
-    RTXPTEnvMapBaker                               Environment;
-    RTXPTAccelerationStructures                    AS;
-    RTXPTEmissiveTrianglePass                      Emissive;
-    RTXPTRayTracingPass                            Rays;
-    RTXPTAccumulationPass                          Accumulation;
-    RTXPTToneMappingPass                           ToneMapping;
-    RTXPTToneMappingParameters                     ToneParameters;
-    RTXPTEnvMapSettings                            EnvironmentSettings;
-    PathTracerCameraData                           PreviousCamera{};
-    PathTracerViewData                             PreviousView{};
-    Uint32                                         Width{}, Height{}, FrameIndex{}, Samples{};
-    bool                                           Ready{};
+    //Declared first, so they are released last: the shaders and pipelines created from the caches use them until
+    //they are released.
+    RefCntAutoPtr<IRenderStateCache>   Cache;
+    RefCntAutoPtr<IPipelineStateCache> PSOCache;
+    //The scene buffers and material textures the views bind, kept so views can be created after the source scene and
+    //materials are gone.
+    RefCntAutoPtr<IBuffer>                    VertexBuffer, IndexBuffer, MaterialBuffer;
+    std::vector<RefCntAutoPtr<IDeviceObject>> TextureReferences;
+    std::vector<IDeviceObject*>               Textures;
+    VALUE_TYPE                                IndexType = VT_UNDEFINED;
+    RTXPTLights                               Lights;
+    RTXPTEnvMapBaker                          Environment;
+    RTXPTAccelerationStructures               AS;
+    RTXPTEmissiveTrianglePass                 Emissive;
+    RTXPTEnvMapSettings                       EnvironmentSettings;
+    bool                                      Ready{};
+
+    IDeviceObject* const* GetTextures() const { return Textures.empty() ? nullptr : Textures.data(); }
+};
+
+RTXPTEmbeddedScene::RTXPTEmbeddedScene() :
+    m_Impl{std::make_unique<Impl>()} {}
+RTXPTEmbeddedScene::~RTXPTEmbeddedScene() = default;
+
+bool RTXPTEmbeddedScene::Initialize(IRenderDevice* Device, IDeviceContext* Context, RTXPTScene& Scene, RTXPTMaterials& Materials, IShaderSourceInputStreamFactory* Shaders, IRenderStateCache* Cache, IPipelineStateCache* PSOCache, std::string& Error)
+{
+    auto& S = *m_Impl;
+    Error   = "RTXPT requires ray tracing, bindless resources, compute and standalone RT shaders";
+    if (!Device || !Context || !Shaders)
+        return false;
+    const auto& Features = Device->GetDeviceInfo().Features;
+    if (Features.RayTracing != DEVICE_FEATURE_STATE_ENABLED || Features.BindlessResources != DEVICE_FEATURE_STATE_ENABLED ||
+        Features.ComputeShaders != DEVICE_FEATURE_STATE_ENABLED ||
+        !(Device->GetAdapterInfo().RayTracing.CapFlags & RAY_TRACING_CAP_FLAG_STANDALONE_SHADERS))
+        return false;
+    if (!Cache)
+    {
+        Error = "RTXPT embedded renderer requires a render state cache";
+        return false;
+    }
+    if (Scene.HasSkinnedGeometry())
+    {
+        Error = "RTXPT embedded renderer supports static geometry only";
+        return false;
+    }
+    S.Cache    = Cache;
+    S.PSOCache = PSOCache;
+    RTXPTShaderSourceScope ShaderScope{Shaders};
+    auto*                  Factory = Device->GetEngineFactory();
+    S.VertexBuffer                 = Scene.GetVertexBuffer0(Device, Context);
+    S.IndexBuffer                  = Scene.GetIndexBuffer(Device, Context);
+    S.MaterialBuffer               = Materials.GetMaterialBuffer();
+    S.IndexType                    = Scene.GetIndexType();
+    S.Textures.assign(Materials.GetTextureBindings(), Materials.GetTextureBindings() + Materials.GetTextureCount());
+    S.TextureReferences.assign(S.Textures.begin(), S.Textures.end());
+
+    const auto& Graph = Scene.GetSceneGraphData();
+    Error             = "RTXPT scene lights or acceleration structures could not be built";
+    if (!S.Lights.Upload(Device, Graph) || !S.Lights.UploadEmissiveTriangles(Device, Graph) ||
+        !S.AS.BuildStaticScene(Device, Context, Graph, S.IndexType, true) ||
+        !S.AS.UploadSubInstanceTransforms(Context))
+        return false;
+
+    //Only the scene can opt into an environment. Absence means black, never the Sample's default sky.
+    S.EnvironmentSettings         = RTXPTEnvMapBaker::MakeSceneDefaultSettings(Graph);
+    S.EnvironmentSettings.Enabled = std::any_of(Graph.Lights.begin(), Graph.Lights.end(),
+                                                [](const auto& Light) { return Light.Type == "EnvironmentLight"; });
+    //The Sample's disabled-environment shader evaluates a procedural fallback. Zero its multiplier as well
+    //so an unlit embedded scene is black, including primary misses and indirect rays.
+    if (!S.EnvironmentSettings.Enabled)
+        S.EnvironmentSettings.RadianceScale = float3{0, 0, 0};
+    S.Environment.SetFileSource(Scene.GetFileSource());
+    Error = "RTXPT scene environment failed to load or bake";
+    if (!S.Environment.CreateResources(Device, Context, Factory, Cache, PSOCache, true) ||
+        !S.Environment.Update(Device, Context, Factory, Scene.GetAssetsRoot(), S.EnvironmentSettings, true, true))
+        return false;
+
+    //The pass writes the emissive triangles of the lights once; views only read them.
+    Error = "RTXPT emissive geometry preparation failed";
+    if (!S.Emissive.Initialize(Device, Factory, Cache, PSOCache, S.MaterialBuffer, S.AS.GetSubInstanceBuffer(),
+                               S.AS.GetSubInstanceTransformBuffer(), S.VertexBuffer, S.VertexBuffer,
+                               S.IndexBuffer, S.IndexType, S.Lights.GetEmissiveTriangleBuffer(),
+                               S.GetTextures(), static_cast<Uint32>(S.Textures.size()), !S.Textures.empty(), true))
+        return false;
+    if (S.Lights.GetEmissiveTriangleCount() && !S.Emissive.Dispatch(Context, S.AS.GetStats().SubInstanceCount))
+        return false;
+    Context->Flush();
+    Context->WaitForIdle();
+    S.Ready = true;
+    Error.clear();
+    return true;
+}
+
+bool RTXPTEmbeddedScene::IsReady() const { return m_Impl->Ready; }
+
+struct RTXPTEmbeddedView::Impl
+{
+    //Declared first, so they are released last (see RTXPTEmbeddedScene::Impl).
+    RefCntAutoPtr<IRenderStateCache>   Cache;
+    RefCntAutoPtr<IPipelineStateCache> PSOCache;
+    const RTXPTEmbeddedScene::Impl*    Scene{};
+    RefCntAutoPtr<IRenderDevice>       Device;
+    RefCntAutoPtr<IDeviceContext>      Context;
+    RefCntAutoPtr<IBuffer>             Constants;
+    RefCntAutoPtr<ITexture>            Radiance, Depth, Motion, Accumulated, Processed, Output;
+    RefCntAutoPtr<ITextureView>        DisplayRTV;
+    RTXPTLightsBaker                   LightsBaker;
+    RTXPTRayTracingPass                Rays;
+    RTXPTAccumulationPass              Accumulation;
+    RTXPTToneMappingPass               ToneMapping;
+    RTXPTToneMappingParameters         ToneParameters;
+    PathTracerCameraData               PreviousCamera{};
+    PathTracerViewData                 PreviousView{};
+    Uint32                             Width{}, Height{}, FrameIndex{}, Samples{};
+    bool                               Ready{};
 
     bool CreateTarget(const char* Name, TEXTURE_FORMAT Format, BIND_FLAGS Flags, RefCntAutoPtr<ITexture>& Target)
     {
@@ -59,38 +153,24 @@ struct RTXPTEmbeddedRenderer::Impl
     }
 };
 
-RTXPTEmbeddedRenderer::RTXPTEmbeddedRenderer() :
+RTXPTEmbeddedView::RTXPTEmbeddedView() :
     m_Impl{std::make_unique<Impl>()} {}
-RTXPTEmbeddedRenderer::~RTXPTEmbeddedRenderer() = default;
+RTXPTEmbeddedView::~RTXPTEmbeddedView() = default;
 
-bool RTXPTEmbeddedRenderer::Initialize(IRenderDevice* Device, IDeviceContext* Context, RTXPTScene& Scene, RTXPTMaterials& Materials, IShaderSourceInputStreamFactory* Shaders, IRenderStateCache* Cache, IPipelineStateCache* PSOCache, Uint32 Width, Uint32 Height, std::string& Error)
+bool RTXPTEmbeddedView::Initialize(IRenderDevice* Device, IDeviceContext* Context, const RTXPTEmbeddedScene& Scene, IShaderSourceInputStreamFactory* Shaders, IRenderStateCache* Cache, IPipelineStateCache* PSOCache, Uint32 Width, Uint32 Height, std::string& Error)
 {
     auto& R = *m_Impl;
-    Error   = "RTXPT requires ray tracing, bindless resources, compute and standalone RT shaders";
-    if (!Device || !Context || !Shaders || !Width || !Height)
+    Error   = "RTXPT view requires a ready scene, a render state cache and a nonempty size";
+    if (!Device || !Context || !Shaders || !Cache || !Scene.IsReady() || !Width || !Height)
         return false;
-    const auto& Features = Device->GetDeviceInfo().Features;
-    if (Features.RayTracing != DEVICE_FEATURE_STATE_ENABLED || Features.BindlessResources != DEVICE_FEATURE_STATE_ENABLED ||
-        Features.ComputeShaders != DEVICE_FEATURE_STATE_ENABLED ||
-        !(Device->GetAdapterInfo().RayTracing.CapFlags & RAY_TRACING_CAP_FLAG_STANDALONE_SHADERS))
-        return false;
-    if (!Cache)
-    {
-        Error = "RTXPT embedded reference renderer requires a render state cache";
-        return false;
-    }
-    if (Scene.HasSkinnedGeometry())
-    {
-        Error = "RTXPT embedded reference renderer supports static geometry only";
-        return false;
-    }
-    R.Device   = Device;
-    R.Context  = Context;
-    R.Shaders  = Shaders;
-    R.Cache    = Cache;
-    R.PSOCache = PSOCache;
-    R.Width    = Width;
-    R.Height   = Height;
+    const auto& S = *Scene.m_Impl;
+    R.Cache       = Cache;
+    R.PSOCache    = PSOCache;
+    R.Scene       = &S;
+    R.Device      = Device;
+    R.Context     = Context;
+    R.Width       = Width;
+    R.Height      = Height;
     RTXPTShaderSourceScope ShaderScope{Shaders};
     auto*                  Factory = Device->GetEngineFactory();
     BufferDesc             ConstantsDesc;
@@ -117,65 +197,35 @@ bool RTXPTEmbeddedRenderer::Initialize(IRenderDevice* Device, IDeviceContext* Co
     if (!R.DisplayRTV)
         return false;
 
-    const auto& Graph = Scene.GetSceneGraphData();
-    Error             = "RTXPT scene lights or acceleration structures could not be built";
-    if (!R.Lights.Upload(Device, Graph) || !R.Lights.UploadEmissiveTriangles(Device, Graph) ||
-        !R.AS.BuildStaticScene(Device, Context, Graph, Scene.GetIndexType(), true) ||
-        !R.AS.UploadSubInstanceTransforms(Context))
-        return false;
-
-    //Only the scene can opt into an environment. Absence means black, never the Sample's default sky.
-    R.EnvironmentSettings         = RTXPTEnvMapBaker::MakeSceneDefaultSettings(Graph);
-    R.EnvironmentSettings.Enabled = std::any_of(Graph.Lights.begin(), Graph.Lights.end(),
-                                                [](const auto& Light) { return Light.Type == "EnvironmentLight"; });
-    //The Sample's disabled-environment shader evaluates a procedural fallback. Zero its multiplier as well
-    //so an unlit embedded scene is black, including primary misses and indirect rays.
-    if (!R.EnvironmentSettings.Enabled)
-        R.EnvironmentSettings.RadianceScale = float3{0, 0, 0};
-    R.Environment.SetFileSource(Scene.GetFileSource());
-    Error = "RTXPT scene environment failed to load or bake";
-    if (!R.Environment.CreateResources(Device, Context, Factory, R.Cache, R.PSOCache, true) ||
-        !R.Environment.Update(Device, Context, Factory, Scene.GetAssetsRoot(), R.EnvironmentSettings, true, true))
-        return false;
-
-    Error               = "RTXPT emissive geometry preparation failed";
-    const bool Textured = Materials.GetTextureCount() != 0;
-    if (!R.Emissive.Initialize(Device, Factory, R.Cache, R.PSOCache, Materials.GetMaterialBuffer(), R.AS.GetSubInstanceBuffer(),
-                               R.AS.GetSubInstanceTransformBuffer(), Scene.GetVertexBuffer0(Device, Context), Scene.GetVertexBuffer0(Device, Context),
-                               Scene.GetIndexBuffer(Device, Context), Scene.GetIndexType(), R.Lights.GetEmissiveTriangleBuffer(),
-                               Materials.GetTextureBindings(), Materials.GetTextureCount(), Textured, true))
-        return false;
-    if (R.Lights.GetEmissiveTriangleCount() && !R.Emissive.Dispatch(Context, R.AS.GetStats().SubInstanceCount))
-        return false;
-
+    //Light sampling keeps screen-sized feedback and reads this view's depth and motion every frame, so it is per view.
     RTXPTLightsBakerSettings Lighting;
     Lighting.ImportanceSamplingType = 1;
     Lighting.ViewportSize = Lighting.PrevViewportSize = float2{float(Width), float(Height)};
-    Lighting.EnvMapParams                             = R.Environment.GetLightsBakerParams();
-    Lighting.pEnvironmentRadianceMap                  = R.Environment.GetRadianceMapSRV();
-    Lighting.EnvMapImportanceMapResolution            = R.Environment.GetStats().ImportanceResolution;
-    Lighting.EnvMapImportanceMapMipCount              = R.Environment.GetStats().ImportanceMipLevels;
+    Lighting.EnvMapParams                             = S.Environment.GetLightsBakerParams();
+    Lighting.pEnvironmentRadianceMap                  = S.Environment.GetRadianceMapSRV();
+    Lighting.EnvMapImportanceMapResolution            = S.Environment.GetStats().ImportanceResolution;
+    Lighting.EnvMapImportanceMapMipCount              = S.Environment.GetStats().ImportanceMipLevels;
     Lighting.ResetFeedback                            = true;
     Error                                             = "RTXPT light sampling preparation failed";
-    if (!R.LightsBaker.CreateResources(Device, Factory, R.Cache, R.PSOCache, Width, Height, true) ||
-        !R.LightsBaker.UpdateBegin(Device, R.Lights, Lighting))
+    if (!R.LightsBaker.CreateResources(Device, Factory, Cache, PSOCache, Width, Height, true) ||
+        !R.LightsBaker.UpdateBegin(Device, S.Lights, Lighting))
         return false;
 
     Error = "RTXPT ray tracing shaders or bindings failed";
-    if (!R.Rays.Initialize(Device, Context, Factory, R.Cache, R.PSOCache, R.Constants, Materials.GetMaterialBuffer(),
-                           R.AS.GetSubInstanceBuffer(), R.LightsBaker.GetLightBuffer(), R.LightsBaker.GetLightExBuffer(),
+    if (!R.Rays.Initialize(Device, Context, Factory, Cache, PSOCache, R.Constants, S.MaterialBuffer,
+                           S.AS.GetSubInstanceBuffer(), R.LightsBaker.GetLightBuffer(), R.LightsBaker.GetLightExBuffer(),
                            R.LightsBaker.GetControlBuffer(), R.LightsBaker.GetLightProxyCounters(), R.LightsBaker.GetLightSamplingProxies(),
                            R.LightsBaker.GetLocalSamplingBuffer(), R.LightsBaker.GetEnvironmentLightLookup(),
                            R.LightsBaker.GetFeedbackTotalWeightUAV(), R.LightsBaker.GetFeedbackCandidatesUAV(),
-                           R.Environment.GetEnvironmentMapSRV(), R.Environment.GetImportanceMapSRV(), R.Environment.GetRadianceMapSRV(),
-                           R.Environment.GetEnvironmentSampler(), R.Environment.GetImportanceSampler(),
-                           Scene.GetVertexBuffer0(Device, Context), Scene.GetVertexBuffer0(Device, Context), Scene.GetIndexBuffer(Device, Context), Scene.GetIndexType(),
-                           R.AS.GetTLAS(), Materials.GetTextureBindings(), Materials.GetTextureCount(), Textured, true,
+                           S.Environment.GetEnvironmentMapSRV(), S.Environment.GetImportanceMapSRV(), S.Environment.GetRadianceMapSRV(),
+                           S.Environment.GetEnvironmentSampler(), S.Environment.GetImportanceSampler(),
+                           S.VertexBuffer, S.VertexBuffer, S.IndexBuffer, S.IndexType,
+                           S.AS.GetTLAS(), S.GetTextures(), static_cast<Uint32>(S.Textures.size()), !S.Textures.empty(), true,
                            false, true, true, false, 0, 5, 1, false, false, false, false))
         return false;
     Error = "RTXPT accumulation or tone mapping initialization failed";
-    if (!R.Accumulation.Initialize(Device, Factory, R.Cache, R.PSOCache, true) ||
-        !R.ToneMapping.Initialize(Device, Factory, R.Cache, R.PSOCache, TEX_FORMAT_RGBA8_UNORM_SRGB, true) ||
+    if (!R.Accumulation.Initialize(Device, Factory, Cache, PSOCache, true) ||
+        !R.ToneMapping.Initialize(Device, Factory, Cache, PSOCache, TEX_FORMAT_RGBA8_UNORM_SRGB, true) ||
         !R.ToneMapping.ResizeResources(Device, Width, Height, TEX_FORMAT_RGBA32_FLOAT))
         return false;
     R.ToneParameters.ToneMapOperator = RTXPTToneMapperOperator::Reinhard;
@@ -186,14 +236,15 @@ bool RTXPTEmbeddedRenderer::Initialize(IRenderDevice* Device, IDeviceContext* Co
     return true;
 }
 
-bool RTXPTEmbeddedRenderer::Render(const PathTracerCameraData& Camera, const PathTracerViewData& View, double Time, bool ResetHistory, std::string& Error)
+bool RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, const PathTracerViewData& View, double Time, bool ResetHistory, std::string& Error)
 {
     auto& R = *m_Impl;
     if (!R.Ready)
     {
-        Error = "RTXPT scene is not initialized";
+        Error = "RTXPT view is not initialized";
         return false;
     }
+    const auto& S = *R.Scene;
     //Reference accumulation restarts on any camera/projection change. The host additionally resets cuts,
     //pipeline changes and discontinuities; successful executed frames alone advance history.
     ResetHistory = ResetHistory || !R.Samples || std::memcmp(&Camera, &R.PreviousCamera, sizeof(Camera)) != 0 ||
@@ -216,9 +267,9 @@ bool RTXPTEmbeddedRenderer::Render(const PathTracerCameraData& Camera, const Pat
     PT.resetAccumulation                = ResetHistory;
     PT.camera                           = Camera;
     PT.prevCamera                       = ResetHistory ? Camera : R.PreviousCamera;
-    PT.analyticLightCount               = R.Lights.GetStats().LightCount;
-    PT.environmentNEEEnabled            = (R.Lights.GetEmissiveTriangleCount() << 1u) | (R.EnvironmentSettings.Enabled ? 1u : 0u);
-    Constants.envMap                    = R.Environment.GetConstants();
+    PT.analyticLightCount               = S.Lights.GetStats().LightCount;
+    PT.environmentNEEEnabled            = (S.Lights.GetEmissiveTriangleCount() << 1u) | (S.EnvironmentSettings.Enabled ? 1u : 0u);
+    Constants.envMap                    = S.Environment.GetConstants();
     {
         MapHelper<SampleConstants> Mapped{R.Context, R.Constants, MAP_WRITE, MAP_FLAG_DISCARD};
         if (!Mapped)
@@ -259,9 +310,9 @@ bool RTXPTEmbeddedRenderer::Render(const PathTracerCameraData& Camera, const Pat
     return true;
 }
 
-ITexture* RTXPTEmbeddedRenderer::GetOutput() const { return m_Impl->Output; }
-Uint32    RTXPTEmbeddedRenderer::GetTraceCount() const { return m_Impl->Rays.GetStats().TraceCount; }
-Uint32    RTXPTEmbeddedRenderer::GetAccumulationCount() const { return m_Impl->Samples; }
+ITexture* RTXPTEmbeddedView::GetOutput() const { return m_Impl->Output; }
+Uint32    RTXPTEmbeddedView::GetTraceCount() const { return m_Impl->Rays.GetStats().TraceCount; }
+Uint32    RTXPTEmbeddedView::GetAccumulationCount() const { return m_Impl->Samples; }
 
 void CreateRTXPTEmbeddedStateCache(IRenderDevice* Device, IRenderStateCache** Cache)
 {
