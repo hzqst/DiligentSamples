@@ -338,7 +338,7 @@ try
     Require(Lib != nullptr, "engine load");
     RefCntAutoPtr<IRenderDevice>  Device;
     RefCntAutoPtr<IDeviceContext> Context;
-    IEngineFactory* Factory = nullptr;
+    IEngineFactory*               Factory = nullptr;
     if (std::string{argv[1]} == "Vk")
     {
         auto Get = reinterpret_cast<IEngineFactoryVk* (*)()>(GetProcAddress(Lib, "GetEngineFactoryVk"));
@@ -348,8 +348,8 @@ try
         F->SetMessageCallback(Message);
         EngineVkCreateInfo CI;
         CI.Features.ShaderResourceRuntimeArrays = DEVICE_FEATURE_STATE_ENABLED;
-        CI.pDxCompilerPath = argc == 4 ? argv[3] : nullptr;
-        CI.EnableValidation = true;
+        CI.pDxCompilerPath                      = argc == 4 ? argv[3] : nullptr;
+        CI.EnableValidation                     = true;
         F->CreateDeviceAndContextsVk(CI, &Device, &Context);
     }
     else
@@ -362,8 +362,8 @@ try
         Require(F->LoadD3D12(), "load D3D12");
         EngineD3D12CreateInfo CI;
         CI.Features.ShaderResourceRuntimeArrays = DEVICE_FEATURE_STATE_ENABLED;
-        CI.pDxCompilerPath = argc == 4 ? argv[3] : nullptr;
-        CI.EnableValidation = true;
+        CI.pDxCompilerPath                      = argc == 4 ? argv[3] : nullptr;
+        CI.EnableValidation                     = true;
         F->CreateDeviceAndContextsD3D12(CI, &Device, &Context);
     }
     Require(Device && Context, "device creation");
