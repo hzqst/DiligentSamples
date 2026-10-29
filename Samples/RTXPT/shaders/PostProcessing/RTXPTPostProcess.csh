@@ -54,7 +54,7 @@ VK_IMAGE_FORMAT("r32ui")  RWTexture2DArray<uint>    u_DenoisingLayersHeader;
 RWStructuredBuffer<DenoisingLayer>                     u_DenoisingLayersBuffer;
 VK_IMAGE_FORMAT("r32f")   RWTexture2D<float>        u_DenoiserViewspaceZ;
 VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4>      u_DenoiserMotionVectors;
-VK_IMAGE_FORMAT("rgb10_a2") RWTexture2D<float4>     u_DenoiserNormalRoughness;
+VK_IMAGE_FORMAT("rgb10a2") RWTexture2D<float4>     u_DenoiserNormalRoughness;
 VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4>      u_DenoiserDiffRadianceHitDist;
 VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4>      u_DenoiserSpecRadianceHitDist;
 VK_IMAGE_FORMAT("r8")      RWTexture2D<float>       u_DenoiserDisocclusionThresholdMix;
