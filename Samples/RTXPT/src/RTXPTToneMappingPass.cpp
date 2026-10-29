@@ -669,7 +669,7 @@ float RTXPTToneMappingPass::ComputePreExposedGrayLuminance(const RTXPTToneMappin
 
     const float  Exposure = ComputePreExposedGrayScale(PreparedParams);
     const float3 Gray     = MulRowVector(float3{0.5f, 0.5f, 0.5f} * Exposure,
-                                         ComputeWhiteBalanceTransform(PreparedParams));
+                                     ComputeWhiteBalanceTransform(PreparedParams));
     return std::max(ComputeRec709Luminance(Gray), 1.0e-6f);
 }
 

@@ -644,7 +644,7 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
             RTXPTPathTraceVariant::Reference,
             RTXPTPathTraceVariant::BuildDenoisingLayers,
             RTXPTPathTraceVariant::FillDenoisingLayers,
-    };
+        };
     for (RTXPTPathTraceVariant Variant : Variants)
     {
         if (!CreateVariant(Variant))

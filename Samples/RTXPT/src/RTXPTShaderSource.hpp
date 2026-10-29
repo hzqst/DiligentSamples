@@ -13,12 +13,13 @@ inline thread_local IShaderSourceInputStreamFactory* g_RTXPTHostShaderSource = n
 class RTXPTShaderSourceScope
 {
 public:
-    explicit RTXPTShaderSourceScope(IShaderSourceInputStreamFactory* Source) : m_Previous(g_RTXPTHostShaderSource), m_Source(Source)
+    explicit RTXPTShaderSourceScope(IShaderSourceInputStreamFactory* Source) :
+        m_Previous(g_RTXPTHostShaderSource), m_Source(Source)
     {
         g_RTXPTHostShaderSource = Source;
     }
     ~RTXPTShaderSourceScope() { g_RTXPTHostShaderSource = m_Previous; }
-    RTXPTShaderSourceScope(const RTXPTShaderSourceScope&)            = delete;
+    RTXPTShaderSourceScope(const RTXPTShaderSourceScope&) = delete;
     RTXPTShaderSourceScope& operator=(const RTXPTShaderSourceScope&) = delete;
 
 private:

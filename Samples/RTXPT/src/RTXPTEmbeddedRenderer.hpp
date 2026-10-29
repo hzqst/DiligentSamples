@@ -19,7 +19,7 @@ class RTXPTEmbeddedRenderer
 public:
     RTXPTEmbeddedRenderer();
     ~RTXPTEmbeddedRenderer();
-    RTXPTEmbeddedRenderer(const RTXPTEmbeddedRenderer&)            = delete;
+    RTXPTEmbeddedRenderer(const RTXPTEmbeddedRenderer&) = delete;
     RTXPTEmbeddedRenderer& operator=(const RTXPTEmbeddedRenderer&) = delete;
     bool                   Initialize(IRenderDevice* Device, IDeviceContext* Context, RTXPTScene& Scene, RTXPTMaterials& Materials, IShaderSourceInputStreamFactory* Shaders, Uint32 Width, Uint32 Height, std::string& Error);
     bool                   Render(const PathTracerCameraData& Camera, const PathTracerViewData& View, double Time, bool ResetHistory, std::string& Error);

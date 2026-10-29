@@ -57,7 +57,8 @@ struct RTXPTEmbeddedRenderer::Impl
     }
 };
 
-RTXPTEmbeddedRenderer::RTXPTEmbeddedRenderer() : m_Impl{std::make_unique<Impl>()} {}
+RTXPTEmbeddedRenderer::RTXPTEmbeddedRenderer() :
+    m_Impl{std::make_unique<Impl>()} {}
 RTXPTEmbeddedRenderer::~RTXPTEmbeddedRenderer() = default;
 
 bool RTXPTEmbeddedRenderer::Initialize(IRenderDevice* Device, IDeviceContext* Context, RTXPTScene& Scene, RTXPTMaterials& Materials, IShaderSourceInputStreamFactory* Shaders, Uint32 Width, Uint32 Height, std::string& Error)

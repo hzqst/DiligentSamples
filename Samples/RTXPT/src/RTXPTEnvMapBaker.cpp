@@ -885,7 +885,7 @@ bool RTXPTEnvMapBaker::BakeHighResEnvironmentCube(IRenderDevice* pDevice, IDevic
             float4x4::RotationX(-PI_F / 2.f), // -Y
             float4x4::Identity(),             // +Z
             float4x4::RotationY(-PI_F)        // -Z
-    };
+        };
 
     if (IShaderResourceVariable* pSourceVar = pSRB->GetVariableByName(SHADER_TYPE_PIXEL, "g_EnvBakeSource"))
         pSourceVar->Set(m_SourceSRV);
@@ -1194,7 +1194,7 @@ void RTXPTEnvMapBaker::UseFallbackImportanceMaps(Uint32 RequestedResolution)
     m_ImportanceMapSRV = m_FallbackImportanceMap ?
         m_FallbackImportanceMap->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE) :
         nullptr;
-    m_RadianceMapSRV   = m_FallbackRadianceMap ?
+    m_RadianceMapSRV = m_FallbackRadianceMap ?
         m_FallbackRadianceMap->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE) :
         nullptr;
 
@@ -1221,15 +1221,15 @@ bool RTXPTEnvMapBaker::CreateFallbackTextures(IRenderDevice* pDevice)
     m_SourceSRV.Release();
 
     const bool EnvOk        = CreateCubeTexture(pDevice, "RTXPT EnvMapBaker fallback environment cube",
-                                                kFallbackCubeSize, BlackRGBA, m_FallbackEnvironmentMap, m_EnvironmentMapSRV);
+                                         kFallbackCubeSize, BlackRGBA, m_FallbackEnvironmentMap, m_EnvironmentMapSRV);
     const bool DiffuseOk    = CreateCubeTexture(pDevice, "RTXPT EnvMapBaker fallback diffuse irradiance cube",
-                                                kFallbackCubeSize, BlackRGBA, m_FallbackDiffuseIrradiance, m_DiffuseIrradianceSRV);
+                                             kFallbackCubeSize, BlackRGBA, m_FallbackDiffuseIrradiance, m_DiffuseIrradianceSRV);
     const bool ImportanceOk = CreateR32FloatTexture(pDevice, "RTXPT EnvMapBaker fallback importance map",
                                                     1.0f, m_FallbackImportanceMap, m_ImportanceMapSRV);
     const bool RadianceOk   = CreateRGBA8Texture(pDevice, "RTXPT EnvMapBaker fallback radiance map",
-                                                 BlackRGBA, m_FallbackRadianceMap, m_RadianceMapSRV);
+                                               BlackRGBA, m_FallbackRadianceMap, m_RadianceMapSRV);
     const bool BRDFOk       = CreateRGBA8Texture(pDevice, "RTXPT EnvMapBaker fallback BRDF LUT",
-                                                 WhiteRGBA, m_FallbackBRDFLUT, m_BRDFLUTSRV);
+                                           WhiteRGBA, m_FallbackBRDFLUT, m_BRDFLUTSRV);
 
     m_SourceSRV   = m_EnvironmentMapSRV;
     m_Stats.Ready = m_EnvironmentSampler && m_ImportanceSampler &&
