@@ -25,6 +25,7 @@
  */
 
 #include "RTXPTToneMappingPass.hpp"
+#include "RTXPTShaderSource.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -426,7 +427,7 @@ bool RTXPTToneMappingPass::Initialize(IRenderDevice*     pDevice,
     }
 
     RefCntAutoPtr<IShaderSourceInputStreamFactory> pShaderSourceFactory;
-    pEngineFactory->CreateDefaultShaderSourceStreamFactory("shaders;shaders\\PostProcessing\\ToneMapper", &pShaderSourceFactory);
+    CreateRTXPTShaderSourceFactory(pEngineFactory, "shaders;shaders\\PostProcessing\\ToneMapper", &pShaderSourceFactory);
 
     ShaderCreateInfo ShaderCI;
     ShaderCI.SourceLanguage             = SHADER_SOURCE_LANGUAGE_HLSL;

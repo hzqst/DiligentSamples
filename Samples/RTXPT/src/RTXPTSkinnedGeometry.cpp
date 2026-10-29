@@ -25,6 +25,7 @@
  */
 
 #include "RTXPTSkinnedGeometry.hpp"
+#include "RTXPTShaderSource.hpp"
 
 #include <algorithm>
 
@@ -183,7 +184,7 @@ bool RTXPTSkinnedSceneGeometry::CreatePipeline(IRenderDevice* pDevice, IEngineFa
         return true;
 
     RefCntAutoPtr<IShaderSourceInputStreamFactory> pShaderSourceFactory;
-    pEngineFactory->CreateDefaultShaderSourceStreamFactory("shaders;shaders\\PathTracer", &pShaderSourceFactory);
+    CreateRTXPTShaderSourceFactory(pEngineFactory, "shaders;shaders\\PathTracer", &pShaderSourceFactory);
 
     ShaderCreateInfo ShaderCI;
     ShaderCI.Desc.ShaderType            = SHADER_TYPE_COMPUTE;

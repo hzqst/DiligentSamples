@@ -1,6 +1,7 @@
 // Copyright 2026 Diligent Graphics LLC
 // Licensed under the Apache License, Version 2.0.
 #pragma once
+#include "RTXPTShaderSource.hpp"
 
 #include <array>
 #include <algorithm>
@@ -42,7 +43,7 @@ public:
     {
         Reset();
         RefCntAutoPtr<IShaderSourceInputStreamFactory> Source;
-        pFactory->CreateDefaultShaderSourceStreamFactory("shaders;shaders/PathTracer", &Source);
+        CreateRTXPTShaderSourceFactory(pFactory, "shaders;shaders/PathTracer", &Source);
         const char* Entries[] = {"EnvLightsSubdivideBase", "EnvLightsSubdivideBoost", "EnvLightsFillLookupMap"};
         for (size_t I = 0; I < m_PSOs.size(); ++I)
         {

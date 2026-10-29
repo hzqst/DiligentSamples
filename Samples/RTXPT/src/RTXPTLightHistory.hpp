@@ -1,6 +1,7 @@
 // Copyright 2026 Diligent Graphics LLC
 // Licensed under the Apache License, Version 2.0.
 #pragma once
+#include "RTXPTShaderSource.hpp"
 
 #include "RTXPTEnvironmentLights.hpp"
 #include "RTXPTLightSourceHistory.hpp"
@@ -39,7 +40,7 @@ public:
         Reset();
         m_Device = pDevice;
         RefCntAutoPtr<IShaderSourceInputStreamFactory> Source;
-        pFactory->CreateDefaultShaderSourceStreamFactory("shaders;shaders/PathTracer", &Source);
+        CreateRTXPTShaderSourceFactory(pFactory, "shaders;shaders/PathTracer", &Source);
         ShaderCreateInfo SCI;
         SCI.Desc                       = {"RTXPT light history", SHADER_TYPE_COMPUTE, false};
         SCI.SourceLanguage             = SHADER_SOURCE_LANGUAGE_HLSL;

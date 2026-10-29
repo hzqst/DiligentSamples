@@ -25,6 +25,7 @@
  */
 
 #include "RTXPTRayTracingPass.hpp"
+#include "RTXPTShaderSource.hpp"
 #include "DebugUtilities.hpp"
 #include "RTXPTFrameConstants.hpp"
 
@@ -208,7 +209,7 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice*        pDevice,
     }
 
     RefCntAutoPtr<IShaderSourceInputStreamFactory> pShaderSourceFactory;
-    pEngineFactory->CreateDefaultShaderSourceStreamFactory("shaders;shaders/PathTracer;shaders/SHARC;" RTXPT_SHARC_SHADER_DIR, &pShaderSourceFactory);
+    CreateRTXPTShaderSourceFactory(pEngineFactory, "shaders;shaders/PathTracer;shaders/SHARC;" RTXPT_SHARC_SHADER_DIR, &pShaderSourceFactory);
     if (!pShaderSourceFactory)
     {
         DEV_ERROR("Failed to create RTXPT shader source factory");

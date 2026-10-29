@@ -25,6 +25,7 @@
  */
 
 #include "RTXPTLightProxyBuildPass.hpp"
+#include "RTXPTShaderSource.hpp"
 
 #include "DebugUtilities.hpp"
 #include "GraphicsTypesX.hpp"
@@ -146,7 +147,7 @@ bool RTXPTLightProxyBuildPass::Initialize(IRenderDevice* pDevice, IEngineFactory
     m_Device = pDevice;
 
     RefCntAutoPtr<IShaderSourceInputStreamFactory> pShaderSourceFactory;
-    pEngineFactory->CreateDefaultShaderSourceStreamFactory("shaders;shaders\\PathTracer", &pShaderSourceFactory);
+    CreateRTXPTShaderSourceFactory(pEngineFactory, "shaders;shaders\\PathTracer", &pShaderSourceFactory);
 
     auto CreateCS = [&](const char* EntryPoint, const char* Name) -> RefCntAutoPtr<IShader> {
         ShaderCreateInfo ShaderCI;

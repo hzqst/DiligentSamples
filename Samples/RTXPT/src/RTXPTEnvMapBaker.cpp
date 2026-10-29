@@ -25,6 +25,7 @@
  */
 
 #include "RTXPTEnvMapBaker.hpp"
+#include "RTXPTShaderSource.hpp"
 #include "RTXPTSceneJson.hpp"
 
 #include "DebugUtilities.hpp"
@@ -35,9 +36,13 @@
 #include "RenderStateCache.h"
 #include "ShaderMacroHelper.hpp"
 #include "TextureUtilities.h"
-#include "PBR_Renderer.hpp"
+#ifndef RTXPT_PATH_TRACING_ONLY
+#    include "PBR_Renderer.hpp"
+#endif
 
-#include "imgui.h"
+#ifndef RTXPT_NO_UI
+#    include "imgui.h"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -297,6 +302,7 @@ bool CreateR32FloatTexture(IRenderDevice* pDevice, const char* Name, float Value
 
 } // namespace
 
+RTXPTEnvMapBaker::RTXPTEnvMapBaker()  = default;
 RTXPTEnvMapBaker::~RTXPTEnvMapBaker() = default;
 
 void RTXPTEnvMapBaker::Reset()
@@ -318,7 +324,9 @@ void RTXPTEnvMapBaker::Reset()
     m_BRDFLUTSRV.Release();
     m_EnvironmentSampler.Release();
     m_ImportanceSampler.Release();
+#ifndef RTXPT_PATH_TRACING_ONLY
     m_IBLPrecompute.reset();
+#endif
     m_EnvironmentCube.Release();
     m_EnvCubeBakeConstants.Release();
     m_EnvCubeBakePSOCube.Release();
@@ -446,6 +454,7 @@ bool RTXPTEnvMapBaker::Update(IRenderDevice* pDevice, IDeviceContext* pContext, 
     return m_Stats.Ready;
 }
 
+#ifndef RTXPT_NO_UI
 bool RTXPTEnvMapBaker::InfoGUI(float Indent)
 {
     ImGui::Indent(Indent);
@@ -475,6 +484,8 @@ bool RTXPTEnvMapBaker::DebugGUI(float Indent)
     ImGui::Unindent(Indent);
     return false;
 }
+
+#endif
 
 std::vector<RTXPTEnvMapSource> RTXPTEnvMapBaker::EnumerateEnvironmentSources(const std::string& AssetsRoot)
 {
@@ -559,7 +570,10 @@ bool RTXPTEnvMapBaker::LoadSourceTexture(IRenderDevice* pDevice, const std::stri
     FileSystem::CorrectSlashes(ResolvedPath);
     ResolvedPath = FileSystem::SimplifyPath(ResolvedPath.c_str());
 
-    CreateSharedTextureFromFile(ResolvedPath.c_str(), TextureLoadInfo{"RTXPT environment source"}, pDevice, &m_SourceTexture);
+    std::vector<unsigned char> Bytes;
+    std::string                Error;
+    if (m_FileSource.ReadBytes(ResolvedPath, Bytes, Error))
+        CreateSharedTextureFromMemory(Bytes.data(), Bytes.size(), TextureLoadInfo{"RTXPT environment source"}, pDevice, &m_SourceTexture);
     m_SourceSRV = m_SourceTexture ? m_SourceTexture->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE) : nullptr;
     if (m_SourceTexture && m_SourceSRV)
     {
@@ -573,6 +587,9 @@ bool RTXPTEnvMapBaker::LoadSourceTexture(IRenderDevice* pDevice, const std::stri
     const std::string LoadError = "Failed to load RTXPT environment source: " + ResolvedPath;
     m_Stats.LastError           = LoadError;
     LOG_ERROR_MESSAGE(m_Stats.LastError.c_str());
+    //A host's constrained scene source must never silently substitute the Sample sky.
+    if (m_FileSource.ReadWholeFile)
+        return false;
     m_Stats.Procedural = true;
     m_Stats.SourceName = kProceduralSkyPath;
 
@@ -651,6 +668,7 @@ bool RTXPTEnvMapBaker::PrecomputeCubemap(IRenderDevice* pDevice, IDeviceContext*
         return false;
     }
 
+#ifndef RTXPT_PATH_TRACING_ONLY
     if (!m_IBLPrecompute)
         m_IBLPrecompute = std::make_unique<PBR_Renderer>(pDevice, nullptr, pContext, PBR_Renderer::CreateInfo{});
 
@@ -696,6 +714,12 @@ bool RTXPTEnvMapBaker::PrecomputeCubemap(IRenderDevice* pDevice, IDeviceContext*
                             "falling back to the low-resolution prefiltered environment cube");
     }
 
+#else
+    //Path tracing evaluates illumination directly; irradiance convolution and a raster GGX LUT are unnecessary.
+    if (!BakeHighResEnvironmentCube(pDevice, pContext, pEngineFactory))
+        return false;
+    m_EnvironmentMapSRV = m_EnvironmentCube->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
+#endif
     const ITexture* pEnvTexture = m_EnvironmentMapSRV->GetTexture();
     if (pEnvTexture == nullptr)
     {
@@ -724,7 +748,7 @@ bool RTXPTEnvMapBaker::EnsureEnvCubeBakePipeline(IRenderDevice* pDevice, IEngine
         return false;
 
     RefCntAutoPtr<IShaderSourceInputStreamFactory> pShaderSourceFactory;
-    pEngineFactory->CreateDefaultShaderSourceStreamFactory("shaders;shaders\\PathTracer;shaders\\PathTracer\\Lighting", &pShaderSourceFactory);
+    CreateRTXPTShaderSourceFactory(pEngineFactory, "shaders;shaders\\PathTracer;shaders\\PathTracer\\Lighting", &pShaderSourceFactory);
     if (!pShaderSourceFactory)
         return false;
 

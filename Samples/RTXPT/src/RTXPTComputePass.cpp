@@ -25,6 +25,7 @@
  */
 
 #include "RTXPTComputePass.hpp"
+#include "RTXPTShaderSource.hpp"
 #include "DebugUtilities.hpp"
 #include "RenderStateCache.h"
 
@@ -71,7 +72,7 @@ bool RTXPTComputePass::Initialize(IRenderDevice*     pDevice,
     }
 
     RefCntAutoPtr<IShaderSourceInputStreamFactory> pShaderSourceFactory;
-    pEngineFactory->CreateDefaultShaderSourceStreamFactory("shaders", &pShaderSourceFactory);
+    CreateRTXPTShaderSourceFactory(pEngineFactory, "shaders", &pShaderSourceFactory);
 
     ShaderCreateInfo ShaderCI;
     ShaderCI.Desc.ShaderType            = SHADER_TYPE_COMPUTE;

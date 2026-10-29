@@ -25,6 +25,7 @@
  */
 
 #include "RTXPTAccumulationPass.hpp"
+#include "RTXPTShaderSource.hpp"
 
 #include "DebugUtilities.hpp"
 #include "MapHelper.hpp"
@@ -83,7 +84,7 @@ bool RTXPTAccumulationPass::Initialize(IRenderDevice* pDevice, IEngineFactory* p
     }
 
     RefCntAutoPtr<IShaderSourceInputStreamFactory> pShaderSourceFactory;
-    pEngineFactory->CreateDefaultShaderSourceStreamFactory("shaders;shaders\\PostProcessing", &pShaderSourceFactory);
+    CreateRTXPTShaderSourceFactory(pEngineFactory, "shaders;shaders\\PostProcessing", &pShaderSourceFactory);
 
     ShaderCreateInfo ShaderCI;
     ShaderCI.Desc.ShaderType            = SHADER_TYPE_COMPUTE;
