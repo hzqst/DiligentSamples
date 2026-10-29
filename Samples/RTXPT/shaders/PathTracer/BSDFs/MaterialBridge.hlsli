@@ -12,7 +12,7 @@
 StructuredBuffer<MaterialPTData> t_PTMaterialData;
 
 #ifdef ENABLE_MATERIAL_TEXTURES
-// One Texture2DArray per loaded GLTF texture (the Diligent loader creates RESOURCE_DIM_TEX_2D_ARRAY textures).
+// Texture2DArray views per material texture usage: glTF color slots decode sRGB in the SRV; data slots stay linear.
 // MATERIAL_TEXTURE_COUNT is supplied at compile time and equals RTXPTMaterials::GetTextureCount().
 Texture2DArray t_BindlessTextures[MATERIAL_TEXTURE_COUNT];
 SamplerState   s_MaterialSampler;

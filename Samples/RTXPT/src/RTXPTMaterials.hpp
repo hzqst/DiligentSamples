@@ -49,7 +49,7 @@ struct RTXPTMaterialExtension;
 
 // GPU material record consumed by the reference path tracer (mirrors MaterialPTData in PathTracer/PathTracerShared.h).
 // One entry per GLTF material; the closest-hit / any-hit shaders index it via SubInstanceData::MaterialID.
-// All texture indices/slices reference the shared bindless material-texture table (one entry per GLTF texture).
+// All texture indices/slices reference the shared bindless table, with separate glTF color/data bindings.
 struct MaterialPTData
 {
     float4 baseColorFactor = float4{1, 1, 1, 1};
@@ -202,7 +202,9 @@ public:
     // materials are promoted to NEE area lights (bindless is mandatory, so their textures are GPU-sampleable).
     // The external textures of the .material.json files are read through FileSource, which reads the disk
     // when it has no callbacks.
+    // pContext must be the context used to prepare the scene's textures; color mip generation is recorded here.
     bool Upload(IRenderDevice*             pDevice,
+                IDeviceContext*            pContext,
                 const RTXPTSceneGraphData& SceneData,
                 const std::string&         AssetsRoot,
                 const RTXPTFileSource&     FileSource = {});
@@ -210,14 +212,14 @@ public:
     const RTXPTMaterialStats& GetStats() const { return m_Stats; }
     IBuffer*                  GetMaterialBuffer() const { return m_MaterialBuffer; }
 
-    // Bindless material-texture table holding one SRV per glTF texture and per external .material.json
+    // Bindless material-texture table holding one SRV per glTF texture usage (color/data) and per external .material.json
     // texture. Indices are referenced by MaterialPTData texture-index fields. The SRV views are owned here
     // and (being non-default views) keep the underlying texture resources alive on every backend.
     Uint32                GetTextureCount() const { return static_cast<Uint32>(m_TextureBindings.size()); }
     IDeviceObject* const* GetTextureBindings() const { return m_TextureBindings.empty() ? nullptr : m_TextureBindings.data(); }
 
 private:
-    void AppendTextureViews(const GLTF::Model& Model, std::vector<Uint32>& TextureRemap);
+    bool AppendTextureViews(IRenderDevice* pDevice, IDeviceContext* pContext, const GLTF::Model& Model, std::vector<Uint32>& TextureRemap, std::vector<Uint32>& ColorTextureRemap);
     bool CreateMaterialBuffer(IRenderDevice* pDevice, const std::vector<MaterialPTData>& MaterialData);
 
     RefCntAutoPtr<IBuffer>                   m_MaterialBuffer;

@@ -835,7 +835,7 @@ bool RTXPTSample::RebuildSceneDependentResources()
     // Emissive-textured materials are always promoted to NEE area lights: bindless is mandatory, so the
     // emissive-triangle build shader can always sample their textures on the GPU. Classification stays
     // consistent across materials, emissive-triangle counting, and the AS EmissiveTriangleOffset allocation.
-    ResourcesReady &= m_Materials.Upload(m_pDevice, SceneData, m_Scene.GetAssetsRoot());
+    ResourcesReady &= m_Materials.Upload(m_pDevice, m_pImmediateContext, SceneData, m_Scene.GetAssetsRoot());
     ResourcesReady &= m_Lights.Upload(m_pDevice, SceneData);
     ResourcesReady &= m_Lights.UploadEmissiveTriangles(m_pDevice, SceneData);
 

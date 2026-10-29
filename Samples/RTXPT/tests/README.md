@@ -1110,3 +1110,36 @@ source must give byte-identical `MaterialPTData` and the same bindless table.
 Results (2026-10-28, Debug install, RTX 5060): D3D12 and Vulkan pass. With the
 `.dds` probe reverted to `FileSystem::FileExists`, the test fails on the bindless
 table.
+
+## glTF material color space (2026-10-29)
+
+`RTXPTMaterials::Upload` now takes the device context used to prepare the scene's
+textures. Base color and emission use sRGB SRVs; data slots use linear SRVs.
+When the source mip chain has the other transfer function, uncompressed textures
+get a separate resource copied from mip 0 and regenerated through the appropriate
+view. This leaves the original model texture and its data mips untouched.
+Compressed textures retain their offline-authored mip chains; those mips must
+already be appropriate for their material usage. Unsupported color formats fail
+the upload instead of silently sampling encoded values as linear light.
+
+The existing `MaterialFileSourceTest` also runs `MaterialColorSpaceTest.hpp`.
+It creates gray and black/white PNG fixtures, reuses each glTF image for color and
+metallic-roughness, and reads back compute samples from the production
+`MaterialBridge.hlsli` and `EmissiveTriangleBuild.hlsl` functions. It checks RGB
+factors, linear alpha, linear data, bilinear filtering, mip 1 and triangle emission
+with a minifying footprint, plus external `.material.json` sRGB and linear textures.
+
+Run from the DiligentEngine root, after building with the command above:
+
+```bat
+%TEMP%\MaterialFileSourceTest\MaterialFileSourceTest.exe D3D12 <engine DLL> <dxcompiler.dll>
+%TEMP%\MaterialFileSourceTest\MaterialFileSourceTest.exe Vk <engine DLL> <SPIR-V-capable dxcompiler.dll>
+```
+
+The compiler argument is optional when the default compiler DLL is available
+(`dxcompiler.dll` for D3D12, `spv_dxcompiler.dll` for Vulkan). The test explicitly
+enables descriptor indexing and GPU validation. Debug D3D12 and Vulkan passed
+on 2026-10-29. Before the fix, the gray base-color assertion failed: expected
+0.107930 (linear gray times factor 0.5), actual 0.250980. The corrupt/missing-file
+diagnostics belong to the existing negative tests. Vulkan also reported that the
+installed validation layer (1.4.350) is older than the headers (1.4.363).
