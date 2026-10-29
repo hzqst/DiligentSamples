@@ -29,6 +29,7 @@
 
 #include "DebugUtilities.hpp"
 #include "FileSystem.hpp"
+#include "GraphicsAccessories.hpp"
 #include "TextureUtilities.h"
 
 #include <algorithm>
@@ -64,7 +65,7 @@ bool RTXPTMaterialHasTransmission(const GLTF::Material&         Material,
     return GltfTransmission || ExtensionTransmission;
 }
 
-RefCntAutoPtr<ITextureView> CreateMaterialTextureView(ITexture* pTexture)
+RefCntAutoPtr<ITextureView> CreateMaterialTextureView(ITexture* pTexture, TEXTURE_FORMAT Format = TEX_FORMAT_UNKNOWN, TEXTURE_VIEW_FLAGS Flags = TEXTURE_VIEW_FLAG_NONE)
 {
     if (pTexture == nullptr)
         return {};
@@ -72,9 +73,70 @@ RefCntAutoPtr<ITextureView> CreateMaterialTextureView(ITexture* pTexture)
     TextureViewDesc ViewDesc;
     ViewDesc.ViewType   = TEXTURE_VIEW_SHADER_RESOURCE;
     ViewDesc.TextureDim = RESOURCE_DIM_TEX_2D_ARRAY;
+    ViewDesc.Format     = Format;
+    ViewDesc.Flags      = Flags;
 
     RefCntAutoPtr<ITextureView> pSRV;
     pTexture->CreateView(ViewDesc, &pSRV);
+    return pSRV;
+}
+
+// glTF color and data slots may reference the same image. Never regenerate color mips in the model's
+// texture: data slots (and other renderers using the model) still need its linear mip chain. Copy mip 0
+// to a color resource and generate through an sRGB view, which filters RGB in linear light and alpha
+// as linear coverage. Compressed mip chains are authored offline and are preserved verbatim.
+RefCntAutoPtr<ITextureView> CreateGLTFMaterialTextureView(IRenderDevice* pDevice, IDeviceContext* pContext, ITexture* pTexture, bool SRGB)
+{
+    if (!pTexture)
+        return {};
+
+    const TextureDesc&   SourceDesc   = pTexture->GetDesc();
+    const TEXTURE_FORMAT LinearFormat = SRGBFormatToUnorm(TypelessFormatToUnorm(SourceDesc.Format));
+    const TEXTURE_FORMAT ViewFormat   = SRGB ? UnormFormatToSRGB(LinearFormat) : LinearFormat;
+    if (SRGB && !IsSRGBFormat(ViewFormat))
+    {
+        LOG_ERROR_MESSAGE("Unsupported glTF color texture format: ", GetTextureFormatAttribs(SourceDesc.Format).Name);
+        return {};
+    }
+
+    const bool Compressed     = GetTextureFormatAttribs(SourceDesc.Format).ComponentType == COMPONENT_TYPE_COMPRESSED;
+    const bool RegenerateMips = SRGB != IsSRGBFormat(SourceDesc.Format) && !Compressed && SourceDesc.MipLevels > 1;
+    const bool CompatibleView = SourceDesc.Format == ViewFormat || GetTextureFormatAttribs(SourceDesc.Format).IsTypeless;
+    if (CompatibleView && !RegenerateMips)
+        return CreateMaterialTextureView(pTexture, ViewFormat);
+
+    TextureDesc Desc          = SourceDesc;
+    Desc.Name                 = SRGB ? "RTXPT glTF color texture" : "RTXPT glTF data texture";
+    Desc.Format               = ViewFormat;
+    Desc.Usage                = USAGE_DEFAULT;
+    Desc.CPUAccessFlags       = CPU_ACCESS_NONE;
+    Desc.BindFlags            = BIND_SHADER_RESOURCE;
+    Desc.MiscFlags            = RegenerateMips ? MISC_TEXTURE_FLAG_GENERATE_MIPS : MISC_TEXTURE_FLAG_NONE;
+    Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
+    RefCntAutoPtr<ITexture> pCopy;
+    pDevice->CreateTexture(Desc, nullptr, &pCopy);
+    if (!pCopy)
+        return {};
+
+    auto pSRV = CreateMaterialTextureView(pCopy, ViewFormat,
+                                          RegenerateMips ? TEXTURE_VIEW_FLAG_ALLOW_MIP_MAP_GENERATION : TEXTURE_VIEW_FLAG_NONE);
+    if (!pSRV)
+        return {};
+
+    const Uint32 MipCount = RegenerateMips ? 1 : SourceDesc.MipLevels;
+    for (Uint32 Slice = 0; Slice < SourceDesc.ArraySize; ++Slice)
+    {
+        for (Uint32 Mip = 0; Mip < MipCount; ++Mip)
+        {
+            CopyTextureAttribs Copy{pTexture, RESOURCE_STATE_TRANSITION_MODE_TRANSITION,
+                                    pCopy, RESOURCE_STATE_TRANSITION_MODE_TRANSITION};
+            Copy.SrcSlice = Copy.DstSlice = Slice;
+            Copy.SrcMipLevel = Copy.DstMipLevel = Mip;
+            pContext->CopyTexture(Copy);
+        }
+    }
+    if (RegenerateMips)
+        pContext->GenerateMips(pSRV);
     return pSRV;
 }
 
@@ -179,10 +241,10 @@ void RemapTextureIndex(Uint32 Flag, Uint32& Flags, Uint32& TextureIndex, const s
     TextureIndex = TextureRemap[TextureIndex];
 }
 
-void RemapMaterialTextureIndices(MaterialPTData& Data, const std::vector<Uint32>& TextureRemap)
+void RemapMaterialTextureIndices(MaterialPTData& Data, const std::vector<Uint32>& TextureRemap, const std::vector<Uint32>& ColorTextureRemap)
 {
-    RemapTextureIndex(kMaterialFlag_HasBaseColorTexture, Data.flags, Data.baseColorTextureIndex, TextureRemap);
-    RemapTextureIndex(kMaterialFlag_HasEmissiveTexture, Data.flags, Data.emissiveTextureIndex, TextureRemap);
+    RemapTextureIndex(kMaterialFlag_HasBaseColorTexture, Data.flags, Data.baseColorTextureIndex, ColorTextureRemap);
+    RemapTextureIndex(kMaterialFlag_HasEmissiveTexture, Data.flags, Data.emissiveTextureIndex, ColorTextureRemap);
     RemapTextureIndex(kMaterialFlag_HasMetallicRoughnessTexture, Data.flags, Data.metallicRoughnessTextureIndex, TextureRemap);
     RemapTextureIndex(kMaterialFlag_HasNormalTexture, Data.flags, Data.normalTextureIndex, TextureRemap);
     RemapTextureIndex(kMaterialFlag_HasTransmissionTexture, Data.flags, Data.transmissionTextureIndex, TextureRemap);
@@ -380,23 +442,46 @@ void RTXPTMaterials::Reset()
     m_Stats = {};
 }
 
-void RTXPTMaterials::AppendTextureViews(const GLTF::Model& Model, std::vector<Uint32>& TextureRemap)
+bool RTXPTMaterials::AppendTextureViews(IRenderDevice* pDevice, IDeviceContext* pContext, const GLTF::Model& Model, std::vector<Uint32>& TextureRemap, std::vector<Uint32>& ColorTextureRemap)
 {
     const Uint32 ModelTextureCount = static_cast<Uint32>(Model.GetTextureCount());
     TextureRemap.assign(ModelTextureCount, InvalidTextureIndex);
+    ColorTextureRemap.assign(ModelTextureCount, InvalidTextureIndex);
     m_TextureViews.reserve(m_TextureViews.size() + ModelTextureCount);
     m_TextureBindings.reserve(m_TextureBindings.size() + ModelTextureCount);
 
+    std::vector<bool> LinearUsage(ModelTextureCount), ColorUsage(ModelTextureCount);
+    for (const auto& Material : Model.Materials)
+    {
+        const auto MarkUsage = [&](Uint32 Attribute, std::vector<bool>& Usage) {
+            const int Id = Material.GetTextureId(Attribute);
+            if (Id >= 0 && static_cast<Uint32>(Id) < ModelTextureCount)
+                Usage[Id] = true;
+        };
+        MarkUsage(GLTF::DefaultBaseColorTextureAttribId, ColorUsage);
+        MarkUsage(GLTF::DefaultEmissiveTextureAttribId, ColorUsage);
+        MarkUsage(GLTF::DefaultMetallicRoughnessTextureAttribId, LinearUsage);
+        MarkUsage(GLTF::DefaultNormalTextureAttribId, LinearUsage);
+        MarkUsage(GLTF::DefaultTransmissionTextureAttribId, LinearUsage);
+        MarkUsage(GLTF::DefaultThicknessTextureAttribId, LinearUsage);
+    }
+
     for (Uint32 i = 0; i < ModelTextureCount; ++i)
     {
-        RefCntAutoPtr<ITextureView> pSRV = CreateMaterialTextureView(Model.GetTexture(i));
-        if (!pSRV)
-            continue;
-
-        TextureRemap[i] = static_cast<Uint32>(m_TextureBindings.size());
-        m_TextureViews.emplace_back(std::move(pSRV));
-        m_TextureBindings.push_back(m_TextureViews.back().RawPtr<IDeviceObject>());
+        const auto Append = [&](bool SRGB, std::vector<Uint32>& Remap) {
+            auto pSRV = CreateGLTFMaterialTextureView(pDevice, pContext, Model.GetTexture(i), SRGB);
+            if (!pSRV)
+                return false;
+            Remap[i] = static_cast<Uint32>(m_TextureBindings.size());
+            m_TextureViews.emplace_back(std::move(pSRV));
+            m_TextureBindings.push_back(m_TextureViews.back().RawPtr<IDeviceObject>());
+            return true;
+        };
+        if ((ColorUsage[i] && !Append(true, ColorTextureRemap)) ||
+            (LinearUsage[i] && !Append(false, TextureRemap)))
+            return false;
     }
+    return true;
 }
 
 bool RTXPTMaterials::CreateMaterialBuffer(IRenderDevice* pDevice, const std::vector<MaterialPTData>& MaterialData)
@@ -418,18 +503,25 @@ bool RTXPTMaterials::CreateMaterialBuffer(IRenderDevice* pDevice, const std::vec
 }
 
 bool RTXPTMaterials::Upload(IRenderDevice*             pDevice,
+                            IDeviceContext*            pContext,
                             const RTXPTSceneGraphData& SceneData,
                             const std::string&         AssetsRoot,
                             const RTXPTFileSource&     FileSource)
 {
     Reset();
+    if (!pDevice || !pContext)
+        return false;
 
     std::vector<std::vector<Uint32>> TextureRemaps(SceneData.ModelAssets.size());
+    std::vector<std::vector<Uint32>> ColorTextureRemaps(SceneData.ModelAssets.size());
     for (Uint32 AssetIdx = 0; AssetIdx < SceneData.ModelAssets.size(); ++AssetIdx)
     {
         const RTXPTModelAsset& Asset = SceneData.ModelAssets[AssetIdx];
-        if (Asset.Model)
-            AppendTextureViews(*Asset.Model, TextureRemaps[AssetIdx]);
+        if (Asset.Model && !AppendTextureViews(pDevice, pContext, *Asset.Model, TextureRemaps[AssetIdx], ColorTextureRemaps[AssetIdx]))
+        {
+            Reset();
+            return false;
+        }
     }
 
     ExternalTextureCache ExternalCache;
@@ -447,7 +539,7 @@ bool RTXPTMaterials::Upload(IRenderDevice*             pDevice,
 
             MaterialPTData Data;
             FillMaterialPTDataFromGLTF(Material, Data);
-            RemapMaterialTextureIndices(Data, TextureRemaps[AssetIdx]);
+            RemapMaterialTextureIndices(Data, TextureRemaps[AssetIdx], ColorTextureRemaps[AssetIdx]);
 
             const RTXPTMaterialExtension* pExtension = RTXPTGetMaterialExtension(SceneData, Asset, MatIdx);
             if (pExtension != nullptr && pExtension->Loaded)

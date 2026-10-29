@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -237,7 +238,7 @@ static UploadResult LoadAndUpload(IRenderDevice* Device, IDeviceContext* Context
     RTXPTScene Scene;
     Require(Scene.LoadScene(Device, Context, Root, SceneFile, Options), "scene load");
     RTXPTMaterials Materials;
-    Require(Materials.Upload(Device, Scene.GetSceneGraphData(), Scene.GetAssetsRoot(), Options.FileSource), "material upload");
+    Require(Materials.Upload(Device, Context, Scene.GetSceneGraphData(), Scene.GetAssetsRoot(), Options.FileSource), "material upload");
     Require(Materials.GetStats().MaterialCount == MaterialCount, "one material record per glTF material");
 
     UploadResult Result;
@@ -321,10 +322,12 @@ static void TestMaterials(IRenderDevice* Device, IDeviceContext* Context, const 
             "the disk gives the same material records");
 }
 
+#include "MaterialColorSpaceTest.hpp"
+
 int main(int argc, char** argv)
 try
 {
-    Require(argc == 3, "MaterialFileSourceTest <D3D12|Vk> <engine DLL>");
+    Require(argc == 3 || argc == 4, "MaterialFileSourceTest <D3D12|Vk> <engine DLL> [DX compiler DLL]");
     SetDebugMessageCallback(Message);
     const std::filesystem::path Temp = std::filesystem::temp_directory_path();
     TestReadBytes(Temp / "RTXPTMaterialFileSourceTest-bytes");
@@ -335,13 +338,17 @@ try
     Require(Lib != nullptr, "engine load");
     RefCntAutoPtr<IRenderDevice>  Device;
     RefCntAutoPtr<IDeviceContext> Context;
+    IEngineFactory* Factory = nullptr;
     if (std::string{argv[1]} == "Vk")
     {
         auto Get = reinterpret_cast<IEngineFactoryVk* (*)()>(GetProcAddress(Lib, "GetEngineFactoryVk"));
         Require(Get != nullptr, "Vk factory");
         auto* F = Get();
+        Factory = F;
         F->SetMessageCallback(Message);
         EngineVkCreateInfo CI;
+        CI.Features.ShaderResourceRuntimeArrays = DEVICE_FEATURE_STATE_ENABLED;
+        CI.pDxCompilerPath = argc == 4 ? argv[3] : nullptr;
         CI.EnableValidation = true;
         F->CreateDeviceAndContextsVk(CI, &Device, &Context);
     }
@@ -350,15 +357,19 @@ try
         auto Get = reinterpret_cast<IEngineFactoryD3D12* (*)()>(GetProcAddress(Lib, "GetEngineFactoryD3D12"));
         Require(Get != nullptr, "D3D12 factory");
         auto* F = Get();
+        Factory = F;
         F->SetMessageCallback(Message);
         Require(F->LoadD3D12(), "load D3D12");
         EngineD3D12CreateInfo CI;
+        CI.Features.ShaderResourceRuntimeArrays = DEVICE_FEATURE_STATE_ENABLED;
+        CI.pDxCompilerPath = argc == 4 ? argv[3] : nullptr;
         CI.EnableValidation = true;
         F->CreateDeviceAndContextsD3D12(CI, &Device, &Context);
     }
     Require(Device && Context, "device creation");
 
     TestMaterials(Device, Context, Temp);
+    TestMaterialColorSpace(Device, Context, Factory, Temp);
     Require(Errors == 0, "errors were reported");
     std::cout << "PASS: ReadBytes, and material textures read through the file source match the disk\n";
     return 0;
