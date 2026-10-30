@@ -723,6 +723,7 @@ struct RTXPTSceneFrameBuilder::Impl
             }
         }
 
+        RefCntAutoPtr<IBottomLevelAS> NewBLAS;
         if (!Update)
         {
             const std::string Name = "RTXPT BLAS " + Geometry.Name + " mesh " + std::to_string(MeshIndex);
@@ -732,12 +733,14 @@ struct RTXPTSceneFrameBuilder::Impl
             Desc.Flags                = Skinned ? RAYTRACING_BUILD_AS_ALLOW_UPDATE | RAYTRACING_BUILD_AS_PREFER_FAST_BUILD : RAYTRACING_BUILD_AS_PREFER_FAST_TRACE;
             Desc.pTriangles           = Descs.data();
             Desc.TriangleCount        = static_cast<Uint32>(Descs.size());
-            Device->CreateBLAS(Desc, &pBLAS);
-            if (!pBLAS)
+            Device->CreateBLAS(Desc, &NewBLAS);
+            if (!NewBLAS)
                 return false;
         }
-        if (!BuildBLAS(pContext, pBLAS, Triangles.data(), static_cast<Uint32>(Triangles.size()), Update))
+        if (!BuildBLAS(pContext, Update ? pBLAS.RawPtr() : NewBLAS.RawPtr(), Triangles.data(), static_cast<Uint32>(Triangles.size()), Update))
             return false;
+        if (!Update)
+            pBLAS = std::move(NewBLAS);
         ++(Update ? Stats.SkinnedBLASUpdateCount : Skinned ? Stats.SkinnedBLASBuildCount : Stats.RigidBLASBuildCount);
         return true;
     }
@@ -790,7 +793,6 @@ struct RTXPTSceneFrameBuilder::Impl
                     return RTXPTErrorCode::SkinningDispatchFailed;
                 }
                 ++Stats.SkinningDispatchCount;
-                Instance.PoseRevision = Job.pState->PoseRevision;
             }
             if (Job.Rebuild)
                 Instance.BLAS.Release();
@@ -801,6 +803,7 @@ struct RTXPTSceneFrameBuilder::Impl
                 LOG_ERROR_MESSAGE("RTXPT skinned BLAS build failed for ", Geometry.Name);
                 return RTXPTErrorCode::BLASBuildFailed;
             }
+            Instance.PoseRevision              = Job.pState->PoseRevision;
             TLASInstances[Job.TLASIndex].pBLAS = Instance.BLAS;
         }
         return RTXPTErrorCode::Ok;
@@ -815,8 +818,9 @@ struct RTXPTSceneFrameBuilder::Impl
         BufferData   Data{Positions, sizeof(Positions)};
         BufferDesc   VertexDesc = MakeBufferDesc("RTXPT placeholder BLAS vertices", sizeof(Positions), BIND_RAY_TRACING, BUFFER_MODE_UNDEFINED, 0);
         VertexDesc.Usage        = USAGE_IMMUTABLE;
-        Device->CreateBuffer(VertexDesc, &Data, &PlaceholderVertices);
-        if (!PlaceholderVertices)
+        RefCntAutoPtr<IBuffer> Vertices;
+        Device->CreateBuffer(VertexDesc, &Data, &Vertices);
+        if (!Vertices)
             return false;
 
         BLASTriangleDesc Triangle;
@@ -830,20 +834,25 @@ struct RTXPTSceneFrameBuilder::Impl
         Desc.Name                 = "RTXPT placeholder BLAS";
         Desc.pTriangles           = &Triangle;
         Desc.TriangleCount        = 1;
-        Device->CreateBLAS(Desc, &PlaceholderBLAS);
-        if (!PlaceholderBLAS)
+        RefCntAutoPtr<IBottomLevelAS> BLAS;
+        Device->CreateBLAS(Desc, &BLAS);
+        if (!BLAS)
             return false;
 
         BLASBuildTriangleData Build;
         Build.GeometryName         = Triangle.GeometryName;
-        Build.pVertexBuffer        = PlaceholderVertices;
+        Build.pVertexBuffer        = Vertices;
         Build.VertexStride         = sizeof(float3);
         Build.VertexCount          = 3;
         Build.VertexValueType      = VT_FLOAT32;
         Build.VertexComponentCount = 3;
         Build.PrimitiveCount       = 1;
         Build.Flags                = RAYTRACING_GEOMETRY_FLAG_OPAQUE;
-        return BuildBLAS(pContext, PlaceholderBLAS, &Build, 1);
+        if (!BuildBLAS(pContext, BLAS, &Build, 1))
+            return false;
+        PlaceholderVertices = std::move(Vertices);
+        PlaceholderBLAS     = std::move(BLAS);
+        return true;
     }
 
     bool BuildTLAS(IDeviceContext* pContext, const std::vector<TLASBuildInstanceData>& Instances, bool& BindingsChanged)
@@ -857,18 +866,21 @@ struct RTXPTSceneFrameBuilder::Impl
             Desc.Name                 = "RTXPT scene TLAS";
             Desc.MaxInstanceCount     = Capacity;
             Desc.Flags                = RAYTRACING_BUILD_AS_PREFER_FAST_TRACE;
-            TLAS.Release();
-            TLASInstanceBuffer.Release();
-            TLASScratch.Release();
-            Device->CreateTLAS(Desc, &TLAS);
-            if (!TLAS)
+            RefCntAutoPtr<ITopLevelAS> NewTLAS;
+            RefCntAutoPtr<IBuffer>     InstanceBuffer;
+            RefCntAutoPtr<IBuffer>     Scratch;
+            Device->CreateTLAS(Desc, &NewTLAS);
+            if (!NewTLAS)
                 return false;
             Device->CreateBuffer(MakeBufferDesc("RTXPT TLAS instance buffer", Uint64{Capacity} * TLAS_INSTANCE_DATA_SIZE, BIND_RAY_TRACING, BUFFER_MODE_UNDEFINED, 0),
-                                 nullptr, &TLASInstanceBuffer);
-            Device->CreateBuffer(MakeBufferDesc("RTXPT TLAS scratch buffer", std::max<Uint64>(TLAS->GetScratchBufferSizes().Build, 1u), BIND_RAY_TRACING, BUFFER_MODE_UNDEFINED, 0),
-                                 nullptr, &TLASScratch);
-            if (!TLASInstanceBuffer || !TLASScratch)
+                                 nullptr, &InstanceBuffer);
+            Device->CreateBuffer(MakeBufferDesc("RTXPT TLAS scratch buffer", std::max<Uint64>(NewTLAS->GetScratchBufferSizes().Build, 1u), BIND_RAY_TRACING, BUFFER_MODE_UNDEFINED, 0),
+                                 nullptr, &Scratch);
+            if (!InstanceBuffer || !Scratch)
                 return false;
+            TLAS               = std::move(NewTLAS);
+            TLASInstanceBuffer = std::move(InstanceBuffer);
+            TLASScratch        = std::move(Scratch);
             ++Stats.TLASCreateCount;
             BindingsChanged = true;
         }
@@ -1337,6 +1349,9 @@ RTXPTErrorCode RTXPTSceneFrameBuilder::Prepare(IDeviceContext* pContext, const R
     {
     }
     I.Frame = {};
+    //Some immutable cache allocations may have succeeded before a later step failed. Rebind their generation on
+    //retry even when the retry itself does not replace a buffer.
+    I.HasPrepared = false;
     return Code;
 }
 
