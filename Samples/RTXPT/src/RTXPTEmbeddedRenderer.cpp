@@ -45,10 +45,10 @@ struct RTXPTEmbeddedScene::Impl
     RTXPTEnvMapSettings    EnvironmentSettings;
     bool                   Ready{};
 
-    bool Prepare(IDeviceContext* Context, std::string& Error)
+    RTXPTErrorCode Prepare(IDeviceContext* Context, const RTXPTSceneSnapshotPtr& Snapshot)
     {
         RTXPTShaderSourceScope ShaderScope{Shaders};
-        return Frames.Prepare(Context, Runtime.GetSnapshot(), Error);
+        return Frames.Prepare(Context, Snapshot);
     }
 };
 
@@ -56,30 +56,20 @@ RTXPTEmbeddedScene::RTXPTEmbeddedScene() :
     m_Impl{std::make_unique<Impl>()} {}
 RTXPTEmbeddedScene::~RTXPTEmbeddedScene() = default;
 
-bool RTXPTEmbeddedScene::Initialize(IRenderDevice* Device, IDeviceContext* Context, const RTXPTEmbeddedSceneCreateInfo& CreateInfo, std::string& Error)
+RTXPTErrorCode RTXPTEmbeddedScene::Initialize(IRenderDevice* Device, IDeviceContext* Context, const RTXPTEmbeddedSceneCreateInfo& CreateInfo)
 {
     auto& S = *m_Impl;
-    Error   = "RTXPT embedded scene requires a device, a context, a scene, materials and shaders";
-    if (!Device || !Context || !CreateInfo.Scene || !CreateInfo.Materials || !CreateInfo.Shaders)
-        return false;
-    auto& Scene          = *CreateInfo.Scene;
-    auto& Materials      = *CreateInfo.Materials;
-    Error                = "RTXPT requires ray tracing, bindless resources, compute and standalone RT shaders";
-    const auto& Features = Device->GetDeviceInfo().Features;
+    if (!Device || !Context || !CreateInfo.Scene || !CreateInfo.Materials || !CreateInfo.Shaders || !CreateInfo.Cache)
+        return RTXPTErrorCode::InvalidArgument;
+    auto&       Scene     = *CreateInfo.Scene;
+    auto&       Materials = *CreateInfo.Materials;
+    const auto& Features  = Device->GetDeviceInfo().Features;
     if (Features.RayTracing != DEVICE_FEATURE_STATE_ENABLED || Features.BindlessResources != DEVICE_FEATURE_STATE_ENABLED ||
         Features.ComputeShaders != DEVICE_FEATURE_STATE_ENABLED ||
         !(Device->GetAdapterInfo().RayTracing.CapFlags & RAY_TRACING_CAP_FLAG_STANDALONE_SHADERS))
-        return false;
-    if (!CreateInfo.Cache)
-    {
-        Error = "RTXPT embedded renderer requires a render state cache";
-        return false;
-    }
+        return RTXPTErrorCode::DeviceFeaturesMissing;
     if (Scene.HasSkinnedGeometry())
-    {
-        Error = "RTXPT embedded renderer supports static geometry only";
-        return false;
-    }
+        return RTXPTErrorCode::SkinnedGeometryUnsupported;
     S.Cache    = CreateInfo.Cache;
     S.PSOCache = CreateInfo.PSOCache;
     S.Shaders  = CreateInfo.Shaders;
@@ -88,25 +78,24 @@ bool RTXPTEmbeddedScene::Initialize(IRenderDevice* Device, IDeviceContext* Conte
     auto*                  Factory = Device->GetEngineFactory();
 
     if (S.Runtime.BeginUpdate() != RTXPTSceneResult::Ok)
-        return false;
+        return RTXPTErrorCode::UpdateFailed;
     RTXPTSceneSnapshotPtr Snapshot;
-    if (!ImportRTXPTScene(Device, Context, Scene, Materials, S.Runtime, S.Imported, Error))
+    const RTXPTErrorCode  ImportCode = ImportRTXPTScene(Device, Context, Scene, Materials, S.Runtime, S.Imported);
+    if (ImportCode != RTXPTErrorCode::Ok)
     {
         S.Runtime.CancelUpdate();
-        return false;
+        return ImportCode;
     }
     if (S.Runtime.CommitUpdate(Snapshot) != RTXPTSceneResult::Ok)
-    {
-        Error = "RTXPT scene import could not be committed";
-        return false;
-    }
+        return RTXPTErrorCode::UpdateFailed;
 
     RTXPTSceneFrameBuilderCreateInfo FramesCI;
-    FramesCI.pEngineFactory = Factory;
-    FramesCI.pStateCache    = S.Cache;
-    FramesCI.pPSOCache      = S.PSOCache;
-    if (!S.Frames.Initialize(Device, FramesCI, Error))
-        return false;
+    FramesCI.pEngineFactory         = Factory;
+    FramesCI.pStateCache            = S.Cache;
+    FramesCI.pPSOCache              = S.PSOCache;
+    const RTXPTErrorCode FramesCode = S.Frames.Initialize(Device, FramesCI);
+    if (FramesCode != RTXPTErrorCode::Ok)
+        return FramesCode;
 
     const auto& Graph = Scene.GetSceneGraphData();
     //Only the scene can opt into an environment. Absence means black, never the Sample's default sky.
@@ -118,7 +107,6 @@ bool RTXPTEmbeddedScene::Initialize(IRenderDevice* Device, IDeviceContext* Conte
     if (!S.EnvironmentSettings.Enabled)
         S.EnvironmentSettings.RadianceScale = float3{0, 0, 0};
     S.Environment.SetFileSource(Scene.GetFileSource());
-    Error = "RTXPT scene environment failed to load or bake";
     RTXPTEnvMapBakerUpdateAttribs EnvironmentUpdate;
     EnvironmentUpdate.pEngineFactory   = Factory;
     EnvironmentUpdate.AssetsRoot       = Scene.GetAssetsRoot();
@@ -127,28 +115,42 @@ bool RTXPTEmbeddedScene::Initialize(IRenderDevice* Device, IDeviceContext* Conte
     EnvironmentUpdate.ComputeSupported = true;
     if (!S.Environment.CreateResources(Device, Context, Factory, S.Cache, S.PSOCache, true) ||
         !S.Environment.Update(Device, Context, EnvironmentUpdate))
-        return false;
+        return RTXPTErrorCode::EnvironmentFailed;
 
-    if (!S.Frames.Prepare(Context, Snapshot, Error))
-        return false;
+    const RTXPTErrorCode PrepareCode = S.Frames.Prepare(Context, Snapshot);
+    if (PrepareCode != RTXPTErrorCode::Ok)
+        return PrepareCode;
     Context->Flush();
     Context->WaitForIdle();
     S.Ready = true;
-    Error.clear();
-    return true;
+    return RTXPTErrorCode::Ok;
 }
 
 bool RTXPTEmbeddedScene::IsReady() const { return m_Impl->Ready; }
 
-bool RTXPTEmbeddedScene::Prepare(IDeviceContext* Context, std::string& Error)
+RTXPTErrorCode RTXPTEmbeddedScene::Prepare(IDeviceContext* Context)
 {
-    if (!m_Impl->Ready || !Context)
-    {
-        Error = "RTXPT scene is not initialized";
-        return false;
-    }
-    return m_Impl->Prepare(Context, Error);
+    if (!m_Impl->Ready)
+        return RTXPTErrorCode::NotInitialized;
+    if (!Context)
+        return RTXPTErrorCode::InvalidArgument;
+    return m_Impl->Prepare(Context, m_Impl->Runtime.GetSnapshot());
 }
+
+RTXPTErrorCode RTXPTEmbeddedScene::Prepare(IDeviceContext* Context, const RTXPTSceneSnapshotPtr& Snapshot)
+{
+    if (!m_Impl->Ready)
+        return RTXPTErrorCode::NotInitialized;
+    if (!Context || !Snapshot)
+        return RTXPTErrorCode::InvalidArgument;
+    return m_Impl->Prepare(Context, Snapshot);
+}
+
+RTXPTSceneRuntime& RTXPTEmbeddedScene::GetRuntime() { return m_Impl->Runtime; }
+
+const RTXPTImportedScene& RTXPTEmbeddedScene::GetImportedScene() const { return m_Impl->Imported; }
+
+const RTXPTSceneFrameStats& RTXPTEmbeddedScene::GetFrameStats() const { return m_Impl->Frames.GetStats(); }
 
 struct RTXPTEmbeddedView::Impl
 {
@@ -263,14 +265,13 @@ RTXPTEmbeddedView::RTXPTEmbeddedView() :
     m_Impl{std::make_unique<Impl>()} {}
 RTXPTEmbeddedView::~RTXPTEmbeddedView() = default;
 
-bool RTXPTEmbeddedView::Initialize(IRenderDevice* Device, IDeviceContext* Context, const RTXPTEmbeddedViewCreateInfo& CreateInfo, std::string& Error)
+RTXPTErrorCode RTXPTEmbeddedView::Initialize(IRenderDevice* Device, IDeviceContext* Context, const RTXPTEmbeddedViewCreateInfo& CreateInfo)
 {
     auto&        R     = *m_Impl;
     const Uint32 Width = CreateInfo.Width, Height = CreateInfo.Height;
-    Error = "RTXPT view requires a ready scene, a render state cache and a nonempty size";
     if (!Device || !Context || !CreateInfo.Shaders || !CreateInfo.Cache || !CreateInfo.Scene || !CreateInfo.Scene->IsReady() ||
         !Width || !Height)
-        return false;
+        return RTXPTErrorCode::InvalidArgument;
     const auto& S = *CreateInfo.Scene->m_Impl;
     R.Cache       = CreateInfo.Cache;
     R.PSOCache    = CreateInfo.PSOCache;
@@ -288,7 +289,6 @@ bool RTXPTEmbeddedView::Initialize(IRenderDevice* Device, IDeviceContext* Contex
     ConstantsDesc.Usage          = USAGE_DYNAMIC;
     ConstantsDesc.CPUAccessFlags = CPU_ACCESS_WRITE;
     Device->CreateBuffer(ConstantsDesc, nullptr, &R.Constants);
-    Error = "RTXPT frame target creation failed";
     if (!R.Constants ||
         !R.CreateTarget("RTXPT radiance", TEX_FORMAT_RGBA16_FLOAT, BIND_UNORDERED_ACCESS, R.Radiance) ||
         !R.CreateTarget("RTXPT depth", TEX_FORMAT_R32_FLOAT, BIND_UNORDERED_ACCESS, R.Depth) ||
@@ -296,14 +296,14 @@ bool RTXPTEmbeddedView::Initialize(IRenderDevice* Device, IDeviceContext* Contex
         !R.CreateTarget("RTXPT accumulated", TEX_FORMAT_RGBA32_FLOAT, BIND_UNORDERED_ACCESS, R.Accumulated) ||
         !R.CreateTarget("RTXPT processed", TEX_FORMAT_RGBA16_FLOAT, BIND_UNORDERED_ACCESS, R.Processed) ||
         !R.CreateTarget("RTXPT display output", TEX_FORMAT_RGBA8_TYPELESS, BIND_RENDER_TARGET, R.Output))
-        return false;
+        return RTXPTErrorCode::FrameTargetsFailed;
     //Encode once on the RTV. The UNORM SRV lets the host copy encoded display bytes without decoding them again.
     TextureViewDesc DisplayView;
     DisplayView.ViewType = TEXTURE_VIEW_RENDER_TARGET;
     DisplayView.Format   = TEX_FORMAT_RGBA8_UNORM_SRGB;
     R.Output->CreateView(DisplayView, &R.DisplayRTV);
     if (!R.DisplayRTV)
-        return false;
+        return RTXPTErrorCode::FrameTargetsFailed;
 
     //Light sampling keeps screen-sized feedback and reads this view's depth and motion every frame, so it is per view.
     R.Lighting.ImportanceSamplingType = 1;
@@ -312,7 +312,6 @@ bool RTXPTEmbeddedView::Initialize(IRenderDevice* Device, IDeviceContext* Contex
     R.Lighting.pEnvironmentRadianceMap                    = S.Environment.GetRadianceMapSRV();
     R.Lighting.EnvMapImportanceMapResolution              = S.Environment.GetStats().ImportanceResolution;
     R.Lighting.EnvMapImportanceMapMipCount                = S.Environment.GetStats().ImportanceMipLevels;
-    Error                                                 = "RTXPT light sampling preparation failed";
     RTXPTLightsBakerCreateInfo LightsBakerCI;
     LightsBakerCI.pEngineFactory   = Factory;
     LightsBakerCI.pStateCache      = R.Cache;
@@ -321,43 +320,33 @@ bool RTXPTEmbeddedView::Initialize(IRenderDevice* Device, IDeviceContext* Contex
     LightsBakerCI.Height           = Height;
     LightsBakerCI.ComputeSupported = true;
     if (!R.LightsBaker.CreateResources(Device, LightsBakerCI))
-        return false;
+        return RTXPTErrorCode::LightSamplingSetupFailed;
 
-    Error                        = "RTXPT ray tracing shaders or bindings failed";
     const RTXPTSceneFrame& Frame = S.Frames.GetFrame();
     if (!Frame.pTLAS || !R.InitializeRays(Frame.MaterialTextureCount) || !R.BindFrame(Frame))
-        return false;
-    Error = "RTXPT accumulation or tone mapping initialization failed";
+        return RTXPTErrorCode::RayTracingSetupFailed;
     if (!R.Accumulation.Initialize(Device, Factory, R.Cache, R.PSOCache, true) ||
         !R.ToneMapping.Initialize(Device, Factory, R.Cache, R.PSOCache, TEX_FORMAT_RGBA8_UNORM_SRGB, true) ||
         !R.ToneMapping.ResizeResources(Device, Width, Height, TEX_FORMAT_RGBA32_FLOAT))
-        return false;
+        return RTXPTErrorCode::PostProcessSetupFailed;
     R.ToneParameters.ToneMapOperator = RTXPTToneMapperOperator::Reinhard;
     Context->Flush();
     Context->WaitForIdle();
     R.Ready = true;
-    Error.clear();
-    return true;
+    return RTXPTErrorCode::Ok;
 }
 
-bool RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, const PathTracerViewData& View, double Time, bool ResetHistory, std::string& Error)
+RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, const PathTracerViewData& View, double Time, bool ResetHistory)
 {
     auto& R = *m_Impl;
     if (!R.Ready)
-    {
-        Error = "RTXPT view is not initialized";
-        return false;
-    }
+        return RTXPTErrorCode::NotInitialized;
     const auto&            S     = *R.Scene;
     const RTXPTSceneFrame& Frame = S.Frames.GetFrame();
     if (!Frame.pTLAS)
-    {
-        Error = "RTXPT scene frame is not prepared";
-        return false;
-    }
-    Error = "RTXPT light sampling or scene bindings failed";
+        return RTXPTErrorCode::FrameNotPrepared;
     if (!R.BindFrame(Frame))
-        return false;
+        return RTXPTErrorCode::SceneBindingsFailed;
     //Reference accumulation restarts on any camera/projection or scene content change. The host additionally resets
     //cuts, pipeline changes and discontinuities; successful executed frames alone advance history.
     ResetHistory = ResetHistory || !R.Samples || std::memcmp(&Camera, &R.PreviousCamera, sizeof(Camera)) != 0 ||
@@ -386,7 +375,7 @@ bool RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, const PathTra
     {
         MapHelper<SampleConstants> Mapped{R.Context, R.Constants, MAP_WRITE, MAP_FLAG_DISCARD};
         if (!Mapped)
-            return false;
+            return RTXPTErrorCode::ConstantsUpdateFailed;
         *Mapped = Constants;
     }
     RTXPTRayTracingDispatch Trace;
@@ -395,12 +384,11 @@ bool RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, const PathTra
     Trace.pMotionVectorsUAV = R.Motion->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS);
     Trace.Width             = R.Width;
     Trace.Height            = R.Height;
-    Error                   = "RTXPT light sampling or path tracing dispatch failed";
     R.LightsBaker.UpdateFrame(View.MatWorldToClip, Camera.PosW);
     if (!R.LightsBaker.PrepareLightBuffers(R.Context) ||
         !R.LightsBaker.UpdateEnd(R.Context, R.Depth->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE), R.Motion->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE)) ||
         !R.Rays.Trace(R.Context, Trace))
-        return false;
+        return RTXPTErrorCode::TraceFailed;
     RTXPTAccumulationDispatch Accumulation;
     Accumulation.pInputColorSRV          = R.Radiance->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
     Accumulation.pAccumulatedRadianceUAV = R.Accumulated->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS);
@@ -408,25 +396,22 @@ bool RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, const PathTra
     Accumulation.InputWidth = Accumulation.OutputWidth = R.Width;
     Accumulation.InputHeight = Accumulation.OutputHeight = R.Height;
     Accumulation.BlendFactor                             = 1.0f / Samples;
-    Error                                                = "RTXPT accumulation failed";
     if (!R.Accumulation.Render(R.Context, Accumulation))
-        return false;
+        return RTXPTErrorCode::AccumulationFailed;
     RTXPTToneMappingRenderAttribs Tone;
     Tone.pSourceSRV = R.Processed->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
     Tone.pLdrRTV    = R.DisplayRTV;
     Tone.Width      = R.Width;
     Tone.Height     = R.Height;
     Tone.pParams    = &R.ToneParameters;
-    Error           = "RTXPT tone mapping failed";
     if (!R.ToneMapping.Render(R.Context, Tone))
-        return false;
+        return RTXPTErrorCode::ToneMappingFailed;
     R.PreviousCamera  = Camera;
     R.PreviousView    = View;
     R.Samples         = Samples;
     R.ContentRevision = Frame.Snapshot->ContentRevision;
     ++R.FrameIndex;
-    Error.clear();
-    return true;
+    return RTXPTErrorCode::Ok;
 }
 
 ITexture* RTXPTEmbeddedView::GetOutput() const { return m_Impl->Output; }

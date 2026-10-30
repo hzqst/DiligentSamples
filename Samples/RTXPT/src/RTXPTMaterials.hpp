@@ -121,4 +121,9 @@ private:
     RTXPTMaterialStats                       m_Stats;
 };
 
+// A shader resource view of pTexture for material sampling: SRGB selects a color view, decoded to linear light, and
+// otherwise a data view. Uncompressed textures whose format cannot be viewed as requested are copied into a new texture
+// on pContext, with mips regenerated for a color view. Null when the format has no color form.
+RefCntAutoPtr<ITextureView> CreateRTXPTMaterialTextureView(IRenderDevice* pDevice, IDeviceContext* pContext, ITexture* pTexture, bool SRGB);
+
 } // namespace Diligent

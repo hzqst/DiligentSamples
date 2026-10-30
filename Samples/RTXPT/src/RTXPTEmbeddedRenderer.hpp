@@ -3,6 +3,7 @@
 #include <memory>
 #include <string>
 #include "RTXPTFrameConstants.hpp"
+#include "RTXPTSceneRuntime.hpp"
 #include "RenderDevice.h"
 #include "DeviceContext.h"
 #include "Texture.h"
@@ -11,6 +12,8 @@ namespace Diligent
 {
 class RTXPTScene;
 class RTXPTMaterials;
+struct RTXPTImportedScene;
+struct RTXPTSceneFrameStats;
 struct IRenderStateCache;
 struct IPipelineStateCache;
 
@@ -51,6 +54,8 @@ struct RTXPTEmbeddedViewCreateInfo
 
 //The runtime scene of RTXPTScene and RTXPTMaterials and its prepared GPU frame. It keeps the GPU objects of both that
 //its frames use, so it does not need them after Initialize. It must outlive every view created for it.
+//The host may add its own assets and instances to the runtime scene, and change or disable the imported instances,
+//through GetRuntime; it then prepares the snapshots it commits.
 class RTXPTEmbeddedScene
 {
 public:
@@ -59,11 +64,19 @@ public:
     RTXPTEmbeddedScene(const RTXPTEmbeddedScene&) = delete;
     RTXPTEmbeddedScene& operator=(const RTXPTEmbeddedScene&) = delete;
     //Imports the scene, prepares its first frame and waits for the GPU.
-    bool Initialize(IRenderDevice* Device, IDeviceContext* Context, const RTXPTEmbeddedSceneCreateInfo& CreateInfo, std::string& Error);
-    bool IsReady() const;
+    RTXPTErrorCode Initialize(IRenderDevice* Device, IDeviceContext* Context, const RTXPTEmbeddedSceneCreateInfo& CreateInfo);
+    bool           IsReady() const;
     //Prepares the frame of the current scene state; views render the last prepared frame. Call once per host frame
     //before rendering its views, on the context the views render with.
-    bool Prepare(IDeviceContext* Context, std::string& Error);
+    RTXPTErrorCode Prepare(IDeviceContext* Context);
+    //Prepares the frame of Snapshot, a snapshot committed by GetRuntime, as Prepare does.
+    RTXPTErrorCode Prepare(IDeviceContext* Context, const RTXPTSceneSnapshotPtr& Snapshot);
+    //The runtime scene, with the imported scene as its first commit. Valid once the scene is ready.
+    RTXPTSceneRuntime&        GetRuntime();
+    const RTXPTImportedScene& GetImportedScene() const;
+    //The work counters of the frames prepared for the scene since Initialize, its first frame included: each Prepare
+    //prepares one frame and builds its TLAS once.
+    const RTXPTSceneFrameStats& GetFrameStats() const;
 
 private:
     friend class RTXPTEmbeddedView;
@@ -81,11 +94,11 @@ public:
     RTXPTEmbeddedView(const RTXPTEmbeddedView&) = delete;
     RTXPTEmbeddedView& operator=(const RTXPTEmbeddedView&) = delete;
     //Creates the view of CreateInfo.Scene at CreateInfo.Width x CreateInfo.Height and waits for the GPU.
-    bool      Initialize(IRenderDevice* Device, IDeviceContext* Context, const RTXPTEmbeddedViewCreateInfo& CreateInfo, std::string& Error);
-    bool      Render(const PathTracerCameraData& Camera, const PathTracerViewData& View, double Time, bool ResetHistory, std::string& Error);
-    ITexture* GetOutput() const;
-    Uint32    GetTraceCount() const;
-    Uint32    GetAccumulationCount() const;
+    RTXPTErrorCode Initialize(IRenderDevice* Device, IDeviceContext* Context, const RTXPTEmbeddedViewCreateInfo& CreateInfo);
+    RTXPTErrorCode Render(const PathTracerCameraData& Camera, const PathTracerViewData& View, double Time, bool ResetHistory);
+    ITexture*      GetOutput() const;
+    Uint32         GetTraceCount() const;
+    Uint32         GetAccumulationCount() const;
 
 private:
     struct Impl;

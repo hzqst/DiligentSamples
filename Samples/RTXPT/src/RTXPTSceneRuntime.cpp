@@ -163,6 +163,59 @@ const char* GetRTXPTSceneResultString(RTXPTSceneResult Result)
     return "unknown result";
 }
 
+const char* GetRTXPTErrorCodeString(RTXPTErrorCode Code)
+{
+    switch (Code)
+    {
+        case RTXPTErrorCode::Ok: return "ok";
+        case RTXPTErrorCode::InvalidArgument: return "a required argument is missing or not ready";
+        case RTXPTErrorCode::OutOfMemory: return "out of memory";
+        case RTXPTErrorCode::NotInitialized: return "it is not initialized";
+        case RTXPTErrorCode::UpdateNotOpen: return "the scene import requires an open runtime update";
+        case RTXPTErrorCode::UnsupportedVertexLayout: return "the scene import requires 32-byte vertices and 32-bit indices";
+        case RTXPTErrorCode::ModelBuffersInvalid: return "a model has no vertex or skin buffer, or buffers smaller than their base offsets";
+        case RTXPTErrorCode::GeometryRejected: return "the runtime scene rejected a model geometry";
+        case RTXPTErrorCode::MaterialTextureMissing: return "a material references a missing texture";
+        case RTXPTErrorCode::MaterialRejected: return "the runtime scene rejected a material";
+        case RTXPTErrorCode::MaterialReferenceMissing: return "a model references a missing material";
+        case RTXPTErrorCode::JointMatricesMissing: return "a skinned node is missing its joint matrices";
+        case RTXPTErrorCode::InstanceRejected: return "the runtime scene rejected an instance";
+        case RTXPTErrorCode::LightsRejected: return "the runtime scene rejected the scene lights";
+        case RTXPTErrorCode::TransformUpdateFailed: return "an instance transform update failed";
+        case RTXPTErrorCode::DeviceFeaturesMissing: return "RTXPT requires ray tracing, bindless resources, compute and standalone RT shaders";
+        case RTXPTErrorCode::SkinnedGeometryUnsupported: return "the embedded renderer supports static geometry only";
+        case RTXPTErrorCode::UpdateFailed: return "the scene import could not be opened or committed";
+        case RTXPTErrorCode::EnvironmentFailed: return "the scene environment failed to load or bake";
+        case RTXPTErrorCode::PlaceholderTextureFailed: return "the placeholder material texture could not be created";
+        case RTXPTErrorCode::SceneBuffersFailed: return "the scene buffers could not be created";
+        case RTXPTErrorCode::ArenaAllocationFailed: return "a geometry arena allocation failed";
+        case RTXPTErrorCode::BindlessTableExceeded: return "material textures exceed the bindless table";
+        case RTXPTErrorCode::SkinningPassFailed: return "the skinning pass could not be compiled";
+        case RTXPTErrorCode::JointPaletteFailed: return "the joint palette could not be uploaded";
+        case RTXPTErrorCode::SkinningBindingsFailed: return "the skinning resources could not be bound";
+        case RTXPTErrorCode::SkinningDispatchFailed: return "a skinning dispatch failed";
+        case RTXPTErrorCode::BLASBuildFailed: return "a BLAS build failed";
+        case RTXPTErrorCode::SubInstanceLimitExceeded: return "sub-instances exceed the 24-bit TLAS CustomId range";
+        case RTXPTErrorCode::EmissiveTriangleLimitExceeded: return "the emissive triangle count exceeds Uint32";
+        case RTXPTErrorCode::SceneTablesFailed: return "the scene tables or TLAS could not be created";
+        case RTXPTErrorCode::LightBufferFailed: return "the light buffer could not be created";
+        case RTXPTErrorCode::EmissiveTriangleBufferFailed: return "the emissive triangle buffer could not be created";
+        case RTXPTErrorCode::EmissivePassFailed: return "the emissive triangle pass could not be compiled";
+        case RTXPTErrorCode::EmissiveBuildFailed: return "the emissive triangle build failed";
+        case RTXPTErrorCode::FrameTargetsFailed: return "the frame targets could not be created";
+        case RTXPTErrorCode::LightSamplingSetupFailed: return "the light sampling preparation failed";
+        case RTXPTErrorCode::RayTracingSetupFailed: return "the ray tracing shaders or bindings failed";
+        case RTXPTErrorCode::PostProcessSetupFailed: return "the accumulation or tone mapping initialization failed";
+        case RTXPTErrorCode::FrameNotPrepared: return "the scene frame is not prepared";
+        case RTXPTErrorCode::SceneBindingsFailed: return "the light sampling or scene bindings failed";
+        case RTXPTErrorCode::ConstantsUpdateFailed: return "the frame constants could not be updated";
+        case RTXPTErrorCode::TraceFailed: return "the light sampling or path tracing dispatch failed";
+        case RTXPTErrorCode::AccumulationFailed: return "the accumulation failed";
+        case RTXPTErrorCode::ToneMappingFailed: return "the tone mapping failed";
+    }
+    return "unknown error";
+}
+
 bool IsValidRTXPTInstanceTransform(const float4x4& Transform)
 {
     if (!IsFinite(Transform) || Transform._14 != 0.0f || Transform._24 != 0.0f || Transform._34 != 0.0f || Transform._44 != 1.0f)

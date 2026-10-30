@@ -64,6 +64,67 @@ enum class RTXPTSceneResult : Uint32
 
 const char* GetRTXPTSceneResultString(RTXPTSceneResult Result);
 
+// Why a scene import, a frame preparation, or an embedded scene or view failed; GetRTXPTErrorCodeString describes it.
+// A failure of one named model, geometry or material also logs its name, and the scene result, as a warning.
+enum class RTXPTErrorCode : Uint32
+{
+    Ok = 0,
+    InvalidArgument,
+    OutOfMemory,
+    NotInitialized,
+
+    // Import
+    UpdateNotOpen,
+    UnsupportedVertexLayout,
+    ModelBuffersInvalid,
+    GeometryRejected,
+    MaterialTextureMissing,
+    MaterialRejected,
+    MaterialReferenceMissing,
+    JointMatricesMissing,
+    InstanceRejected,
+    LightsRejected,
+    TransformUpdateFailed,
+
+    // Embedded scene
+    DeviceFeaturesMissing,
+    SkinnedGeometryUnsupported,
+    UpdateFailed,
+    EnvironmentFailed,
+
+    // Frame preparation
+    PlaceholderTextureFailed,
+    SceneBuffersFailed,
+    ArenaAllocationFailed,
+    BindlessTableExceeded,
+    SkinningPassFailed,
+    JointPaletteFailed,
+    SkinningBindingsFailed,
+    SkinningDispatchFailed,
+    BLASBuildFailed,
+    SubInstanceLimitExceeded,
+    EmissiveTriangleLimitExceeded,
+    SceneTablesFailed,
+    LightBufferFailed,
+    EmissiveTriangleBufferFailed,
+    EmissivePassFailed,
+    EmissiveBuildFailed,
+
+    // Embedded view
+    FrameTargetsFailed,
+    LightSamplingSetupFailed,
+    RayTracingSetupFailed,
+    PostProcessSetupFailed,
+    FrameNotPrepared,
+    SceneBindingsFailed,
+    ConstantsUpdateFailed,
+    TraceFailed,
+    AccumulationFailed,
+    ToneMappingFailed,
+};
+
+const char* GetRTXPTErrorCodeString(RTXPTErrorCode Code);
+
 // Opaque handles: a slot and the generation of its current occupant. A released slot is reused with a new
 // generation, so a stale handle is detected rather than aliased. Generation 0 is never valid.
 struct RTXPTSceneHandle
