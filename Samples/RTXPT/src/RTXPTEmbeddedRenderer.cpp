@@ -164,6 +164,8 @@ RTXPTSceneRuntime& RTXPTEmbeddedScene::GetRuntime() { return m_Impl->Runtime; }
 
 const RTXPTImportedScene& RTXPTEmbeddedScene::GetImportedScene() const { return m_Impl->Imported; }
 
+const RTXPTSceneFrameStats& RTXPTEmbeddedScene::GetFrameStats() const { return m_Impl->Frames.GetStats(); }
+
 struct RTXPTEmbeddedView::Impl
 {
     //Declared first, so they are released last (see RTXPTEmbeddedScene::Impl).

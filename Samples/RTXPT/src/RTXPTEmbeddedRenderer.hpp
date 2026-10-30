@@ -13,6 +13,7 @@ namespace Diligent
 class RTXPTScene;
 class RTXPTMaterials;
 struct RTXPTImportedScene;
+struct RTXPTSceneFrameStats;
 struct IRenderStateCache;
 struct IPipelineStateCache;
 
@@ -73,6 +74,9 @@ public:
     //The runtime scene, with the imported scene as its first commit. Valid once the scene is ready.
     RTXPTSceneRuntime&        GetRuntime();
     const RTXPTImportedScene& GetImportedScene() const;
+    //The work counters of the frames prepared for the scene since Initialize, its first frame included: each Prepare
+    //prepares one frame and builds its TLAS once.
+    const RTXPTSceneFrameStats& GetFrameStats() const;
 
 private:
     friend class RTXPTEmbeddedView;
