@@ -17,6 +17,7 @@ set(SOURCE
     src/RTXPTEnvMapBakerPass.cpp
     src/RTXPTAccelerationStructures.cpp
     src/RTXPTSkinnedGeometry.cpp
+    src/RTXPTSceneRuntime.cpp
     src/RTXPTRenderTargets.cpp
     src/RTXPTPostProcessPipeline.cpp
     src/RTXPTPostProcessPass.cpp
@@ -46,6 +47,7 @@ set(INCLUDE
     src/RTXPTSceneJson.hpp
     src/RTXPTSceneGraph.hpp
     src/RTXPTMaterials.hpp
+    src/RTXPTMaterialData.hpp
     src/RTXPTLights.hpp
     src/RTXPTLightsBaker.hpp
     src/RTXPTEnvironmentLights.hpp
@@ -60,6 +62,7 @@ set(INCLUDE
     src/RTXPTEnvMapBakerPass.hpp
     src/RTXPTAccelerationStructures.hpp
     src/RTXPTSkinnedGeometry.hpp
+    src/RTXPTSceneRuntime.hpp
     src/RTXPTRenderTargets.hpp
     src/RTXPTPostProcessPipeline.hpp
     src/RTXPTPostProcessPass.hpp
