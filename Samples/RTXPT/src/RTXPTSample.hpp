@@ -27,6 +27,7 @@
 #pragma once
 
 #include <array>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -34,15 +35,12 @@
 #include "FirstPersonCamera.hpp"
 #include "PBR_Renderer.hpp"
 #include "RefCntAutoPtr.hpp"
-#include "RTXPTAccelerationStructures.hpp"
 #include "RTXPTBlitPass.hpp"
-#include "RTXPTEmissiveTrianglePass.hpp"
 #include "RTXPTEmbeddedRenderer.hpp"
 #include "RTXPTEnvMapBaker.hpp"
 #include "RTXPTFrameConstants.hpp"
 #include "RTXPTGpuProfiler.hpp"
 #include "RTXPTRealtimeSettings.hpp"
-#include "RTXPTLights.hpp"
 #include "RTXPTLightsBaker.hpp"
 #include "RTXPTMaterials.hpp"
 #include "RTXPTRayTracingPass.hpp"
@@ -57,7 +55,9 @@
 #include "RTXPTPostProcessPipeline.hpp"
 #include "SampleBase.hpp"
 #include "RTXPTScene.hpp"
-#include "RTXPTSkinnedGeometry.hpp"
+#include "RTXPTSceneFrame.hpp"
+#include "RTXPTSceneImporter.hpp"
+#include "RTXPTSceneRuntime.hpp"
 
 namespace Diligent
 {
@@ -162,7 +162,10 @@ private:
     bool                                UpdateEnvMapBaker(bool ForceRebuild);
     void                                CreateSceneIndependentPasses();
     void                                CreateSceneDependentPasses();
-    bool                                BuildEmissiveTriangles();
+    bool                                ImportScene();
+    bool                                UpdateSceneInstances();
+    bool                                PrepareSceneFrame();
+    bool                                BindSceneFrame();
     bool                                EnsureRenderTargets();
     void                                ClearFallback(const float4& ClearColor);
     void                                RequestAccumulationReset(const char* Reason, bool ResetTemporalHistory = true, bool ResetLightFeedback = true);
@@ -187,39 +190,41 @@ private:
     bool                                DispatchPathTraceLoop(bool UseDenoisingLayers, const RTXPTRayTracingDispatch& BaseDispatch);
     void                                RecordRealtimePathTraceStatus(const char* Status);
 
-    RefCntAutoPtr<IRenderStateCache>                           m_pStateCache;
-    RefCntAutoPtr<IPipelineStateCache>                         m_pPSOCache; // Null where the device has no native pipeline cache.
-    RTXPTFeatureCaps                                           m_FeatureCaps;
-    RTXPTGpuProfiler                                           m_GpuProfiler;
-    AsyncPrefix                                                m_AsyncPrefix;
-    std::vector<ImmediateContextCreateInfo>                    m_AsyncContextInfo;
-    bool                                                       m_EnableAsyncPrefix    = false;
-    bool                                                       m_EnableGPUTLAS        = true;
-    bool                                                       m_CreateAsyncQueue     = true;
-    bool                                                       m_AsyncInputsPrepared  = false;
-    bool                                                       m_AsyncPrefixReady     = false;
-    Uint64                                                     m_AsyncFrames          = 0;
-    bool                                                       m_ValidateAsyncPrefix  = false;
-    Uint32                                                     m_AsyncValidationFrame = 0, m_AsyncValidationFailures = 0;
-    Uint32                                                     m_AsyncValidationEngineErrors = 0;
-    bool                                                       m_EnableGpuProfiling          = false;
-    bool                                                       m_EnableInlineVisibility      = true;
-    bool                                                       m_EnableHitObject             = true;
-    bool                                                       m_EnableThreadReorder         = true;
-    std::string                                                m_GpuProfileCSV;
-    std::string                                                m_AssetsRoot;
-    std::vector<std::string>                                   m_AvailableScenes;
-    std::string                                                m_CurrentSceneName;
-    std::string                                                m_InitialSceneName;
-    RTXPTScene                                                 m_Scene;
-    RTXPTMaterials                                             m_Materials;
-    RTXPTLights                                                m_Lights;
-    RTXPTLightsBaker                                           m_LightsBaker;
-    RTXPTEnvMapBaker                                           m_EnvMapBaker;
-    std::vector<RTXPTEnvMapSource>                             m_EnvMapSources;
-    RTXPTEnvMapSettings                                        m_EnvMapSettings;
-    RTXPTAccelerationStructures                                m_AccelerationStructures;
-    RTXPTSkinnedSceneGeometry                                  m_SkinnedGeometry;
+    RefCntAutoPtr<IRenderStateCache>        m_pStateCache;
+    RefCntAutoPtr<IPipelineStateCache>      m_pPSOCache; // Null where the device has no native pipeline cache.
+    RTXPTFeatureCaps                        m_FeatureCaps;
+    RTXPTGpuProfiler                        m_GpuProfiler;
+    AsyncPrefix                             m_AsyncPrefix;
+    std::vector<ImmediateContextCreateInfo> m_AsyncContextInfo;
+    bool                                    m_EnableAsyncPrefix    = false;
+    bool                                    m_CreateAsyncQueue     = true;
+    bool                                    m_AsyncInputsPrepared  = false;
+    bool                                    m_AsyncPrefixReady     = false;
+    Uint64                                  m_AsyncFrames          = 0;
+    bool                                    m_ValidateAsyncPrefix  = false;
+    Uint32                                  m_AsyncValidationFrame = 0, m_AsyncValidationFailures = 0;
+    Uint32                                  m_AsyncValidationEngineErrors = 0;
+    bool                                    m_EnableGpuProfiling          = false;
+    bool                                    m_EnableInlineVisibility      = true;
+    bool                                    m_EnableHitObject             = true;
+    bool                                    m_EnableThreadReorder         = true;
+    std::string                             m_GpuProfileCSV;
+    std::string                             m_AssetsRoot;
+    std::vector<std::string>                m_AvailableScenes;
+    std::string                             m_CurrentSceneName;
+    std::string                             m_InitialSceneName;
+    RTXPTScene                              m_Scene;
+    RTXPTMaterials                          m_Materials;
+    RTXPTLightsBaker                        m_LightsBaker;
+    RTXPTEnvMapBaker                        m_EnvMapBaker;
+    std::vector<RTXPTEnvMapSource>          m_EnvMapSources;
+    RTXPTEnvMapSettings                     m_EnvMapSettings;
+    // The scene as runtime instances, and its GPU frames. The light sampling follows the frame revisions below.
+    std::unique_ptr<RTXPTSceneRuntime>                         m_SceneRuntime;
+    RTXPTImportedScene                                         m_ImportedScene;
+    RTXPTSceneFrameBuilder                                     m_SceneFrames;
+    Uint64                                                     m_SceneLightingRevision = 0;
+    Uint64                                                     m_SceneEmissiveRevision = 0;
     RTXPTRenderTargets                                         m_RenderTargets;
     RTXPTRayTracingPass                                        m_RayTracingPass;
     SharcIntegration                                           m_Sharc;
@@ -234,7 +239,6 @@ private:
     bool                                                       m_LastRealtimePathTraceExecuted = false;
     bool                                                       m_LastRealtimeFinalMergeReady   = false;
     std::string                                                m_RealtimePathTraceStatus;
-    RTXPTEmissiveTrianglePass                                  m_EmissiveTrianglePass;
     RTXPTBlitPass                                              m_BlitPass;
     RTXPTPostProcessPipeline                                   m_PostProcessPipeline;
     FirstPersonCamera                                          m_Camera;
@@ -280,8 +284,6 @@ private:
     bool                           m_EnableNEE                             = true;
     bool                           m_EnableEnvNEE                          = true;
     bool                           m_EnableEmissiveNEE                     = true;
-    bool                           m_HasDynamicGeometry                    = false;
-    bool                           m_EmissiveTrianglesDirty                = true;
     float                          m_EnvIntensity                          = 1.0f;
     float                          m_LightIntensityScale                   = 1.0f;
     int                            m_SelectedSceneCamera                   = -1;

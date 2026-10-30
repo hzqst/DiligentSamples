@@ -27,6 +27,7 @@
 #pragma once
 
 #include <array>
+#include <vector>
 
 #include "Buffer.h"
 #include "BufferView.h"
@@ -36,6 +37,7 @@
 #include "PipelineState.h"
 #include "RefCntAutoPtr.hpp"
 #include "RenderDevice.h"
+#include "Sampler.h"
 #include "ShaderBindingTable.h"
 #include "ShaderResourceBinding.h"
 #include "TextureView.h"
@@ -79,14 +81,46 @@ struct RTXPTRayTracingDispatch
     Uint32                     Height                    = 0;
 };
 
+// How the pass compiles its pipelines. The scene, lighting and environment resources are bound later with Bind.
 struct RTXPTRayTracingPassCreateInfo
 {
-    IEngineFactory*       pEngineFactory                = nullptr;
-    IRenderStateCache*    pStateCache                   = nullptr;
-    IPipelineStateCache*  pPSOCache                     = nullptr;
-    IBuffer*              pFrameConstants               = nullptr;
+    IEngineFactory*      pEngineFactory  = nullptr;
+    IRenderStateCache*   pStateCache     = nullptr;
+    IPipelineStateCache* pPSOCache       = nullptr;
+    IBuffer*             pFrameConstants = nullptr;
+    VALUE_TYPE           IndexValueType  = VT_UNDEFINED;
+    // The size of the bindless material-texture table the pipelines are compiled for. Bind requires a table of
+    // exactly this size.
+    Uint32 MaterialTextureCount         = 0;
+    bool   EnableMaterialTextures       = false;
+    bool   EnableAnyHit                 = false;
+    bool   EnableLDSamplerForBSDF       = false;
+    bool   RayTracingSupported          = false;
+    bool   StandaloneRTShadersSupported = false;
+    bool   EnableInlineVisibility       = false;
+    Uint32 NEEMISType                   = 0;
+    Uint32 NEECandidateSamples          = 0;
+    Uint32 NEEFullSamples               = 0;
+    bool   UseFp16Types                 = false;
+    bool   EnableHitObject              = false;
+    bool   EnableThreadReorder          = false;
+    bool   EnableSharc                  = false;
+};
+
+// The scene, lighting and environment resources of the pass. Changing any object creates new resource bindings, so
+// work recorded with the previous ones keeps its resources. TLASBuildIndex identifies the last build of pTLAS: the
+// hit groups follow its instances, so the shader binding tables are refreshed whenever it changes.
+struct RTXPTRayTracingBindings
+{
+    ITopLevelAS*          pTLAS                         = nullptr;
+    Uint64                TLASBuildIndex                = 0;
     IBuffer*              pMaterialBuffer               = nullptr;
     IBuffer*              pSubInstanceBuffer            = nullptr;
+    IBuffer*              pVertexBuffer                 = nullptr;
+    IBuffer*              pSkinnedVertexBuffer          = nullptr;
+    IBuffer*              pIndexBuffer                  = nullptr;
+    IDeviceObject* const* pMaterialTextures             = nullptr;
+    Uint32                MaterialTextureCount          = 0;
     IBuffer*              pLightBuffer                  = nullptr;
     IBuffer*              pLightExBuffer                = nullptr;
     IBuffer*              pLightingControlBuffer        = nullptr;
@@ -101,26 +135,6 @@ struct RTXPTRayTracingPassCreateInfo
     ITextureView*         pEnvironmentRadianceMapSRV    = nullptr;
     ISampler*             pEnvironmentSampler           = nullptr;
     ISampler*             pEnvironmentImportanceSampler = nullptr;
-    IBuffer*              pVertexBuffer                 = nullptr;
-    IBuffer*              pSkinnedVertexBuffer          = nullptr;
-    IBuffer*              pIndexBuffer                  = nullptr;
-    VALUE_TYPE            IndexValueType                = VT_UNDEFINED;
-    ITopLevelAS*          pTLAS                         = nullptr;
-    IDeviceObject* const* pMaterialTextures             = nullptr;
-    Uint32                MaterialTextureCount          = 0;
-    bool                  EnableMaterialTextures        = false;
-    bool                  EnableAnyHit                  = false;
-    bool                  EnableLDSamplerForBSDF        = false;
-    bool                  RayTracingSupported           = false;
-    bool                  StandaloneRTShadersSupported  = false;
-    bool                  EnableInlineVisibility        = false;
-    Uint32                NEEMISType                    = 0;
-    Uint32                NEECandidateSamples           = 0;
-    Uint32                NEEFullSamples                = 0;
-    bool                  UseFp16Types                  = false;
-    bool                  EnableHitObject               = false;
-    bool                  EnableThreadReorder           = false;
-    bool                  EnableSharc                   = false;
 };
 
 struct RTXPTRayTracingVariantStats
@@ -150,6 +164,9 @@ struct RTXPTRayTracingPassStats
     Uint32 TraceCount               = 0;
     Uint32 NEECandidateSamples      = 0;
     Uint32 NEEFullSamples           = 0;
+    // Resource binding sets created by Bind, and shader binding table refreshes for new TLAS builds.
+    Uint32 BindingCount    = 0;
+    Uint32 SBTRefreshCount = 0;
 };
 
 class RTXPTRayTracingPass
@@ -158,7 +175,12 @@ public:
     void Reset();
     void UnbindSharcBuffers();
 
+    // Compiles the pipelines. Dispatch needs a successful Bind first.
     bool Initialize(IRenderDevice* pDevice, IDeviceContext* pContext, const RTXPTRayTracingPassCreateInfo& CreateInfo);
+
+    // Binds the scene, lighting and environment resources for the following dispatches. Repeating the bound objects
+    // keeps the resource bindings; a new TLASBuildIndex only refreshes the shader binding tables.
+    bool Bind(IDeviceContext* pContext, const RTXPTRayTracingBindings& Bindings);
 
     bool Dispatch(IDeviceContext*                pContext,
                   RTXPTPathTraceVariant          Variant,
@@ -177,6 +199,8 @@ public:
     const RTXPTRayTracingVariantStats& GetVariantStats(RTXPTPathTraceVariant Variant) const;
 
 private:
+    bool CreateBindings(const RTXPTRayTracingBindings& Bindings);
+
     struct VariantState
     {
         RefCntAutoPtr<IPipelineState>         PSO;
@@ -187,8 +211,16 @@ private:
 
     std::array<VariantState, static_cast<size_t>(RTXPTPathTraceVariant::Count)> m_Variants;
     RefCntAutoPtr<IBuffer>                                                      m_MiniConstantsCB;
-    RefCntAutoPtr<ITopLevelAS>                                                  m_TLAS;
     RefCntAutoPtr<IBufferView>                                                  m_IndexBufferView;
+    RefCntAutoPtr<IBuffer>                                                      m_IndexBuffer;
+    RTXPTRayTracingBindings                                                     m_Bound;
+    std::vector<IDeviceObject*>                                                 m_BoundTextures;
+    bool                                                                        m_HasBindings         = false;
+    VALUE_TYPE                                                                  m_IndexValueType      = VT_UNDEFINED;
+    bool                                                                        m_UseTextures         = false;
+    bool                                                                        m_UseAnyHitTextures   = false;
+    bool                                                                        m_UseHitObject        = false;
+    bool                                                                        m_UseInlineVisibility = false;
     RTXPTRayTracingPassStats                                                    m_Stats;
 };
 

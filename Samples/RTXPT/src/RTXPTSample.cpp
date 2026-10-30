@@ -661,7 +661,6 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
     Args.Parse("realtime", m_RealtimeUI.RealtimeMode);
     Args.Parse("embedded_reference", m_UseEmbeddedReference);
     Args.Parse("asyncPrefix", m_EnableAsyncPrefix);
-    Args.Parse("gpu_tlas", m_EnableGPUTLAS);
     Args.Parse("async_queue", m_CreateAsyncQueue);
     Args.Parse("async_validation", m_ValidateAsyncPrefix);
     Args.Parse("gpu_profile", m_EnableGpuProfiling);
@@ -772,13 +771,12 @@ void RTXPTSample::ResetSceneDependentResources()
     m_EmbeddedScene.reset();
     m_EmbeddedBlit.Reset();
     m_Materials.Reset();
-    m_Lights.Reset();
     m_LightsBaker.SceneReloaded();
     m_EnvMapBaker.SceneReloaded();
-    m_AccelerationStructures.Reset();
-    m_SkinnedGeometry.Reset();
+    m_ImportedScene = {};
+    m_SceneRuntime.reset();
+    m_SceneFrames.Reset();
     m_RayTracingPass.Reset();
-    m_EmissiveTrianglePass.Reset();
 
     m_SelectedSceneCamera   = -1;
     m_EnableSceneAnimations = m_RequestSceneAnimations || !kReferencePathTraceMode;
@@ -790,8 +788,6 @@ void RTXPTSample::ResetSceneDependentResources()
     m_AccumulationActive    = false;
     m_HasLastCameraMatrices = false;
     InvalidatePreviousFrameConstants();
-    m_HasDynamicGeometry       = false;
-    m_EmissiveTrianglesDirty   = true;
     m_LightsBakerSettingsDirty = false;
     m_EnvMapBakerDirty         = true;
     m_EnvMapBakerSettingsDirty = true;
@@ -843,11 +839,10 @@ bool RTXPTSample::RebuildSceneDependentResources()
     }
 
     // Emissive-textured materials are always promoted to NEE area lights: bindless is mandatory, so the
-    // emissive-triangle build shader can always sample their textures on the GPU. Classification stays
-    // consistent across materials, emissive-triangle counting, and the AS EmissiveTriangleOffset allocation.
+    // emissive-triangle build shader can always sample their textures on the GPU.
     ResourcesReady &= m_Materials.Upload(m_pDevice, m_pImmediateContext, SceneData, m_Scene.GetAssetsRoot());
-    ResourcesReady &= m_Lights.Upload(m_pDevice, SceneData);
-    ResourcesReady &= m_Lights.UploadEmissiveTriangles(m_pDevice, SceneData);
+    // The first scene frame sizes the bindless material table and uploads the lights that light sampling reads.
+    ResourcesReady = ResourcesReady && ImportScene();
 
     const SwapChainDesc& SCDesc = m_pSwapChain->GetDesc();
     ResourcesReady &= m_EnvMapBaker.CreateResources(m_pDevice, m_pImmediateContext, m_pEngineFactory, m_pStateCache, m_pPSOCache, m_FeatureCaps.ComputeShaders);
@@ -860,33 +855,12 @@ bool RTXPTSample::RebuildSceneDependentResources()
     LightsBakerCI.Height           = SCDesc.Height;
     LightsBakerCI.ComputeSupported = m_FeatureCaps.ComputeShaders;
     ResourcesReady &= m_LightsBaker.CreateResources(m_pDevice, LightsBakerCI);
-    ResourcesReady &= UpdateLightsBaker(true);
-
-    ResourcesReady &= m_SkinnedGeometry.Initialize(m_pDevice,
-                                                   m_pEngineFactory,
-                                                   m_pStateCache,
-                                                   SceneData,
-                                                   m_FeatureCaps.ComputeShaders);
-
-    m_HasDynamicGeometry     = m_SkinnedGeometry.HasSkinnedGeometry();
-    m_EmissiveTrianglesDirty = true;
-
-    if (m_SkinnedGeometry.HasSkinnedGeometry() && m_SkinnedGeometry.IsReady())
-        ResourcesReady &= m_SkinnedGeometry.Update(m_pImmediateContext, SceneData);
-
-    RTXPTAccelerationStructuresBuildAttribs BuildAttribs;
-    BuildAttribs.pSceneData          = &SceneData;
-    BuildAttribs.IndexType           = m_Scene.GetIndexType();
-    BuildAttribs.pSkinnedGeometry    = &m_SkinnedGeometry;
-    BuildAttribs.RayTracingSupported = m_FeatureCaps.RayTracing;
-    BuildAttribs.pEngineFactory      = m_EnableGPUTLAS ? m_pEngineFactory.RawPtr() : nullptr;
-    ResourcesReady &= m_AccelerationStructures.BuildScene(m_pDevice, m_pImmediateContext, BuildAttribs);
+    ResourcesReady = ResourcesReady && UpdateLightsBaker(true);
 
     if (ResourcesReady)
     {
         m_Scene.ClearGeometryDirty();
         CreateSceneDependentPasses();
-        ResourcesReady &= BuildEmissiveTriangles();
         // Submit the initial bake before the first resize/settings update can recreate
         // its pass resources. In particular, Vulkan must not retire resources still
         // referenced by an unsubmitted initialization command buffer.
@@ -899,9 +873,54 @@ bool RTXPTSample::RebuildSceneDependentResources()
     else
     {
         m_RayTracingPass.Reset();
-        m_EmissiveTrianglePass.Reset();
     }
     return ResourcesReady;
+}
+
+// Imports the loaded scene into a new runtime scene and prepares its first frame.
+bool RTXPTSample::ImportScene()
+{
+    m_SceneRuntime  = std::make_unique<RTXPTSceneRuntime>();
+    m_ImportedScene = {};
+    std::string                      Error;
+    RTXPTSceneSnapshotPtr            Snapshot;
+    RTXPTSceneFrameBuilderCreateInfo FramesCI;
+    FramesCI.pEngineFactory = m_pEngineFactory;
+    FramesCI.pStateCache    = m_pStateCache;
+    FramesCI.pPSOCache      = m_pPSOCache;
+    if (m_SceneRuntime->BeginUpdate() != RTXPTSceneResult::Ok)
+        return false;
+    if (!ImportRTXPTScene(m_pDevice, m_pImmediateContext, m_Scene, m_Materials, *m_SceneRuntime, m_ImportedScene, Error))
+    {
+        m_SceneRuntime->CancelUpdate();
+        LOG_ERROR_MESSAGE("RTXPT scene import failed: ", Error);
+        return false;
+    }
+    if (m_SceneRuntime->CommitUpdate(Snapshot) != RTXPTSceneResult::Ok || !m_SceneFrames.Initialize(m_pDevice, FramesCI, Error) ||
+        !m_SceneFrames.Prepare(m_pImmediateContext, Snapshot, Error))
+    {
+        LOG_ERROR_MESSAGE("RTXPT scene frame preparation failed: ", Error);
+        return false;
+    }
+    return true;
+}
+
+// Applies the current animation state of the scene to its instances. Returns whether the scene content changed.
+bool RTXPTSample::UpdateSceneInstances()
+{
+    const Uint64          PreviousContent = m_SceneRuntime->GetSnapshot()->ContentRevision;
+    std::string           Error;
+    RTXPTSceneSnapshotPtr Snapshot;
+    if (m_SceneRuntime->BeginUpdate() != RTXPTSceneResult::Ok)
+        return false;
+    if (!UpdateRTXPTImportedSceneTransforms(m_Scene, m_ImportedScene, *m_SceneRuntime, Error) ||
+        m_SceneRuntime->CommitUpdate(Snapshot) != RTXPTSceneResult::Ok)
+    {
+        m_SceneRuntime->CancelUpdate();
+        LOG_ERROR_MESSAGE("RTXPT scene animation update failed: ", Error);
+        return false;
+    }
+    return Snapshot->ContentRevision != PreviousContent;
 }
 
 bool RTXPTSample::SetCurrentScene(const std::string& SceneName, bool ForceReload)
@@ -1324,18 +1343,17 @@ void RTXPTSample::UpdateFrameConstants(double CurrTime)
     PtConsts.NEECandidateSamples = static_cast<Uint32>(std::clamp(m_ReferenceUI.NEECandidateSamples, 1, kNEEMaxSampleCount));
     PtConsts.NEEFullSamples      = static_cast<Uint32>(std::clamp(m_ReferenceUI.NEEFullSamples, 0, kNEEMaxSampleCount));
 
-    PtConsts.sampleIndex    = PathTraceSampleIndex;
-    PtConsts.minBounceCount = m_MinBounces;
-    const Uint32 EmissiveTriangleCount =
-        (m_EnableNEE && m_EnableEmissiveNEE && m_EmissiveTrianglePass.IsReady() && !m_EmissiveTrianglesDirty) ?
-        m_Lights.GetEmissiveTriangleCount() :
-        0u;
+    PtConsts.sampleIndex            = PathTraceSampleIndex;
+    PtConsts.minBounceCount         = m_MinBounces;
+    const RTXPTLights* pSceneLights = m_SceneFrames.GetFrame().pLights;
+    const Uint32       EmissiveTriangleCount =
+        (m_EnableNEE && m_EnableEmissiveNEE && pSceneLights != nullptr) ? pSceneLights->GetEmissiveTriangleCount() : 0u;
     PtConsts.environmentNEEEnabled = PackEnvironmentNEEAndEmissiveTriangleCount(m_EnableEnvNEE, EmissiveTriangleCount);
     PtConsts.environmentIntensity  = m_EnvIntensity;
 
     PtConsts.lightIntensityScale      = m_LightIntensityScale;
     PtConsts.maxNEEBounceCount        = m_MaxNEEBounces;
-    PtConsts.analyticLightCount       = m_Lights.GetStats().LightCount;
+    PtConsts.analyticLightCount       = pSceneLights != nullptr ? pSceneLights->GetStats().LightCount : 0u;
     PtConsts.NEEMISType               = static_cast<Uint32>(std::clamp(m_ReferenceUI.NEEMISType, 0, 2));
     PtConsts.nestedDielectricsQuality = static_cast<Uint32>(std::clamp(m_ReferenceUI.NestedDielectricsQuality, 0, 2));
     PtConsts.superResolutionActive =
@@ -1366,7 +1384,8 @@ void RTXPTSample::UpdateFrameConstants(double CurrTime)
 
 bool RTXPTSample::UpdateLightsBaker(bool ResetFeedback)
 {
-    if (!m_pDevice || !m_pSwapChain || !m_Scene.HasValidContent())
+    const RTXPTSceneFrame& Frame = m_SceneFrames.GetFrame();
+    if (!m_pDevice || !m_pSwapChain || !m_Scene.HasValidContent() || Frame.pLights == nullptr)
         return false;
 
     const SwapChainDesc&     SCDesc = m_pSwapChain->GetDesc();
@@ -1386,9 +1405,13 @@ bool RTXPTSample::UpdateLightsBaker(bool ResetFeedback)
     BakerSettings.EnvMapImportanceMapMipCount   = m_EnvMapBaker.GetStats().ImportanceMipLevels;
     BakerSettings.FrameIndex                    = static_cast<Int64>(m_FrameIndex);
 
-    const bool Updated = m_LightsBaker.UpdateBegin(m_pDevice, m_Lights, BakerSettings);
+    const bool Updated = m_LightsBaker.UpdateBegin(m_pDevice, *Frame.pLights, BakerSettings);
     if (Updated)
+    {
         m_LightsBakerSettingsDirty = false;
+        m_SceneLightingRevision    = Frame.LightingRevision;
+        m_SceneEmissiveRevision    = Frame.EmissiveRevision;
+    }
     else
         m_LightsBakerSettingsDirty = true;
     return Updated;
@@ -1424,79 +1447,37 @@ void RTXPTSample::CreateSceneDependentPasses()
         LOG_WARNING_MESSAGE("SHaRC unavailable: requires D3D12 SM 6.6 and native FP16; Vulkan 64-bit atomics are not enabled by this backend. Rendering without cache.");
     if (EnableSharc && !m_Sharc.Initialize(m_pDevice, m_pEngineFactory, m_pStateCache))
         LOG_ERROR_MESSAGE("SHaRC initialization failed");
-    // Build the textured shader variants whenever the scene actually carries material textures. Bindless is
-    // mandatory (required in ModifyEngineInitInfo), so descriptor indexing is always available; the only
-    // factor-only path left is the legitimate texture-less scene (MaterialTextureCount == 0).
-    const bool  EnableMaterialTextures = m_Materials.GetTextureCount() > 0;
-    const bool  EnableAnyHit           = EnableMaterialTextures || m_AccelerationStructures.GetStats().ExcludedFromNEEGeometryCount > 0;
-    const auto& Features               = m_pDevice->GetDeviceInfo().Features;
-    const bool  UseFp16Types           = m_ReferenceUI.UseFp16Types &&
+    const auto& Features     = m_pDevice->GetDeviceInfo().Features;
+    const bool  UseFp16Types = m_ReferenceUI.UseFp16Types &&
         Features.ShaderFloat16 == DEVICE_FEATURE_STATE_ENABLED &&
         Features.ResourceBuffer16BitAccess == DEVICE_FEATURE_STATE_ENABLED;
     LOG_INFO_MESSAGE("RTXPT native FP16: ", UseFp16Types ? "enabled" : "disabled",
                      "; requested: ", m_ReferenceUI.UseFp16Types ? "yes" : "no");
 
-    RTXPTEmissiveTrianglePassCreateInfo EmissiveCI;
-    EmissiveCI.pEngineFactory              = m_pEngineFactory;
-    EmissiveCI.pStateCache                 = m_pStateCache;
-    EmissiveCI.pPSOCache                   = m_pPSOCache;
-    EmissiveCI.pMaterialBuffer             = m_Materials.GetMaterialBuffer();
-    EmissiveCI.pSubInstanceBuffer          = m_AccelerationStructures.GetSubInstanceBuffer();
-    EmissiveCI.pSubInstanceTransformBuffer = m_AccelerationStructures.GetSubInstanceTransformBuffer();
-    EmissiveCI.pVertexBuffer               = m_Scene.GetVertexBuffer0(m_pDevice, m_pImmediateContext);
-    EmissiveCI.pSkinnedVertexBuffer        = m_SkinnedGeometry.GetSkinnedVertexBuffer();
-    EmissiveCI.pIndexBuffer                = m_Scene.GetIndexBuffer(m_pDevice, m_pImmediateContext);
-    EmissiveCI.IndexValueType              = m_Scene.GetIndexType();
-    EmissiveCI.pEmissiveTriangleBuffer     = m_Lights.GetEmissiveTriangleBuffer();
-    EmissiveCI.pMaterialTextures           = m_Materials.GetTextureBindings();
-    EmissiveCI.MaterialTextureCount        = m_Materials.GetTextureCount();
-    EmissiveCI.EnableMaterialTextures      = EnableMaterialTextures;
-    EmissiveCI.ComputeSupported            = m_FeatureCaps.ComputeShaders;
-    m_EmissiveTrianglePass.Initialize(m_pDevice, EmissiveCI);
-
     RTXPTRayTracingPassCreateInfo RaysCI;
-    RaysCI.pEngineFactory                = m_pEngineFactory;
-    RaysCI.pStateCache                   = m_pStateCache;
-    RaysCI.pPSOCache                     = m_pPSOCache;
-    RaysCI.pFrameConstants               = m_FrameConstantsCB;
-    RaysCI.pMaterialBuffer               = m_Materials.GetMaterialBuffer();
-    RaysCI.pSubInstanceBuffer            = m_AccelerationStructures.GetSubInstanceBuffer();
-    RaysCI.pLightBuffer                  = m_LightsBaker.GetLightBuffer();
-    RaysCI.pLightExBuffer                = m_LightsBaker.GetLightExBuffer();
-    RaysCI.pLightingControlBuffer        = m_LightsBaker.GetControlBuffer();
-    RaysCI.pLightProxyCounters           = m_LightsBaker.GetLightProxyCounters();
-    RaysCI.pLightSamplingProxies         = m_LightsBaker.GetLightSamplingProxies();
-    RaysCI.pLocalSamplingBuffer          = m_LightsBaker.GetLocalSamplingBuffer();
-    RaysCI.pEnvironmentLightLookup       = m_LightsBaker.GetEnvironmentLightLookup();
-    RaysCI.pFeedbackTotalWeightUAV       = m_LightsBaker.GetFeedbackTotalWeightUAV();
-    RaysCI.pFeedbackCandidatesUAV        = m_LightsBaker.GetFeedbackCandidatesUAV();
-    RaysCI.pEnvironmentMapSRV            = m_EnvMapBaker.GetEnvironmentMapSRV();
-    RaysCI.pEnvironmentImportanceMapSRV  = m_EnvMapBaker.GetImportanceMapSRV();
-    RaysCI.pEnvironmentRadianceMapSRV    = m_EnvMapBaker.GetRadianceMapSRV();
-    RaysCI.pEnvironmentSampler           = m_EnvMapBaker.GetEnvironmentSampler();
-    RaysCI.pEnvironmentImportanceSampler = m_EnvMapBaker.GetImportanceSampler();
-    RaysCI.pVertexBuffer                 = m_Scene.GetVertexBuffer0(m_pDevice, m_pImmediateContext);
-    RaysCI.pSkinnedVertexBuffer          = m_SkinnedGeometry.GetSkinnedVertexBuffer();
-    RaysCI.pIndexBuffer                  = m_Scene.GetIndexBuffer(m_pDevice, m_pImmediateContext);
-    RaysCI.IndexValueType                = m_Scene.GetIndexType();
-    RaysCI.pTLAS                         = m_AccelerationStructures.GetTLAS();
-    RaysCI.pMaterialTextures             = m_Materials.GetTextureBindings();
-    RaysCI.MaterialTextureCount          = m_Materials.GetTextureCount();
-    RaysCI.EnableMaterialTextures        = EnableMaterialTextures;
-    RaysCI.EnableAnyHit                  = EnableAnyHit;
-    RaysCI.EnableLDSamplerForBSDF        = m_ReferenceUI.EnableLDSamplerForBSDF;
-    RaysCI.RayTracingSupported           = m_FeatureCaps.RayTracing;
-    RaysCI.StandaloneRTShadersSupported  = m_FeatureCaps.StandaloneRayTracingShaders;
-    RaysCI.EnableInlineVisibility        = m_EnableInlineVisibility;
-    RaysCI.NEEMISType                    = static_cast<Uint32>(m_ReferenceUI.NEEMISType);
-    RaysCI.NEECandidateSamples           = static_cast<Uint32>(std::clamp(m_ReferenceUI.NEECandidateSamples, 1, kNEEMaxSampleCount));
-    RaysCI.NEEFullSamples                = static_cast<Uint32>(std::clamp(m_ReferenceUI.NEEFullSamples, 0, kNEEMaxSampleCount));
-    RaysCI.UseFp16Types                  = UseFp16Types;
-    RaysCI.EnableHitObject               = m_EnableHitObject;
-    RaysCI.EnableThreadReorder           = m_EnableThreadReorder;
-    RaysCI.EnableSharc                   = EnableSharc;
+    RaysCI.pEngineFactory  = m_pEngineFactory;
+    RaysCI.pStateCache     = m_pStateCache;
+    RaysCI.pPSOCache       = m_pPSOCache;
+    RaysCI.pFrameConstants = m_FrameConstantsCB;
+    // The scene frame's bindless table is sized in steps, so it always holds textures; any-hit filtering follows the
+    // geometry flags of each material binding.
+    RaysCI.IndexValueType               = VT_UINT32;
+    RaysCI.MaterialTextureCount         = m_SceneFrames.GetFrame().MaterialTextureCount;
+    RaysCI.EnableMaterialTextures       = true;
+    RaysCI.EnableAnyHit                 = true;
+    RaysCI.EnableLDSamplerForBSDF       = m_ReferenceUI.EnableLDSamplerForBSDF;
+    RaysCI.RayTracingSupported          = m_FeatureCaps.RayTracing;
+    RaysCI.StandaloneRTShadersSupported = m_FeatureCaps.StandaloneRayTracingShaders;
+    RaysCI.EnableInlineVisibility       = m_EnableInlineVisibility;
+    RaysCI.NEEMISType                   = static_cast<Uint32>(m_ReferenceUI.NEEMISType);
+    RaysCI.NEECandidateSamples          = static_cast<Uint32>(std::clamp(m_ReferenceUI.NEECandidateSamples, 1, kNEEMaxSampleCount));
+    RaysCI.NEEFullSamples               = static_cast<Uint32>(std::clamp(m_ReferenceUI.NEEFullSamples, 0, kNEEMaxSampleCount));
+    RaysCI.UseFp16Types                 = UseFp16Types;
+    RaysCI.EnableHitObject              = m_EnableHitObject;
+    RaysCI.EnableThreadReorder          = m_EnableThreadReorder;
+    RaysCI.EnableSharc                  = EnableSharc;
     const bool RTReady =
-        m_RayTracingPass.Initialize(m_pDevice, m_pImmediateContext, RaysCI);
+        m_RayTracingPass.Initialize(m_pDevice, m_pImmediateContext, RaysCI) && BindSceneFrame();
 
     if (!RTReady)
     {
@@ -1506,22 +1487,62 @@ void RTXPTSample::CreateSceneDependentPasses()
     }
 }
 
-bool RTXPTSample::BuildEmissiveTriangles()
+// Prepares the GPU frame of the current scene on the context that traces it, follows its lighting and binds it.
+bool RTXPTSample::PrepareSceneFrame()
 {
-    const Uint32 EmissiveTriangleCount = m_Lights.GetEmissiveTriangleCount();
-    if (EmissiveTriangleCount == 0u)
+    std::string Error;
+    if (!m_SceneRuntime || !m_SceneFrames.Prepare(m_pImmediateContext, m_SceneRuntime->GetSnapshot(), Error))
     {
-        m_EmissiveTrianglesDirty = false;
-        return true;
+        LOG_ERROR_MESSAGE("RTXPT scene frame preparation failed: ", Error);
+        return false;
     }
+    const RTXPTSceneFrame& Frame = m_SceneFrames.GetFrame();
+    if (Frame.LightingRevision != m_SceneLightingRevision)
+    {
+        if (!UpdateLightsBaker(false))
+            return false;
+    }
+    else if (Frame.EmissiveRevision != m_SceneEmissiveRevision)
+    {
+        // The emissive triangles were rebuilt in place; re-run the per-triangle power proxy build on the next
+        // LightsBaker UpdateEnd so the sampling weights track the moved or deformed emitters.
+        m_LightsBaker.RequestProxyRebuild();
+        m_SceneEmissiveRevision = Frame.EmissiveRevision;
+    }
+    return BindSceneFrame();
+}
 
-    if (!m_EmissiveTrianglePass.IsReady() || m_AccelerationStructures.GetStats().SubInstanceCount == 0)
+bool RTXPTSample::BindSceneFrame()
+{
+    const RTXPTSceneFrame& Frame = m_SceneFrames.GetFrame();
+    if (!m_RayTracingPass.IsReady() || Frame.pTLAS == nullptr || Frame.MaterialTextureCount != m_RayTracingPass.GetStats().MaterialTextureCount)
         return false;
 
-    const bool Executed = m_EmissiveTrianglePass.Dispatch(m_pImmediateContext, m_AccelerationStructures.GetStats().SubInstanceCount);
-    if (Executed)
-        m_EmissiveTrianglesDirty = false;
-    return Executed;
+    RTXPTRayTracingBindings Bindings;
+    Bindings.pTLAS                         = Frame.pTLAS;
+    Bindings.TLASBuildIndex                = Frame.BuildIndex;
+    Bindings.pMaterialBuffer               = Frame.pMaterialBuffer;
+    Bindings.pSubInstanceBuffer            = Frame.pSubInstanceBuffer;
+    Bindings.pVertexBuffer                 = Frame.pVertexBuffer;
+    Bindings.pSkinnedVertexBuffer          = Frame.pSkinnedVertexBuffer;
+    Bindings.pIndexBuffer                  = Frame.pIndexBuffer;
+    Bindings.pMaterialTextures             = Frame.ppMaterialTextures;
+    Bindings.MaterialTextureCount          = Frame.MaterialTextureCount;
+    Bindings.pLightBuffer                  = m_LightsBaker.GetLightBuffer();
+    Bindings.pLightExBuffer                = m_LightsBaker.GetLightExBuffer();
+    Bindings.pLightingControlBuffer        = m_LightsBaker.GetControlBuffer();
+    Bindings.pLightProxyCounters           = m_LightsBaker.GetLightProxyCounters();
+    Bindings.pLightSamplingProxies         = m_LightsBaker.GetLightSamplingProxies();
+    Bindings.pLocalSamplingBuffer          = m_LightsBaker.GetLocalSamplingBuffer();
+    Bindings.pEnvironmentLightLookup       = m_LightsBaker.GetEnvironmentLightLookup();
+    Bindings.pFeedbackTotalWeightUAV       = m_LightsBaker.GetFeedbackTotalWeightUAV();
+    Bindings.pFeedbackCandidatesUAV        = m_LightsBaker.GetFeedbackCandidatesUAV();
+    Bindings.pEnvironmentMapSRV            = m_EnvMapBaker.GetEnvironmentMapSRV();
+    Bindings.pEnvironmentImportanceMapSRV  = m_EnvMapBaker.GetImportanceMapSRV();
+    Bindings.pEnvironmentRadianceMapSRV    = m_EnvMapBaker.GetRadianceMapSRV();
+    Bindings.pEnvironmentSampler           = m_EnvMapBaker.GetEnvironmentSampler();
+    Bindings.pEnvironmentImportanceSampler = m_EnvMapBaker.GetImportanceSampler();
+    return m_RayTracingPass.Bind(m_pImmediateContext, Bindings);
 }
 
 bool RTXPTSample::EnsureRenderTargets()
@@ -1614,7 +1635,8 @@ bool RTXPTSample::DispatchPathTracePrePass(const RTXPTRayTracingDispatch& BaseDi
 
 bool RTXPTSample::PathTrace()
 {
-    if (!m_AccelerationStructures.UploadSubInstanceTransforms(m_pImmediateContext)) return false;
+    // The scene frame is prepared on the context that traces it, so AsyncPrefix keeps it on one queue.
+    if (!PrepareSceneFrame()) return false;
     m_SharcActive = m_SharcSettings.Enabled && m_RealtimeUI.RealtimeMode &&
         SharcIntegration::IsSupported(m_pDevice) && m_RayTracingPass.IsReady(RTXPTPathTraceVariant::SharcFill);
     if (!m_SharcActive)
@@ -2420,24 +2442,15 @@ void RTXPTSample::Update(double CurrTime, double ElapsedTime, bool DoUpdateUI)
     if (m_EnableSceneAnimations)
     {
         m_Scene.Update(CurrTime, ElapsedTime);
-        if (m_Scene.IsGeometryDirty() && m_AccelerationStructures.IsBuilt())
+        if (m_Scene.IsGeometryDirty() && m_SceneRuntime)
         {
-            const RTXPTSceneGraphData& SceneData = m_Scene.GetSceneGraphData();
-            const bool                 ASUpdated = m_SkinnedGeometry.HasSkinnedGeometry() ?
-                (m_SkinnedGeometry.IsReady() && m_SkinnedGeometry.Update(m_pImmediateContext, SceneData) &&
-                 m_AccelerationStructures.UpdateDynamicBLAS(m_pImmediateContext, SceneData, m_SkinnedGeometry)) :
-                m_AccelerationStructures.UpdateTLAS(m_pImmediateContext, SceneData);
-            if (ASUpdated)
+            // The next scene frame skins, rebuilds the TLAS and the emissive triangles of what changed.
+            if (UpdateSceneInstances())
             {
-                m_EmissiveTrianglesDirty = true;
-                BuildEmissiveTriangles();
-                // The emissive-triangle buffer was rebuilt in place; re-run the per-triangle power proxy build
-                // on the next LightsBaker UpdateEnd so the sampling weights track the deformed emitters.
-                m_LightsBaker.RequestProxyRebuild();
                 RequestAccumulationReset("Scene geometry or instance transforms updated", false);
                 m_Sharc.Invalidate();
-                m_Scene.ClearGeometryDirty();
             }
+            m_Scene.ClearGeometryDirty();
         }
     }
 
@@ -2526,7 +2539,6 @@ void RTXPTSample::WindowResize(Uint32 Width, Uint32 Height)
                 if (!LightsResourcesReady)
                     m_LightsBakerSettingsDirty = true;
                 m_RayTracingPass.Reset();
-                m_EmissiveTrianglePass.Reset();
             }
         }
     }
@@ -3387,8 +3399,9 @@ void RTXPTSample::UpdateUI()
         ImGui::Text("Mesh nodes: %u", m_Scene.GetMeshNodeCount());
         ImGui::Text("Primitives: %u", m_Scene.GetPrimitiveCount());
         ImGui::Text("Materials: %u", m_Materials.GetStats().MaterialCount);
-        ImGui::Text("Lights: %u", m_Lights.GetStats().LightCount);
-        ImGui::Text("Emissive triangles: %u", m_Lights.GetStats().EmissiveTriangleCount);
+        const RTXPTLights* pSceneLights = m_SceneFrames.GetFrame().pLights;
+        ImGui::Text("Lights: %u", pSceneLights != nullptr ? pSceneLights->GetStats().LightCount : 0u);
+        ImGui::Text("Emissive triangles: %u", pSceneLights != nullptr ? pSceneLights->GetStats().EmissiveTriangleCount : 0u);
         ImGui::Text("Animations: %s", GeometryStats.HasAnimations ? "yes" : "no");
         ImGui::Text("Skinned nodes: %u", GeometryStats.SkinnedNodeCount);
         ImGui::Text("Skinned primitives: %u", GeometryStats.SkinnedPrimitiveCount);
@@ -3401,8 +3414,8 @@ void RTXPTSample::UpdateUI()
     {
         ImGui::Indent(Indent);
 
-        const RTXPTAccelerationStructureStats& ASStats     = m_AccelerationStructures.GetStats();
-        const RTXPTRayTracingPassStats&        RTPassStats = m_RayTracingPass.GetStats();
+        const RTXPTSceneFrameStats&     FrameStats  = m_SceneFrames.GetStats();
+        const RTXPTRayTracingPassStats& RTPassStats = m_RayTracingPass.GetStats();
 
         ImGui::Text("Backend: %s", GetRenderDeviceTypeString(m_pDevice->GetDeviceInfo().Type));
         ImGui::Text("RayTracing: %s", m_FeatureCaps.RayTracing ? "yes" : "no");
@@ -3412,13 +3425,14 @@ void RTXPTSample::UpdateUI()
         ImGui::Text("Compute: %s", m_FeatureCaps.ComputeShaders ? "yes" : "no");
         ImGui::Text("Assets root: %s", m_AssetsRoot.c_str());
         ImGui::Separator();
-        ImGui::Text("Acceleration structures: %s", m_AccelerationStructures.IsBuilt() ? "built" : "not built");
-        ImGui::Text("BLAS: %u", ASStats.BLASCount);
-        ImGui::Text("TLAS instances: %u", ASStats.InstanceCount);
-        ImGui::Text("RT geometries: %u", ASStats.GeometryCount);
-        ImGui::Text("Sub-instances: %u", ASStats.SubInstanceCount);
-        ImGui::Text("Alpha-tested geometries: %u", ASStats.AlphaTestedGeometryCount);
-        ImGui::Text("Excluded from NEE geometries: %u", ASStats.ExcludedFromNEEGeometryCount);
+        ImGui::Text("Scene frame: %s", m_SceneFrames.GetFrame().pTLAS != nullptr ? "prepared" : "not prepared");
+        ImGui::Text("TLAS instances: %u (builds %llu)", FrameStats.InstanceCount, static_cast<unsigned long long>(FrameStats.TLASBuildCount));
+        ImGui::Text("Sub-instances: %u", FrameStats.SubInstanceCount);
+        ImGui::Text("Shared BLAS: %u (builds %llu)", FrameStats.BLASCount, static_cast<unsigned long long>(FrameStats.RigidBLASBuildCount));
+        ImGui::Text("Skinned instances: %u (BLAS builds %llu, updates %llu)", FrameStats.SkinnedInstanceCount,
+                    static_cast<unsigned long long>(FrameStats.SkinnedBLASBuildCount), static_cast<unsigned long long>(FrameStats.SkinnedBLASUpdateCount));
+        ImGui::Text("Resident geometry / materials: %u / %u", FrameStats.ResidentGeometryCount, FrameStats.ResidentMaterialCount);
+        ImGui::Text("Material textures: %u of %u", FrameStats.TextureCount, FrameStats.TextureCapacity);
         ImGui::Separator();
         ImGui::Text("Frame constants: %s", m_FrameConstantsCB ? "created" : "missing");
         ImGui::Text("Frame index: %u", m_FrameIndex);
@@ -3481,11 +3495,10 @@ void RTXPTSample::UpdateUI()
                             "missing");
         }
         m_EnvMapBaker.DebugGUI(Indent);
-        ImGui::Text("Emissive triangle pass: %s", m_EmissiveTrianglePass.IsReady() ? "ready" : "not ready");
-        ImGui::Text("Emissive triangle dispatch count: %u", m_EmissiveTrianglePass.GetStats().DispatchCount);
+        ImGui::Text("Emissive triangle builds: %llu", static_cast<unsigned long long>(FrameStats.EmissiveBuildCount));
         ImGui::Text("Vertex buffer: %s", RTPassStats.VertexBufferBound ? "bound" : "fallback");
         ImGui::Text("Skinned vertex buffer: %s", RTPassStats.SkinnedVertexBufferBound ? "bound" : "fallback");
-        ImGui::Text("Skinning pass: %s", m_SkinnedGeometry.IsReady() ? "ready" : "not ready");
+        ImGui::Text("Skinning dispatches: %llu", static_cast<unsigned long long>(FrameStats.SkinningDispatchCount));
         ImGui::Text("Index buffer: %s", RTPassStats.IndexBufferBound ? "bound" : "fallback");
         ImGui::Text("Material textures loaded: %u", m_Materials.GetStats().TextureCount);
         ImGui::Text("Material textures bound: %s (%u)", RTPassStats.MaterialTexturesBound ? "yes" : "no", RTPassStats.MaterialTextureCount);

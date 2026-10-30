@@ -32,6 +32,7 @@
 #include "DebugUtilities.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <vector>
@@ -261,11 +262,16 @@ bool RTXPTLights::Upload(IRenderDevice* pDevice, const GLTF::Scene& Scene, const
     return UploadLightBuffer(pDevice, Lights);
 }
 
-bool RTXPTLights::Upload(IRenderDevice* pDevice, const RTXPTSceneGraphData& SceneData)
+void BuildRTXPTSceneLights(const RTXPTSceneGraphData& SceneData, std::vector<RTXPTSceneLight>& Lights)
 {
-    Reset();
+    Lights.clear();
+    auto Add = [&](const PolymorphicLightInfoFull& Light, const std::array<Uint64, 4>& Key) {
+        RTXPTSceneLight SceneLight;
+        SceneLight.Light = Light;
+        SceneLight.Key   = Key;
+        Lights.push_back(SceneLight);
+    };
 
-    std::vector<PolymorphicLightInfoFull> Lights;
     for (const RTXPTSceneLightMetadata& LightMeta : SceneData.Lights)
     {
         if (LightMeta.Type == "EnvironmentLight")
@@ -274,38 +280,37 @@ bool RTXPTLights::Upload(IRenderDevice* pDevice, const RTXPTSceneGraphData& Scen
         float Color[3] = {1.0f, 1.0f, 1.0f};
         ReadRTXPTFloatArray(LightMeta.RawJson, "color", Color, 3);
 
-        const float3 LightColor{Color[0], Color[1], Color[2]};
-        const float  Intensity = ReadRTXPTLightIntensity(LightMeta.RawJson);
+        const float3                LightColor{Color[0], Color[1], Color[2]};
+        const float                 Intensity = ReadRTXPTLightIntensity(LightMeta.RawJson);
+        const std::array<Uint64, 4> Key{1u, LightMeta.GraphNodeId, 0u, 0u};
         if (LightMeta.Type == "DirectionalLight")
         {
-            Lights.emplace_back(MakeDirectionalLightData(LightColor, Intensity, LightMeta.GlobalTransform,
-                                                         ReadRTXPTDirectionalAngularSizeRadians(LightMeta.RawJson)));
+            Add(MakeDirectionalLightData(LightColor, Intensity, LightMeta.GlobalTransform,
+                                         ReadRTXPTDirectionalAngularSizeRadians(LightMeta.RawJson)),
+                Key);
         }
         else if (LightMeta.Type == "PointLight")
         {
-            Lights.emplace_back(MakeSphereLightData(LightColor, Intensity, LightMeta.GlobalTransform,
-                                                    ReadRTXPTOptionalFloat(LightMeta.RawJson, "range", 0.0f),
-                                                    ReadRTXPTOptionalFloat(LightMeta.RawJson, "radius", kDefaultPunctualLightRadius),
-                                                    0.0f,
-                                                    0.0f));
+            Add(MakeSphereLightData(LightColor, Intensity, LightMeta.GlobalTransform,
+                                    ReadRTXPTOptionalFloat(LightMeta.RawJson, "range", 0.0f),
+                                    ReadRTXPTOptionalFloat(LightMeta.RawJson, "radius", kDefaultPunctualLightRadius),
+                                    0.0f,
+                                    0.0f),
+                Key);
         }
         else if (LightMeta.Type == "SpotLight")
         {
-            Lights.emplace_back(MakeSphereLightData(LightColor, Intensity, LightMeta.GlobalTransform,
-                                                    ReadRTXPTOptionalFloat(LightMeta.RawJson, "range", 0.0f),
-                                                    ReadRTXPTOptionalFloat(LightMeta.RawJson, "radius", kDefaultPunctualLightRadius),
-                                                    ReadRTXPTSpotAngleRadians(LightMeta.RawJson, "innerAngle", "innerConeAngle"),
-                                                    ReadRTXPTSpotAngleRadians(LightMeta.RawJson, "outerAngle", "outerConeAngle")));
+            Add(MakeSphereLightData(LightColor, Intensity, LightMeta.GlobalTransform,
+                                    ReadRTXPTOptionalFloat(LightMeta.RawJson, "range", 0.0f),
+                                    ReadRTXPTOptionalFloat(LightMeta.RawJson, "radius", kDefaultPunctualLightRadius),
+                                    ReadRTXPTSpotAngleRadians(LightMeta.RawJson, "innerAngle", "innerConeAngle"),
+                                    ReadRTXPTSpotAngleRadians(LightMeta.RawJson, "outerAngle", "outerConeAngle")),
+                Key);
         }
-        else
-        {
-            continue;
-        }
-        m_AnalyticSources.push_back({{1u, LightMeta.GraphNodeId, 0u, 0u}, static_cast<Uint32>(Lights.size() - 1u), 1u});
     }
 
     //KHR_lights_punctual belongs to the same instantiated glTF scene as the geometry. Its node matrices already
-    //contain the manifest transform, just like the matrices consumed by RTXPTAccelerationStructures.
+    //contain the manifest transform, just like the instance transforms of the imported scene.
     for (const auto& Instance : SceneData.ModelInstances)
     {
         if (Instance.ModelAssetId >= SceneData.ModelAssets.size())
@@ -318,12 +323,43 @@ bool RTXPTLights::Upload(IRenderDevice* pDevice, const RTXPTSceneGraphData& Scen
         {
             if (!Node || !Node->pLight || Node->Index < 0 || static_cast<size_t>(Node->Index) >= Transforms.NodeGlobalMatrices.size())
                 continue;
-            m_AnalyticSources.push_back({{0u, Instance.GraphNodeId, reinterpret_cast<Uint64>(Node), 0u}, static_cast<Uint32>(Lights.size()), 1u});
-            Lights.emplace_back(MakeLightData(*Node->pLight, Transforms.NodeGlobalMatrices[Node->Index]));
+            Add(MakeLightData(*Node->pLight, Transforms.NodeGlobalMatrices[Node->Index]),
+                {0u, Instance.GraphNodeId, reinterpret_cast<Uint64>(Node), 0u});
         }
     }
+}
 
+bool RTXPTLights::Upload(IRenderDevice* pDevice, const RTXPTSceneGraphData& SceneData)
+{
+    Reset();
+    std::vector<RTXPTSceneLight> Lights;
+    BuildRTXPTSceneLights(SceneData, Lights);
+    return UploadAnalyticLights(pDevice, Lights);
+}
+
+bool RTXPTLights::UploadAnalyticLights(IRenderDevice* pDevice, const std::vector<RTXPTSceneLight>& SceneLights)
+{
+    m_LightBuffer.Release();
+    m_LightExBuffer.Release();
+    m_AnalyticSources.clear();
+    std::vector<PolymorphicLightInfoFull> Lights;
+    Lights.reserve(SceneLights.size());
+    for (const RTXPTSceneLight& Light : SceneLights)
+    {
+        m_AnalyticSources.push_back({Light.Key, static_cast<Uint32>(Lights.size()), 1u});
+        Lights.push_back(Light.Light);
+    }
     return UploadLightBuffer(pDevice, Lights);
+}
+
+bool RTXPTLights::SetEmissiveTriangles(IRenderDevice* pDevice, std::vector<RTXPTLightSourceRange> Sources, Uint32 TriangleCount, float ProxyWeight)
+{
+    m_TriangleSources             = std::move(Sources);
+    m_Stats.EmissiveTriangleCount = TriangleCount;
+    m_EmissiveProxyWeight         = ProxyWeight;
+    if (m_EmissiveTriangleBuffer && m_EmissiveTriangleBuffer->GetDesc().Size >= Uint64{std::max(TriangleCount, 1u)} * sizeof(PolymorphicLightInfo))
+        return true;
+    return UploadEmissiveTriangleBuffer(pDevice, TriangleCount);
 }
 
 bool RTXPTLights::UploadEmissiveTriangles(IRenderDevice* pDevice, const RTXPTSceneGraphData& SceneData)

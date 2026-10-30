@@ -6,6 +6,12 @@ cbuffer cbSkinningConstants
     uint g_DestVertexBase;
     uint g_JointBase;
     uint g_VertexCount;
+    // Position influences start at g_SkinBase. Normal influences start at g_NormalSkinBase, which equals g_SkinBase
+    // when normals follow the position influences.
+    uint g_SkinBase;
+    uint g_NormalSkinBase;
+    uint g_Padding0;
+    uint g_Padding1;
 };
 
 StructuredBuffer<PackedGeometryVertexData> t_SourceVertices;
@@ -22,9 +28,10 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
 
     // Keep even a speculated descriptor load in bounds on Vulkan devices without robust buffer access:
     // skin joints read past this mesh would otherwise index t_JointMatrices with garbage.
-    const uint               sourceIndex = g_SourceVertexBase + min(localVertex, max(1u, g_VertexCount) - 1u);
-    const GeometryVertexData src         = UnpackGeometryVertex(t_SourceVertices[sourceIndex]);
-    const SkinVertexData     skin        = t_SourceSkinData[sourceIndex];
+    const uint               sourceVertex = min(localVertex, max(1u, g_VertexCount) - 1u);
+    const GeometryVertexData src          = UnpackGeometryVertex(t_SourceVertices[g_SourceVertexBase + sourceVertex]);
+    const SkinVertexData     skin         = t_SourceSkinData[g_SkinBase + sourceVertex];
+    const SkinVertexData     normalSkin   = t_SourceSkinData[g_NormalSkinBase + sourceVertex];
 
     float4 skinnedPosition = float4(0.0, 0.0, 0.0, 0.0);
     float3 skinnedNormal   = float3(0.0, 0.0, 0.0);
@@ -32,14 +39,10 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
     [unroll]
     for (uint i = 0; i < 4; ++i)
     {
-        const float weight = skin.weights[i];
-        if (weight <= 0.0)
-            continue;
-
-        const uint     jointIndex  = g_JointBase + uint(skin.joints[i] + 0.5);
-        const float4x4 jointMatrix = t_JointMatrices[jointIndex];
-        skinnedPosition += mul(float4(src.position, 1.0), jointMatrix) * weight;
-        skinnedNormal += mul(src.normal, (float3x3)jointMatrix) * weight;
+        if (skin.weights[i] > 0.0)
+            skinnedPosition += mul(float4(src.position, 1.0), t_JointMatrices[g_JointBase + uint(skin.joints[i] + 0.5)]) * skin.weights[i];
+        if (normalSkin.weights[i] > 0.0)
+            skinnedNormal += mul(src.normal, (float3x3)t_JointMatrices[g_JointBase + uint(normalSkin.joints[i] + 0.5)]) * normalSkin.weights[i];
     }
 
     GeometryVertexData dst;

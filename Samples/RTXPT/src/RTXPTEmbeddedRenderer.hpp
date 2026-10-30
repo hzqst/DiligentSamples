@@ -16,7 +16,8 @@ struct IPipelineStateCache;
 
 //The embedded renderer serves hosts with their own window, device, camera and presentation. All scene loading remains
 //with RTXPTScene/RTXPTMaterials. It has two layers, so the views of one scene share what depends on the scene alone:
-// - RTXPTEmbeddedScene: the static acceleration structures, lights, emissive triangles and environment of a scene.
+// - RTXPTEmbeddedScene: the runtime scene of a loaded scene, its GPU frame (acceleration structures, lights, emissive
+//   triangles) and its environment.
 // - RTXPTEmbeddedView: the frame targets, light sampling and path tracing bindings, accumulation history and tone
 //   mapping of one camera at one size. A new size or a new camera needs only a new view.
 //The host owns the render state cache and the optional native pipeline cache, so objects it recreates reuse the shaders
@@ -48,8 +49,8 @@ struct RTXPTEmbeddedViewCreateInfo
     Uint32                           Height   = 0;
 };
 
-//Static-scene data of RTXPTScene and RTXPTMaterials. It keeps the GPU objects of both that its views bind, so it
-//does not need them after Initialize. It must outlive every view created for it.
+//The runtime scene of RTXPTScene and RTXPTMaterials and its prepared GPU frame. It keeps the GPU objects of both that
+//its frames use, so it does not need them after Initialize. It must outlive every view created for it.
 class RTXPTEmbeddedScene
 {
 public:
@@ -57,9 +58,12 @@ public:
     ~RTXPTEmbeddedScene();
     RTXPTEmbeddedScene(const RTXPTEmbeddedScene&) = delete;
     RTXPTEmbeddedScene& operator=(const RTXPTEmbeddedScene&) = delete;
-    //Builds the scene and waits for the GPU.
+    //Imports the scene, prepares its first frame and waits for the GPU.
     bool Initialize(IRenderDevice* Device, IDeviceContext* Context, const RTXPTEmbeddedSceneCreateInfo& CreateInfo, std::string& Error);
     bool IsReady() const;
+    //Prepares the frame of the current scene state; views render the last prepared frame. Call once per host frame
+    //before rendering its views, on the context the views render with.
+    bool Prepare(IDeviceContext* Context, std::string& Error);
 
 private:
     friend class RTXPTEmbeddedView;

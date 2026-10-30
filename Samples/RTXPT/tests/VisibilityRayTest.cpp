@@ -17,7 +17,9 @@
 #include "GraphicsTypesX.hpp"
 #include "ShaderMacroHelper.hpp"
 #include "../src/RTXPTMaterials.hpp"
-#include "../src/RTXPTAccelerationStructures.hpp"
+#include "../src/RTXPTSceneGraph.hpp"
+#include "../src/GPUTLAS.hpp"
+#include "../src/RTXPTSubInstanceData.hpp"
 
 using namespace Diligent;
 namespace

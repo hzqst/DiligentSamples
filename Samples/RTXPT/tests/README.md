@@ -1006,6 +1006,10 @@ alignment; the `*-final.*` logs validate the delivered shaders.
 
 ## GPU TLAS validation (issue #28)
 
+Since the runtime scene refactor (2026-10-30) the sample builds its TLAS from CPU instance records and the
+`--gpu_tlas` argument no longer exists; the results below describe the earlier sample. `VisibilityRayTest.cpp`
+still covers `GPUTLAS`. Drop `--gpu_tlas` from the reproduction arguments below.
+
 `VisibilityRayTest.cpp` now exercises the production `GPUTLAS` descriptor pass
 and Core prebuilt-buffer API on D3D12 and Vulkan. Build using the existing
 `build_visibility_test.bat` after rebuilding the engine and sample; all binaries
