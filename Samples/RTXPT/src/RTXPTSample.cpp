@@ -882,7 +882,6 @@ bool RTXPTSample::ImportScene()
 {
     m_SceneRuntime  = std::make_unique<RTXPTSceneRuntime>();
     m_ImportedScene = {};
-    std::string                      Error;
     RTXPTSceneSnapshotPtr            Snapshot;
     RTXPTSceneFrameBuilderCreateInfo FramesCI;
     FramesCI.pEngineFactory = m_pEngineFactory;
@@ -890,16 +889,24 @@ bool RTXPTSample::ImportScene()
     FramesCI.pPSOCache      = m_pPSOCache;
     if (m_SceneRuntime->BeginUpdate() != RTXPTSceneResult::Ok)
         return false;
-    if (!ImportRTXPTScene(m_pDevice, m_pImmediateContext, m_Scene, m_Materials, *m_SceneRuntime, m_ImportedScene, Error))
+    const RTXPTErrorCode ImportCode = ImportRTXPTScene(m_pDevice, m_pImmediateContext, m_Scene, m_Materials, *m_SceneRuntime, m_ImportedScene);
+    if (ImportCode != RTXPTErrorCode::Ok)
     {
         m_SceneRuntime->CancelUpdate();
-        LOG_ERROR_MESSAGE("RTXPT scene import failed: ", Error);
+        LOG_ERROR_MESSAGE("RTXPT scene import failed: ", GetRTXPTErrorCodeString(ImportCode));
         return false;
     }
-    if (m_SceneRuntime->CommitUpdate(Snapshot) != RTXPTSceneResult::Ok || !m_SceneFrames.Initialize(m_pDevice, FramesCI, Error) ||
-        !m_SceneFrames.Prepare(m_pImmediateContext, Snapshot, Error))
+    if (m_SceneRuntime->CommitUpdate(Snapshot) != RTXPTSceneResult::Ok)
     {
-        LOG_ERROR_MESSAGE("RTXPT scene frame preparation failed: ", Error);
+        LOG_ERROR_MESSAGE("RTXPT scene import could not be committed");
+        return false;
+    }
+    RTXPTErrorCode FramesCode = m_SceneFrames.Initialize(m_pDevice, FramesCI);
+    if (FramesCode == RTXPTErrorCode::Ok)
+        FramesCode = m_SceneFrames.Prepare(m_pImmediateContext, Snapshot);
+    if (FramesCode != RTXPTErrorCode::Ok)
+    {
+        LOG_ERROR_MESSAGE("RTXPT scene frame preparation failed: ", GetRTXPTErrorCodeString(FramesCode));
         return false;
     }
     return true;
@@ -909,15 +916,14 @@ bool RTXPTSample::ImportScene()
 bool RTXPTSample::UpdateSceneInstances()
 {
     const Uint64          PreviousContent = m_SceneRuntime->GetSnapshot()->ContentRevision;
-    std::string           Error;
     RTXPTSceneSnapshotPtr Snapshot;
     if (m_SceneRuntime->BeginUpdate() != RTXPTSceneResult::Ok)
         return false;
-    if (!UpdateRTXPTImportedSceneTransforms(m_Scene, m_ImportedScene, *m_SceneRuntime, Error) ||
+    if (UpdateRTXPTImportedSceneTransforms(m_Scene, m_ImportedScene, *m_SceneRuntime) != RTXPTErrorCode::Ok ||
         m_SceneRuntime->CommitUpdate(Snapshot) != RTXPTSceneResult::Ok)
     {
         m_SceneRuntime->CancelUpdate();
-        LOG_ERROR_MESSAGE("RTXPT scene animation update failed: ", Error);
+        LOG_ERROR_MESSAGE("RTXPT scene animation update failed");
         return false;
     }
     return Snapshot->ContentRevision != PreviousContent;
@@ -1490,10 +1496,12 @@ void RTXPTSample::CreateSceneDependentPasses()
 // Prepares the GPU frame of the current scene on the context that traces it, follows its lighting and binds it.
 bool RTXPTSample::PrepareSceneFrame()
 {
-    std::string Error;
-    if (!m_SceneRuntime || !m_SceneFrames.Prepare(m_pImmediateContext, m_SceneRuntime->GetSnapshot(), Error))
+    if (!m_SceneRuntime)
+        return false;
+    const RTXPTErrorCode Code = m_SceneFrames.Prepare(m_pImmediateContext, m_SceneRuntime->GetSnapshot());
+    if (Code != RTXPTErrorCode::Ok)
     {
-        LOG_ERROR_MESSAGE("RTXPT scene frame preparation failed: ", Error);
+        LOG_ERROR_MESSAGE("RTXPT scene frame preparation failed: ", GetRTXPTErrorCodeString(Code));
         return false;
     }
     const RTXPTSceneFrame& Frame = m_SceneFrames.GetFrame();
@@ -2304,7 +2312,6 @@ bool RTXPTSample::RunEmbeddedReference()
         m_EmbeddedDisplaySRV.Release();
         m_EmbeddedReference.reset();
     }
-    std::string Error;
     if (!m_EmbeddedReference)
     {
         RefCntAutoPtr<IShaderSourceInputStreamFactory> Shaders;
@@ -2322,10 +2329,11 @@ bool RTXPTSample::RunEmbeddedReference()
             SceneCI.Cache     = m_pEmbeddedStateCache;
             SceneCI.PSOCache  = m_pPSOCache;
 
-            auto Scene = std::make_unique<RTXPTEmbeddedScene>();
-            if (!Scene->Initialize(m_pDevice, m_pImmediateContext, SceneCI, Error))
+            auto                 Scene     = std::make_unique<RTXPTEmbeddedScene>();
+            const RTXPTErrorCode SceneCode = Scene->Initialize(m_pDevice, m_pImmediateContext, SceneCI);
+            if (SceneCode != RTXPTErrorCode::Ok)
             {
-                LOG_ERROR_MESSAGE("Embedded reference: ", Error);
+                LOG_ERROR_MESSAGE("Embedded reference: ", GetRTXPTErrorCodeString(SceneCode));
                 m_pImmediateContext->WaitForIdle();
                 return false;
             }
@@ -2339,10 +2347,11 @@ bool RTXPTSample::RunEmbeddedReference()
         ViewCI.Width    = Desc.Width;
         ViewCI.Height   = Desc.Height;
 
-        auto Renderer = std::make_unique<RTXPTEmbeddedView>();
-        if (!Renderer->Initialize(m_pDevice, m_pImmediateContext, ViewCI, Error))
+        auto                 Renderer = std::make_unique<RTXPTEmbeddedView>();
+        const RTXPTErrorCode ViewCode = Renderer->Initialize(m_pDevice, m_pImmediateContext, ViewCI);
+        if (ViewCode != RTXPTErrorCode::Ok)
         {
-            LOG_ERROR_MESSAGE("Embedded reference: ", Error);
+            LOG_ERROR_MESSAGE("Embedded reference: ", GetRTXPTErrorCodeString(ViewCode));
             m_pImmediateContext->WaitForIdle();
             return false;
         }
@@ -2354,11 +2363,12 @@ bool RTXPTSample::RunEmbeddedReference()
             return false;
         m_EmbeddedReference = std::move(Renderer);
     }
-    const auto Camera = MakePathTracerCameraData(m_Camera, Desc.Width, Desc.Height, Desc.Width, Desc.Height, 1, 0, {});
-    const auto View   = MakePathTracerViewData(m_Camera.GetViewMatrix(), m_Camera.GetProjMatrix(), Desc.Width, Desc.Height, {});
-    if (!m_EmbeddedReference->Render(Camera, View, m_LastFrameConstants.cameraPositionAndTime.w, m_LastFrameConstants.ptConsts.resetAccumulation != 0, Error))
+    const auto           Camera     = MakePathTracerCameraData(m_Camera, Desc.Width, Desc.Height, Desc.Width, Desc.Height, 1, 0, {});
+    const auto           View       = MakePathTracerViewData(m_Camera.GetViewMatrix(), m_Camera.GetProjMatrix(), Desc.Width, Desc.Height, {});
+    const RTXPTErrorCode RenderCode = m_EmbeddedReference->Render(Camera, View, m_LastFrameConstants.cameraPositionAndTime.w, m_LastFrameConstants.ptConsts.resetAccumulation != 0);
+    if (RenderCode != RTXPTErrorCode::Ok)
     {
-        LOG_ERROR_MESSAGE("Embedded reference: ", Error);
+        LOG_ERROR_MESSAGE("Embedded reference: ", GetRTXPTErrorCodeString(RenderCode));
         return false;
     }
     return m_EmbeddedBlit.Render(m_pImmediateContext, m_pSwapChain, m_EmbeddedDisplaySRV);

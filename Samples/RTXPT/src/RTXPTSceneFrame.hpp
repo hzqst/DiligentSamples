@@ -104,7 +104,7 @@ public:
     RTXPTSceneFrameBuilder(const RTXPTSceneFrameBuilder&) = delete;
     RTXPTSceneFrameBuilder& operator=(const RTXPTSceneFrameBuilder&) = delete;
 
-    bool Initialize(IRenderDevice* pDevice, const RTXPTSceneFrameBuilderCreateInfo& CreateInfo, std::string& Error);
+    RTXPTErrorCode Initialize(IRenderDevice* pDevice, const RTXPTSceneFrameBuilderCreateInfo& CreateInfo);
     // Releases every GPU object. Initialize makes the builder usable again.
     void Reset();
     bool IsInitialized() const;
@@ -112,7 +112,7 @@ public:
     // Makes Snapshot resident and records its frame on pContext: uploads new assets, builds missing BLASes, rebuilds
     // the TLAS and the sub-instance tables, and the emissive triangles when they changed. On failure the previous
     // frame is no longer valid.
-    bool Prepare(IDeviceContext* pContext, const RTXPTSceneSnapshotPtr& Snapshot, std::string& Error);
+    RTXPTErrorCode Prepare(IDeviceContext* pContext, const RTXPTSceneSnapshotPtr& Snapshot);
 
     const RTXPTSceneFrame&      GetFrame() const;
     const RTXPTSceneFrameStats& GetStats() const;

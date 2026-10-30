@@ -8,6 +8,7 @@
 
 #include <algorithm>
 
+#include "DebugUtilities.hpp"
 #include "RTXPTLights.hpp"
 #include "RTXPTMaterials.hpp"
 #include "RTXPTScene.hpp"
@@ -25,15 +26,15 @@ const GLTF::ModelTransforms& GetInstanceTransforms(const RTXPTModelAsset& Asset,
 
 // The geometry of a model: all its vertices, indices and meshes. With pSkin, the vertices are skinned by the joints of
 // pSkin, whose influences are vertex buffer 1 (JOINTS_0 + WEIGHTS_0, indexing the joints of the skin).
-bool RegisterModelGeometry(IRenderDevice* pDevice, IDeviceContext* pContext, const RTXPTModelAsset& Asset, const GLTF::Skin* pSkin, RTXPTSceneRuntime& Runtime, RTXPTGeometryHandle& Handle, std::vector<Int32>& MeshIndices, std::string& Error)
+RTXPTErrorCode RegisterModelGeometry(IRenderDevice* pDevice, IDeviceContext* pContext, const RTXPTModelAsset& Asset, const GLTF::Skin* pSkin, RTXPTSceneRuntime& Runtime, RTXPTGeometryHandle& Handle, std::vector<Int32>& MeshIndices)
 {
     const GLTF::Model& Model         = *Asset.Model;
     IBuffer*           pVertexBuffer = Model.GetVertexBuffer(0, pDevice, pContext);
     IBuffer*           pIndexBuffer  = Model.GetIndexBuffer(pDevice, pContext);
     if (pVertexBuffer == nullptr)
     {
-        Error = "RTXPT model has no vertex buffer: " + Asset.ModelName;
-        return false;
+        LOG_ERROR_MESSAGE("RTXPT model has no vertex buffer: ", Asset.ModelName);
+        return RTXPTErrorCode::ModelBuffersInvalid;
     }
     const Uint32 BaseVertex       = Model.GetBaseVertex();
     const Uint64 ModelVertexCount = pVertexBuffer->GetDesc().Size / sizeof(RTXPTGeometryVertex);
@@ -41,8 +42,8 @@ bool RegisterModelGeometry(IRenderDevice* pDevice, IDeviceContext* pContext, con
     const Uint64 ModelIndexCount  = pIndexBuffer != nullptr ? pIndexBuffer->GetDesc().Size / sizeof(Uint32) : 0u;
     if (ModelVertexCount <= BaseVertex || ModelIndexCount < FirstIndex)
     {
-        Error = "RTXPT model buffers are smaller than their base offsets: " + Asset.ModelName;
-        return false;
+        LOG_ERROR_MESSAGE("RTXPT model buffers are smaller than their base offsets: ", Asset.ModelName);
+        return RTXPTErrorCode::ModelBuffersInvalid;
     }
 
     // One geometry mesh per glTF mesh with triangles; nodes that share a mesh share its BLAS.
@@ -77,7 +78,7 @@ bool RegisterModelGeometry(IRenderDevice* pDevice, IDeviceContext* pContext, con
         Primitives.push_back(std::move(MeshPrimitives));
     }
     if (Primitives.empty())
-        return true;
+        return RTXPTErrorCode::Ok;
 
     std::vector<RTXPTGeometryMeshDesc> Meshes(Primitives.size());
     for (size_t i = 0; i < Primitives.size(); ++i)
@@ -99,8 +100,8 @@ bool RegisterModelGeometry(IRenderDevice* pDevice, IDeviceContext* pContext, con
         IBuffer* pSkinBuffer = Model.GetVertexBufferCount() > 1 ? Model.GetVertexBuffer(1, pDevice, pContext) : nullptr;
         if (pSkinBuffer == nullptr)
         {
-            Error = "RTXPT skinned model has no skin buffer: " + Asset.ModelName;
-            return false;
+            LOG_ERROR_MESSAGE("RTXPT skinned model has no skin buffer: ", Asset.ModelName);
+            return RTXPTErrorCode::ModelBuffersInvalid;
         }
         Desc.pSourceSkinBuffer = pSkinBuffer;
         Desc.SourceSkinOffset  = Uint64{BaseVertex} * sizeof(RTXPTSkinVertex);
@@ -109,14 +110,14 @@ bool RegisterModelGeometry(IRenderDevice* pDevice, IDeviceContext* pContext, con
     const RTXPTSceneResult Result = Runtime.RegisterGeometry(Desc, Handle);
     if (Result != RTXPTSceneResult::Ok)
     {
-        Error = "RTXPT geometry of " + Asset.ModelName + " was rejected: " + GetRTXPTSceneResultString(Result);
-        return false;
+        LOG_ERROR_MESSAGE("RTXPT geometry of ", Asset.ModelName, " was rejected: ", GetRTXPTSceneResultString(Result));
+        return RTXPTErrorCode::GeometryRejected;
     }
-    return true;
+    return RTXPTErrorCode::Ok;
 }
 
 // The material records index the shared bindless table of RTXPTMaterials; a runtime material lists its own views.
-bool RegisterMaterial(const RTXPTMaterials& Materials, Uint32 Row, RTXPTSceneRuntime& Runtime, RTXPTMaterialHandle& Handle, std::string& Error)
+RTXPTErrorCode RegisterMaterial(const RTXPTMaterials& Materials, Uint32 Row, RTXPTSceneRuntime& Runtime, RTXPTMaterialHandle& Handle)
 {
     MaterialPTData                   Data = Materials.GetMaterialData()[Row];
     std::vector<ITextureView*>       Views;
@@ -138,8 +139,8 @@ bool RegisterMaterial(const RTXPTMaterials& Materials, Uint32 Row, RTXPTSceneRun
         ITextureView* pView = Materials.GetTextureView(*Ref.second);
         if (pView == nullptr)
         {
-            Error = "RTXPT material " + std::to_string(Row) + " references a missing texture";
-            return false;
+            LOG_ERROR_MESSAGE("RTXPT material ", Row, " references a missing texture");
+            return RTXPTErrorCode::MaterialTextureMissing;
         }
         const auto It = std::find(Views.begin(), Views.end(), pView);
         *Ref.second   = static_cast<Uint32>(It - Views.begin());
@@ -159,39 +160,32 @@ bool RegisterMaterial(const RTXPTMaterials& Materials, Uint32 Row, RTXPTSceneRun
     const RTXPTSceneResult Result = Runtime.RegisterMaterial(Desc, Handle);
     if (Result != RTXPTSceneResult::Ok)
     {
-        Error = "RTXPT " + Name + " was rejected: " + GetRTXPTSceneResultString(Result);
-        return false;
+        LOG_ERROR_MESSAGE("RTXPT ", Name, " was rejected: ", GetRTXPTSceneResultString(Result));
+        return RTXPTErrorCode::MaterialRejected;
     }
-    return true;
+    return RTXPTErrorCode::Ok;
 }
 
 } // namespace
 
-bool ImportRTXPTScene(IRenderDevice*        pDevice,
-                      IDeviceContext*       pContext,
-                      const RTXPTScene&     Scene,
-                      const RTXPTMaterials& Materials,
-                      RTXPTSceneRuntime&    Runtime,
-                      RTXPTImportedScene&   Imported,
-                      std::string&          Error)
+RTXPTErrorCode ImportRTXPTScene(IRenderDevice*        pDevice,
+                                IDeviceContext*       pContext,
+                                const RTXPTScene&     Scene,
+                                const RTXPTMaterials& Materials,
+                                RTXPTSceneRuntime&    Runtime,
+                                RTXPTImportedScene&   Imported)
 {
     Imported = {};
     if (!Runtime.IsUpdating())
-    {
-        Error = "RTXPT scene import requires an open runtime update";
-        return false;
-    }
+        return RTXPTErrorCode::UpdateNotOpen;
     if (Scene.GetVertexStride0() != sizeof(RTXPTGeometryVertex) || Scene.GetIndexType() != VT_UINT32)
-    {
-        Error = "RTXPT scene import requires 32-byte vertices and 32-bit indices";
-        return false;
-    }
+        return RTXPTErrorCode::UnsupportedVertexLayout;
 
     const RTXPTSceneGraphData& Graph = Scene.GetSceneGraphData();
-    auto                       Fail  = [&]() {
+    auto                       Fail  = [&](RTXPTErrorCode Code) {
         ReleaseRTXPTImportedScene(Runtime, Imported);
         Imported.Instances.clear();
-        return false;
+        return Code;
     };
 
     Imported.Geometries.resize(Graph.ModelAssets.size());
@@ -200,9 +194,12 @@ bool ImportRTXPTScene(IRenderDevice*        pDevice,
     for (size_t AssetIdx = 0; AssetIdx < Graph.ModelAssets.size(); ++AssetIdx)
     {
         const RTXPTModelAsset& Asset = Graph.ModelAssets[AssetIdx];
-        if (Asset.Model &&
-            !RegisterModelGeometry(pDevice, pContext, Asset, nullptr, Runtime, Imported.Geometries[AssetIdx], Imported.MeshIndices[AssetIdx], Error))
-            return Fail();
+        if (Asset.Model)
+        {
+            const RTXPTErrorCode Code = RegisterModelGeometry(pDevice, pContext, Asset, nullptr, Runtime, Imported.Geometries[AssetIdx], Imported.MeshIndices[AssetIdx]);
+            if (Code != RTXPTErrorCode::Ok)
+                return Fail(Code);
+        }
         Imported.SkinnedGeometries[AssetIdx].resize(Asset.Model ? Asset.Model->Skins.size() : 0u);
     }
 
@@ -210,8 +207,9 @@ bool ImportRTXPTScene(IRenderDevice*        pDevice,
     Imported.Materials.resize(MaterialCount);
     for (Uint32 Row = 0; Row < MaterialCount; ++Row)
     {
-        if (!RegisterMaterial(Materials, Row, Runtime, Imported.Materials[Row], Error))
-            return Fail();
+        const RTXPTErrorCode Code = RegisterMaterial(Materials, Row, Runtime, Imported.Materials[Row]);
+        if (Code != RTXPTErrorCode::Ok)
+            return Fail(Code);
     }
 
     std::vector<RTXPTMaterialHandle> Binding;
@@ -232,8 +230,8 @@ bool ImportRTXPTScene(IRenderDevice*        pDevice,
             const Uint32 Row = Slot < Asset.MaterialRemap.size() ? Asset.MaterialRemap[Slot] : 0u;
             if (Row >= Imported.Materials.size())
             {
-                Error = "RTXPT model " + Asset.ModelName + " references a missing material";
-                return Fail();
+                LOG_ERROR_MESSAGE("RTXPT model ", Asset.ModelName, " references a missing material");
+                return Fail(RTXPTErrorCode::MaterialReferenceMissing);
             }
             Binding[Slot] = Imported.Materials[Row];
         }
@@ -256,15 +254,18 @@ bool ImportRTXPTScene(IRenderDevice*        pDevice,
                 const size_t         SkinIndex = static_cast<size_t>(pNode->pSkin - Model.Skins.data());
                 RTXPTGeometryHandle& Skinned   = Imported.SkinnedGeometries[Instance.ModelAssetId][SkinIndex];
                 std::vector<Int32>   SkinnedMeshIndices;
-                if (!Skinned.IsValid() &&
-                    !RegisterModelGeometry(pDevice, pContext, Asset, pNode->pSkin, Runtime, Skinned, SkinnedMeshIndices, Error))
-                    return Fail();
+                if (!Skinned.IsValid())
+                {
+                    const RTXPTErrorCode Code = RegisterModelGeometry(pDevice, pContext, Asset, pNode->pSkin, Runtime, Skinned, SkinnedMeshIndices);
+                    if (Code != RTXPTErrorCode::Ok)
+                        return Fail(Code);
+                }
                 Joints = static_cast<Uint32>(pNode->pSkin->Joints.size());
                 if (pNode->SkinTransformsIndex < 0 || static_cast<size_t>(pNode->SkinTransformsIndex) >= Transforms.Skins.size() ||
                     Transforms.Skins[pNode->SkinTransformsIndex].JointMatrices.size() < Joints)
                 {
-                    Error = "RTXPT skinned node is missing its joint matrices: " + Asset.ModelName;
-                    return Fail();
+                    LOG_ERROR_MESSAGE("RTXPT skinned node is missing its joint matrices: ", Asset.ModelName);
+                    return Fail(RTXPTErrorCode::JointMatricesMissing);
                 }
                 Geometry = Skinned;
                 pPose    = Transforms.Skins[pNode->SkinTransformsIndex].JointMatrices.data();
@@ -291,8 +292,8 @@ bool ImportRTXPTScene(IRenderDevice*        pDevice,
             const RTXPTSceneResult Result = Runtime.CreateInstance(Desc, Created.Handle);
             if (Result != RTXPTSceneResult::Ok)
             {
-                Error = "RTXPT instance of " + Asset.ModelName + " was rejected: " + GetRTXPTSceneResultString(Result);
-                return Fail();
+                LOG_ERROR_MESSAGE("RTXPT instance of ", Asset.ModelName, " was rejected: ", GetRTXPTSceneResultString(Result));
+                return Fail(RTXPTErrorCode::InstanceRejected);
             }
             Imported.Instances.push_back(Created);
         }
@@ -303,13 +304,13 @@ bool ImportRTXPTScene(IRenderDevice*        pDevice,
     const RTXPTSceneResult Result = Runtime.SetLights(Lights.data(), static_cast<Uint32>(Lights.size()));
     if (Result != RTXPTSceneResult::Ok)
     {
-        Error = std::string{"RTXPT scene lights were rejected: "} + GetRTXPTSceneResultString(Result);
-        return Fail();
+        LOG_ERROR_MESSAGE("RTXPT scene lights were rejected: ", GetRTXPTSceneResultString(Result));
+        return Fail(RTXPTErrorCode::LightsRejected);
     }
-    return true;
+    return RTXPTErrorCode::Ok;
 }
 
-bool UpdateRTXPTImportedSceneTransforms(const RTXPTScene& Scene, const RTXPTImportedScene& Imported, RTXPTSceneRuntime& Runtime, std::string& Error)
+RTXPTErrorCode UpdateRTXPTImportedSceneTransforms(const RTXPTScene& Scene, const RTXPTImportedScene& Imported, RTXPTSceneRuntime& Runtime)
 {
     const RTXPTSceneGraphData& Graph = Scene.GetSceneGraphData();
     for (const RTXPTImportedSceneInstance& Instance : Imported.Instances)
@@ -328,11 +329,11 @@ bool UpdateRTXPTImportedSceneTransforms(const RTXPTScene& Scene, const RTXPTImpo
         }
         if (Result != RTXPTSceneResult::Ok)
         {
-            Error = std::string{"RTXPT instance transform update failed: "} + GetRTXPTSceneResultString(Result);
-            return false;
+            LOG_ERROR_MESSAGE("RTXPT instance transform update failed: ", GetRTXPTSceneResultString(Result));
+            return RTXPTErrorCode::TransformUpdateFailed;
         }
     }
-    return true;
+    return RTXPTErrorCode::Ok;
 }
 
 void ReleaseRTXPTImportedScene(RTXPTSceneRuntime& Runtime, RTXPTImportedScene& Imported)

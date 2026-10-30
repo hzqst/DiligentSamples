@@ -51,16 +51,15 @@ struct RTXPTImportedScene
 // Registers the geometry and materials of Scene and, in the open update of Runtime, creates the instances of its model
 // instances and sets its analytic lights. Geometry is copied from the model buffers when a frame builder first uses it.
 // On failure the assets are released; the caller cancels the update.
-bool ImportRTXPTScene(IRenderDevice*        pDevice,
-                      IDeviceContext*       pContext,
-                      const RTXPTScene&     Scene,
-                      const RTXPTMaterials& Materials,
-                      RTXPTSceneRuntime&    Runtime,
-                      RTXPTImportedScene&   Imported,
-                      std::string&          Error);
+RTXPTErrorCode ImportRTXPTScene(IRenderDevice*        pDevice,
+                                IDeviceContext*       pContext,
+                                const RTXPTScene&     Scene,
+                                const RTXPTMaterials& Materials,
+                                RTXPTSceneRuntime&    Runtime,
+                                RTXPTImportedScene&   Imported);
 
 // Sets the instance transforms and poses of the current animation state of Scene in the open update of Runtime.
-bool UpdateRTXPTImportedSceneTransforms(const RTXPTScene& Scene, const RTXPTImportedScene& Imported, RTXPTSceneRuntime& Runtime, std::string& Error);
+RTXPTErrorCode UpdateRTXPTImportedSceneTransforms(const RTXPTScene& Scene, const RTXPTImportedScene& Imported, RTXPTSceneRuntime& Runtime);
 
 // Releases the assets of Imported from the repository and forgets them; existing instances keep their assets.
 void ReleaseRTXPTImportedScene(RTXPTSceneRuntime& Runtime, RTXPTImportedScene& Imported);

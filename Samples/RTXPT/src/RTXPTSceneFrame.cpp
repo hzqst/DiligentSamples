@@ -460,13 +460,13 @@ struct RTXPTSceneFrameBuilder::Impl
         BindingsChanged = true;
     }
 
-    bool MakeGeometryResident(IDeviceContext* pContext, const std::shared_ptr<const RTXPTGeometryAsset>& pAsset, const GeometryResidency*& pResidency, bool& BindingsChanged, std::string& Error)
+    RTXPTErrorCode MakeGeometryResident(IDeviceContext* pContext, const std::shared_ptr<const RTXPTGeometryAsset>& pAsset, const GeometryResidency*& pResidency, bool& BindingsChanged)
     {
         auto It = Geometries.find(pAsset->AssetId);
         if (It != Geometries.end())
         {
             pResidency = &It->second;
-            return true;
+            return RTXPTErrorCode::Ok;
         }
 
         GeometryResidency Residency;
@@ -475,14 +475,14 @@ struct RTXPTSceneFrameBuilder::Impl
         Residency.IndexCount  = pAsset->IndexCount;
         if (!Vertices.Allocate(Device, pContext, Residency.VertexCount, Residency.VertexBase, BindingsChanged))
         {
-            Error = "RTXPT vertex arena allocation failed for " + pAsset->Name;
-            return false;
+            LOG_ERROR_MESSAGE("RTXPT vertex arena allocation failed for ", pAsset->Name);
+            return RTXPTErrorCode::ArenaAllocationFailed;
         }
         if (!Indices.Allocate(Device, pContext, Residency.IndexCount, Residency.IndexBase, BindingsChanged))
         {
             Vertices.Ranges.Free(Residency.VertexBase, Residency.VertexCount);
-            Error = "RTXPT index arena allocation failed for " + pAsset->Name;
-            return false;
+            LOG_ERROR_MESSAGE("RTXPT index arena allocation failed for ", pAsset->Name);
+            return RTXPTErrorCode::ArenaAllocationFailed;
         }
 
         const Uint64 VertexBytes = Uint64{pAsset->VertexCount} * kGeometryVertexStride;
@@ -513,30 +513,34 @@ struct RTXPTSceneFrameBuilder::Impl
             }
         }
         Stats.AssetUploadBytes += VertexBytes + IndexBytes;
-        if (pAsset->IsSkinned() && !UploadSkin(pContext, *pAsset, Residency, BindingsChanged, Error))
+        if (pAsset->IsSkinned())
         {
-            Vertices.Ranges.Free(Residency.VertexBase, Residency.VertexCount);
-            Indices.Ranges.Free(Residency.IndexBase, Residency.IndexCount);
-            return false;
+            const RTXPTErrorCode Code = UploadSkin(pContext, *pAsset, Residency, BindingsChanged);
+            if (Code != RTXPTErrorCode::Ok)
+            {
+                Vertices.Ranges.Free(Residency.VertexBase, Residency.VertexCount);
+                Indices.Ranges.Free(Residency.IndexBase, Residency.IndexCount);
+                return Code;
+            }
         }
         pResidency = &Geometries.emplace(pAsset->AssetId, std::move(Residency)).first->second;
-        return true;
+        return RTXPTErrorCode::Ok;
     }
 
-    bool UploadSkin(IDeviceContext* pContext, const RTXPTGeometryAsset& Asset, GeometryResidency& Residency, bool& BindingsChanged, std::string& Error)
+    RTXPTErrorCode UploadSkin(IDeviceContext* pContext, const RTXPTGeometryAsset& Asset, GeometryResidency& Residency, bool& BindingsChanged)
     {
         Residency.SkinCount       = Asset.VertexCount;
         Residency.NormalSkinCount = Asset.HasNormalSkin() ? Asset.VertexCount : 0u;
         if (!SkinData.Allocate(Device, pContext, Residency.SkinCount, Residency.SkinBase, BindingsChanged))
         {
-            Error = "RTXPT skin arena allocation failed for " + Asset.Name;
-            return false;
+            LOG_ERROR_MESSAGE("RTXPT skin arena allocation failed for ", Asset.Name);
+            return RTXPTErrorCode::ArenaAllocationFailed;
         }
         if (!SkinData.Allocate(Device, pContext, Residency.NormalSkinCount, Residency.NormalSkinBase, BindingsChanged))
         {
             SkinData.Ranges.Free(Residency.SkinBase, Residency.SkinCount);
-            Error = "RTXPT skin arena allocation failed for " + Asset.Name;
-            return false;
+            LOG_ERROR_MESSAGE("RTXPT skin arena allocation failed for ", Asset.Name);
+            return RTXPTErrorCode::ArenaAllocationFailed;
         }
         if (Residency.NormalSkinCount == 0)
             Residency.NormalSkinBase = Residency.SkinBase;
@@ -559,16 +563,16 @@ struct RTXPTSceneFrameBuilder::Impl
                                    RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
         }
         Stats.AssetUploadBytes += SkinBytes * (Residency.NormalSkinCount != 0 ? 2u : 1u);
-        return true;
+        return RTXPTErrorCode::Ok;
     }
 
-    bool MakeMaterialResident(const std::shared_ptr<const RTXPTMaterialAsset>& pAsset, const MaterialResidency*& pResidency, bool& BindingsChanged, std::string& Error)
+    RTXPTErrorCode MakeMaterialResident(const std::shared_ptr<const RTXPTMaterialAsset>& pAsset, const MaterialResidency*& pResidency, bool& BindingsChanged)
     {
         auto It = Materials.find(pAsset->AssetId);
         if (It != Materials.end())
         {
             pResidency = &It->second;
-            return true;
+            return RTXPTErrorCode::Ok;
         }
 
         MaterialResidency Residency;
@@ -592,8 +596,8 @@ struct RTXPTSceneFrameBuilder::Impl
                 for (Uint32 Acquired : Residency.TextureSlots)
                     ReleaseTextureSlot(Acquired, BindingsChanged);
                 MaterialRows.Free(Residency.Row, 1);
-                Error = "RTXPT material textures exceed the bindless table for " + pAsset->Name;
-                return false;
+                LOG_ERROR_MESSAGE("RTXPT material textures exceed the bindless table for ", pAsset->Name);
+                return RTXPTErrorCode::BindlessTableExceeded;
             }
             Residency.TextureSlots.push_back(Slot);
         }
@@ -612,7 +616,7 @@ struct RTXPTSceneFrameBuilder::Impl
         MaterialData[Residency.Row] = Data;
         DirtyMaterialRows.push_back(Residency.Row);
         pResidency = &Materials.emplace(pAsset->AssetId, std::move(Residency)).first->second;
-        return true;
+        return RTXPTErrorCode::Ok;
     }
 
     // Releases the residency of assets that no snapshot and no repository holds anymore.
@@ -739,7 +743,7 @@ struct RTXPTSceneFrameBuilder::Impl
     }
 
     // Skins the instances whose pose changed and builds or updates their BLASes.
-    bool PrepareSkinnedInstances(IDeviceContext* pContext, std::vector<SkinJob>& Jobs, std::vector<TLASBuildInstanceData>& TLASInstances, bool& BindingsChanged, std::string& Error)
+    RTXPTErrorCode PrepareSkinnedInstances(IDeviceContext* pContext, std::vector<SkinJob>& Jobs, std::vector<TLASBuildInstanceData>& TLASInstances, bool& BindingsChanged)
     {
         std::vector<float4x4> Palette;
         std::vector<Uint32>   JointBases(Jobs.size(), 0u);
@@ -753,26 +757,17 @@ struct RTXPTSceneFrameBuilder::Impl
         if (!Palette.empty())
         {
             if (!Skinning.IsReady() && !Skinning.Initialize(Device, CreateInfo.pEngineFactory, CreateInfo.pStateCache, CreateInfo.pPSOCache))
-            {
-                Error = "RTXPT skinning pass could not be compiled";
-                return false;
-            }
+                return RTXPTErrorCode::SkinningPassFailed;
             bool PaletteRecreated = false;
             if (!JointMatrices.Upload(Device, pContext, Palette, PaletteRecreated))
-            {
-                Error = "RTXPT joint palette could not be uploaded";
-                return false;
-            }
+                return RTXPTErrorCode::JointPaletteFailed;
             RTXPTSkinningBindings Bindings;
             Bindings.pSourceVertices  = Vertices.Buffer;
             Bindings.pSkinData        = SkinData.Buffer;
             Bindings.pJointMatrices   = JointMatrices.Buffer;
             Bindings.pSkinnedVertices = SkinnedVertices.Buffer;
             if (!Skinning.Bind(Bindings))
-            {
-                Error = "RTXPT skinning resources could not be bound";
-                return false;
-            }
+                return RTXPTErrorCode::SkinningBindingsFailed;
         }
 
         for (size_t i = 0; i < Jobs.size(); ++i)
@@ -791,8 +786,8 @@ struct RTXPTSceneFrameBuilder::Impl
                 Range.NormalSkinBase   = Job.pGeometry->NormalSkinBase;
                 if (!Skinning.Dispatch(pContext, Range))
                 {
-                    Error = "RTXPT skinning dispatch failed for " + Geometry.Name;
-                    return false;
+                    LOG_ERROR_MESSAGE("RTXPT skinning dispatch failed for ", Geometry.Name);
+                    return RTXPTErrorCode::SkinningDispatchFailed;
                 }
                 ++Stats.SkinningDispatchCount;
                 Instance.PoseRevision = Job.pState->PoseRevision;
@@ -803,12 +798,12 @@ struct RTXPTSceneFrameBuilder::Impl
                 !BuildMeshBLAS(pContext, Geometry, *Job.pGeometry, Job.pState->MeshIndex, Instance.AnyHitMask, SkinnedVertices.Buffer,
                                Instance.OutputBase, Instance.BLAS))
             {
-                Error = "RTXPT skinned BLAS build failed for " + Geometry.Name;
-                return false;
+                LOG_ERROR_MESSAGE("RTXPT skinned BLAS build failed for ", Geometry.Name);
+                return RTXPTErrorCode::BLASBuildFailed;
             }
             TLASInstances[Job.TLASIndex].pBLAS = Instance.BLAS;
         }
-        return true;
+        return RTXPTErrorCode::Ok;
     }
 
     // An empty scene still needs a TLAS: it holds one instance of this BLAS that no ray mask selects.
@@ -924,7 +919,7 @@ struct RTXPTSceneFrameBuilder::Impl
         return true;
     }
 
-    bool Prepare(IDeviceContext* pContext, const RTXPTSceneSnapshotPtr& Snapshot, std::string& Error)
+    RTXPTErrorCode Prepare(IDeviceContext* pContext, const RTXPTSceneSnapshotPtr& Snapshot)
     {
         const Uint64 PrepareIndex    = ++Stats.PrepareCount;
         bool         BindingsChanged = !HasPrepared;
@@ -932,10 +927,7 @@ struct RTXPTSceneFrameBuilder::Impl
         EvictReleasedAssets(BindingsChanged);
         if (!Vertices.Reserve(Device) || !Indices.Reserve(Device) || !SkinData.Reserve(Device) || !SkinnedVertices.Reserve(Device) ||
             !BuildPlaceholderBLAS(pContext))
-        {
-            Error = "RTXPT scene buffers could not be created";
-            return false;
-        }
+            return RTXPTErrorCode::SceneBuffersFailed;
 
         std::vector<SubInstanceData>       SubInstanceRows;
         std::vector<float4x4>              SubInstanceMatrices;
@@ -957,9 +949,10 @@ struct RTXPTSceneFrameBuilder::Impl
             const RTXPTGeometryAsset& Geometry = *pState->Geometry;
             const Uint64              Handle   = (Uint64{pState->Handle.Slot} << 32u) | pState->Handle.Generation;
 
-            const GeometryResidency* pGeometry = nullptr;
-            if (!MakeGeometryResident(pContext, pState->Geometry, pGeometry, BindingsChanged, Error))
-                return false;
+            const GeometryResidency* pGeometry    = nullptr;
+            const RTXPTErrorCode     GeometryCode = MakeGeometryResident(pContext, pState->Geometry, pGeometry, BindingsChanged);
+            if (GeometryCode != RTXPTErrorCode::Ok)
+                return GeometryCode;
 
             const RTXPTGeometryMesh& Mesh           = Geometry.Meshes[pState->MeshIndex];
             const Uint32             PrimitiveCount = static_cast<Uint32>(Mesh.Primitives.size());
@@ -970,9 +963,10 @@ struct RTXPTSceneFrameBuilder::Impl
             PrimitiveMaterials.resize(PrimitiveCount);
             for (Uint32 i = 0; i < PrimitiveCount; ++i)
             {
-                const std::shared_ptr<const RTXPTMaterialAsset>& pMaterial = pState->Materials[Mesh.Primitives[i].MaterialSlot];
-                if (!MakeMaterialResident(pMaterial, PrimitiveMaterials[i], BindingsChanged, Error))
-                    return false;
+                const std::shared_ptr<const RTXPTMaterialAsset>& pMaterial    = pState->Materials[Mesh.Primitives[i].MaterialSlot];
+                const RTXPTErrorCode                             MaterialCode = MakeMaterialResident(pMaterial, PrimitiveMaterials[i], BindingsChanged);
+                if (MaterialCode != RTXPTErrorCode::Ok)
+                    return MaterialCode;
                 if (pMaterial->NeedsAnyHit())
                     Key.AnyHitMask[i / 64u] |= Uint64{1} << (i % 64u);
             }
@@ -996,8 +990,8 @@ struct RTXPTSceneFrameBuilder::Impl
                     if (!SkinnedVertices.Allocate(Device, pContext, Geometry.VertexCount, Skinned.OutputBase, BindingsChanged))
                     {
                         SkinnedInstances.erase(Handle);
-                        Error = "RTXPT skinned vertex arena allocation failed for " + Geometry.Name;
-                        return false;
+                        LOG_ERROR_MESSAGE("RTXPT skinned vertex arena allocation failed for ", Geometry.Name);
+                        return RTXPTErrorCode::ArenaAllocationFailed;
                     }
                     Skinned.VertexCount = Geometry.VertexCount;
                     Job.Reskin          = true;
@@ -1018,8 +1012,8 @@ struct RTXPTSceneFrameBuilder::Impl
                     !BuildMeshBLAS(pContext, Geometry, *pGeometry, Key.MeshIndex, Key.AnyHitMask, Vertices.Buffer, pGeometry->VertexBase, Entry.BLAS))
                 {
                     BLASes.erase(Key);
-                    Error = "RTXPT BLAS build failed for " + Geometry.Name;
-                    return false;
+                    LOG_ERROR_MESSAGE("RTXPT BLAS build failed for ", Geometry.Name);
+                    return RTXPTErrorCode::BLASBuildFailed;
                 }
                 Entry.LastUsed = PrepareIndex;
                 pBLAS          = Entry.BLAS;
@@ -1027,10 +1021,7 @@ struct RTXPTSceneFrameBuilder::Impl
 
             const Uint32 SubInstanceBase = static_cast<Uint32>(SubInstanceRows.size());
             if (Uint64{SubInstanceBase} + PrimitiveCount > kMaxSubInstanceCount)
-            {
-                Error = "RTXPT sub-instances exceed the 24-bit TLAS CustomId range";
-                return false;
-            }
+                return RTXPTErrorCode::SubInstanceLimitExceeded;
             for (Uint32 i = 0; i < PrimitiveCount; ++i)
             {
                 const RTXPTGeometryPrimitiveDesc& Primitive = Mesh.Primitives[i];
@@ -1053,10 +1044,7 @@ struct RTXPTSceneFrameBuilder::Impl
                 {
                     const Uint32 TriangleCount = (Primitive.IndexCount > 0 ? Primitive.IndexCount : Primitive.VertexCount) / 3u;
                     if (Uint64{EmissiveTriangles} + TriangleCount > std::numeric_limits<Uint32>::max())
-                    {
-                        Error = "RTXPT emissive triangle count exceeds Uint32";
-                        return false;
-                    }
+                        return RTXPTErrorCode::EmissiveTriangleLimitExceeded;
                     Sources.push_back({{2u, Handle, Geometry.AssetId, (Uint64{pState->MeshIndex} << 32u) | i}, EmissiveTriangles, TriangleCount});
                     Emissive.push_back({Handle, pState->TransformRevision, pState->PoseRevision, pState->MaterialRevision, SubInstanceBase + i});
                     EmissiveTriangles += TriangleCount;
@@ -1107,26 +1095,24 @@ struct RTXPTSceneFrameBuilder::Impl
             SkinnedVertices.Ranges.Free(It->second.OutputBase, It->second.VertexCount);
             It = SkinnedInstances.erase(It);
         }
-        if (!SkinJobs.empty() && !PrepareSkinnedInstances(pContext, SkinJobs, TLASInstances, BindingsChanged, Error))
-            return false;
+        if (!SkinJobs.empty())
+        {
+            const RTXPTErrorCode Code = PrepareSkinnedInstances(pContext, SkinJobs, TLASInstances, BindingsChanged);
+            if (Code != RTXPTErrorCode::Ok)
+                return Code;
+        }
 
         if (!ReserveTextureTable(1u, BindingsChanged) || !UploadMaterials(pContext, BindingsChanged) ||
             !SubInstances.Upload(Device, pContext, SubInstanceRows, BindingsChanged) ||
             !SubInstanceTransforms.Upload(Device, pContext, SubInstanceMatrices, BindingsChanged) ||
             !BuildTLAS(pContext, TLASInstances, BindingsChanged))
-        {
-            Error = "RTXPT scene tables or TLAS could not be created";
-            return false;
-        }
+            return RTXPTErrorCode::SceneTablesFailed;
 
         bool LightingChanged = false;
         if (!LightsUploaded || Snapshot->LightRevision != LightRevision)
         {
             if (!Lights.UploadAnalyticLights(Device, *Snapshot->Lights))
-            {
-                Error = "RTXPT light buffer could not be created";
-                return false;
-            }
+                return RTXPTErrorCode::LightBufferFailed;
             LightRevision   = Snapshot->LightRevision;
             LightsUploaded  = true;
             LightingChanged = true;
@@ -1140,17 +1126,15 @@ struct RTXPTSceneFrameBuilder::Impl
         if (SourcesChanged)
             EmissiveSources = Sources;
         if (!Lights.SetEmissiveTriangles(Device, std::move(Sources), EmissiveTriangles, ProxyWeight))
-        {
-            Error = "RTXPT emissive triangle buffer could not be created";
-            return false;
-        }
+            return RTXPTErrorCode::EmissiveTriangleBufferFailed;
         LightingChanged = LightingChanged || SourcesChanged || pPreviousEmissive != Lights.GetEmissiveTriangleBuffer();
 
         bool EmissiveRebuilt = false;
         if (EmissiveTriangles != 0 && (LightingChanged || BindingsChanged || !EmissiveBuilt || !(Emissive == EmissiveStates)))
         {
-            if (!BuildEmissiveTriangles(pContext, static_cast<Uint32>(SubInstanceRows.size()), Error))
-                return false;
+            const RTXPTErrorCode Code = BuildEmissiveTriangles(pContext, static_cast<Uint32>(SubInstanceRows.size()));
+            if (Code != RTXPTErrorCode::Ok)
+                return Code;
             EmissiveRebuilt = true;
         }
         EmissiveBuilt  = EmissiveTriangles != 0;
@@ -1191,10 +1175,10 @@ struct RTXPTSceneFrameBuilder::Impl
         Stats.TextureCapacity       = Frame.MaterialTextureCount;
         Stats.EmissiveTriangleCount = EmissiveTriangles;
         HasPrepared                 = true;
-        return true;
+        return RTXPTErrorCode::Ok;
     }
 
-    bool BuildEmissiveTriangles(IDeviceContext* pContext, Uint32 SubInstanceCount, std::string& Error)
+    RTXPTErrorCode BuildEmissiveTriangles(IDeviceContext* pContext, Uint32 SubInstanceCount)
     {
         const Uint32 TextureCount = static_cast<Uint32>(TextureTable.size());
         if (EmissivePassTextureCount != TextureCount)
@@ -1210,10 +1194,7 @@ struct RTXPTSceneFrameBuilder::Impl
             PassCI.ComputeSupported       = true;
             EmissivePassTextureCount      = 0;
             if (!EmissivePass.Initialize(Device, PassCI))
-            {
-                Error = "RTXPT emissive triangle pass could not be compiled";
-                return false;
-            }
+                return RTXPTErrorCode::EmissivePassFailed;
             EmissivePassTextureCount = TextureCount;
             ++Stats.PipelineCompileCount;
         }
@@ -1229,12 +1210,9 @@ struct RTXPTSceneFrameBuilder::Impl
         Bindings.pMaterialTextures           = TextureTable.data();
         Bindings.MaterialTextureCount        = TextureCount;
         if (!EmissivePass.Bind(Bindings) || !EmissivePass.Dispatch(pContext, SubInstanceCount))
-        {
-            Error = "RTXPT emissive triangle build failed";
-            return false;
-        }
+            return RTXPTErrorCode::EmissiveBuildFailed;
         ++Stats.EmissiveBuildCount;
-        return true;
+        return RTXPTErrorCode::Ok;
     }
 
     void Reset()
@@ -1287,15 +1265,12 @@ RTXPTSceneFrameBuilder::RTXPTSceneFrameBuilder() :
 
 RTXPTSceneFrameBuilder::~RTXPTSceneFrameBuilder() = default;
 
-bool RTXPTSceneFrameBuilder::Initialize(IRenderDevice* pDevice, const RTXPTSceneFrameBuilderCreateInfo& CreateInfo, std::string& Error)
+RTXPTErrorCode RTXPTSceneFrameBuilder::Initialize(IRenderDevice* pDevice, const RTXPTSceneFrameBuilderCreateInfo& CreateInfo)
 {
     Impl& I = *m_Impl;
     I.Reset();
     if (pDevice == nullptr || CreateInfo.pEngineFactory == nullptr || CreateInfo.pStateCache == nullptr)
-    {
-        Error = "RTXPT scene frame builder requires a device, an engine factory and a render state cache";
-        return false;
-    }
+        return RTXPTErrorCode::InvalidArgument;
     I.Device     = pDevice;
     I.CreateInfo = CreateInfo;
 
@@ -1329,12 +1304,9 @@ bool RTXPTSceneFrameBuilder::Initialize(IRenderDevice* pDevice, const RTXPTScene
     I.SubInstanceTransforms.Minimum = kMinSubInstances;
 
     if (!I.CreatePlaceholderTexture())
-    {
-        Error = "RTXPT placeholder material texture could not be created";
-        return false;
-    }
+        return RTXPTErrorCode::PlaceholderTextureFailed;
     I.Initialized = true;
-    return true;
+    return RTXPTErrorCode::Ok;
 }
 
 void RTXPTSceneFrameBuilder::Reset()
@@ -1347,25 +1319,25 @@ bool RTXPTSceneFrameBuilder::IsInitialized() const
     return m_Impl->Initialized;
 }
 
-bool RTXPTSceneFrameBuilder::Prepare(IDeviceContext* pContext, const RTXPTSceneSnapshotPtr& Snapshot, std::string& Error)
+RTXPTErrorCode RTXPTSceneFrameBuilder::Prepare(IDeviceContext* pContext, const RTXPTSceneSnapshotPtr& Snapshot)
 {
     Impl& I = *m_Impl;
-    if (!I.Initialized || pContext == nullptr || !Snapshot)
-    {
-        Error = "RTXPT scene frame preparation requires an initialized builder, a context and a snapshot";
-        return false;
-    }
+    if (!I.Initialized)
+        return RTXPTErrorCode::NotInitialized;
+    if (pContext == nullptr || !Snapshot)
+        return RTXPTErrorCode::InvalidArgument;
+    RTXPTErrorCode Code = RTXPTErrorCode::OutOfMemory;
     try
     {
-        if (I.Prepare(pContext, Snapshot, Error))
-            return true;
+        Code = I.Prepare(pContext, Snapshot);
+        if (Code == RTXPTErrorCode::Ok)
+            return Code;
     }
     catch (const std::bad_alloc&)
     {
-        Error = "RTXPT scene frame preparation ran out of memory";
     }
     I.Frame = {};
-    return false;
+    return Code;
 }
 
 const RTXPTSceneFrame& RTXPTSceneFrameBuilder::GetFrame() const
