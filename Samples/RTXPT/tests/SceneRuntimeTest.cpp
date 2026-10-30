@@ -206,7 +206,7 @@ static void TestUpdateRules()
     RequireResult(RTXPTSceneResult::Ok, Runtime.BeginUpdate(), "begin");
     RequireResult(RTXPTSceneResult::InvalidState, Runtime.BeginUpdate(), "nested begin");
     RTXPTGeometryHandle Late;
-    RequireResult(RTXPTSceneResult::InvalidState, Runtime.RegisterGeometry(TriangleGeometry{}.Desc, Late), "register during an update");
+    RequireResult(RTXPTSceneResult::Ok, Runtime.RegisterGeometry(TriangleGeometry{}.Desc, Late), "register during an update");
 
     RTXPTInstanceDesc Bad = MakeInstance(Geometry, Material);
     Bad.MeshIndex         = 1;

@@ -26,116 +26,69 @@
 
 #pragma once
 
-#include <cstddef>
-#include <vector>
-
 #include "Buffer.h"
 #include "DeviceContext.h"
 #include "EngineFactory.h"
-#include "GLTFLoader.hpp"
 #include "PipelineState.h"
 #include "RefCntAutoPtr.hpp"
 #include "RenderDevice.h"
-#include "RTXPTSceneGraph.hpp"
 #include "ShaderResourceBinding.h"
+#include "RTXPTSceneRuntime.hpp"
 
 namespace Diligent
 {
 
 struct IRenderStateCache;
+struct IPipelineStateCache;
 
-struct RTXPTGeometryVertex
+// The buffers of skinning dispatches: source vertices (RTXPTGeometryVertex), skin influences (RTXPTSkinVertex), the
+// joint palette (float4x4) and the skinned vertices written.
+struct RTXPTSkinningBindings
 {
-    float3 position  = float3{0, 0, 0};
-    float3 normal    = float3{0, 1, 0};
-    float2 texCoord0 = float2{0, 0};
-};
-static_assert(sizeof(RTXPTGeometryVertex) == 32, "RTXPTGeometryVertex layout must match GeometryVertexData");
-static_assert(offsetof(RTXPTGeometryVertex, normal) == 12, "RTXPTGeometryVertex normal offset must match GeometryVertexData");
-static_assert(offsetof(RTXPTGeometryVertex, texCoord0) == 24, "RTXPTGeometryVertex texCoord0 offset must match GeometryVertexData");
-
-struct RTXPTSkinnedSceneNodeGeometry
-{
-    RTXPTSceneId      ModelAssetId     = InvalidRTXPTSceneId;
-    RTXPTSceneId      ModelInstanceId  = InvalidRTXPTSceneId;
-    const GLTF::Node* pNode            = nullptr;
-    Uint32            SourceVertexBase = 0;
-    Uint32            VertexBase       = 0;
-    Uint32            VertexCount      = 0;
-    Uint32            JointBase        = 0;
-    Uint32            JointCount       = 0;
+    IBuffer* pSourceVertices  = nullptr;
+    IBuffer* pSkinData        = nullptr;
+    IBuffer* pJointMatrices   = nullptr;
+    IBuffer* pSkinnedVertices = nullptr;
 };
 
-struct RTXPTSkinnedSceneAssetBinding
+// One skinned vertex range. Element offsets into the bound buffers; NormalSkinBase equals SkinBase when normals follow
+// the position influences.
+struct RTXPTSkinningDispatch
 {
-    RTXPTSceneId                          ModelAssetId        = InvalidRTXPTSceneId;
-    IBuffer*                              pSourceVertexBuffer = nullptr;
-    IBuffer*                              pSourceSkinBuffer   = nullptr;
-    RefCntAutoPtr<IShaderResourceBinding> pSRB;
+    Uint32 SourceVertexBase = 0;
+    Uint32 DestVertexBase   = 0;
+    Uint32 JointBase        = 0;
+    Uint32 VertexCount      = 0;
+    Uint32 SkinBase         = 0;
+    Uint32 NormalSkinBase   = 0;
 };
 
-struct RTXPTSkinnedSceneGeometryStats
-{
-    bool   Ready                = false;
-    bool   LastDispatchExecuted = false;
-    Uint32 SkinnedInstanceCount = 0;
-    Uint32 SkinningJobCount     = 0;
-    Uint32 SkinnedVertexCount   = 0;
-    Uint32 JointMatrixCount     = 0;
-    Uint32 DispatchCount        = 0;
-};
-
-class RTXPTSkinnedSceneGeometry
+// Skins vertex ranges on the GPU with SkinnedVertexBuild.csh.
+class RTXPTSkinningPass
 {
 public:
     void Reset();
+    bool Initialize(IRenderDevice* pDevice, IEngineFactory* pEngineFactory, IRenderStateCache* pStateCache, IPipelineStateCache* pPSOCache);
+    // Binds the buffers of the following dispatches; repeating the bound objects keeps the resource binding.
+    bool Bind(const RTXPTSkinningBindings& Bindings);
+    bool Dispatch(IDeviceContext* pContext, const RTXPTSkinningDispatch& Range);
 
-    bool Initialize(IRenderDevice*             pDevice,
-                    IEngineFactory*            pEngineFactory,
-                    IRenderStateCache*         pStateCache,
-                    const RTXPTSceneGraphData& SceneData,
-                    bool                       ComputeSupported);
-
-    bool Update(IDeviceContext* pContext, const RTXPTSceneGraphData& SceneData);
-
-    bool HasSkinnedGeometry() const { return !m_Nodes.empty(); }
-    bool IsReady() const { return m_Stats.Ready && m_SkinnedVertexBuffer; }
-
-    IBuffer*                                          GetSkinnedVertexBuffer() const { return m_SkinnedVertexBuffer; }
-    const std::vector<RTXPTSkinnedSceneNodeGeometry>& GetNodes() const { return m_Nodes; }
-    const RTXPTSkinnedSceneNodeGeometry*              FindNode(RTXPTSceneId      ModelAssetId,
-                                                               RTXPTSceneId      ModelInstanceId,
-                                                               const GLTF::Node* pNode) const;
-    const RTXPTSkinnedSceneGeometryStats&             GetStats() const { return m_Stats; }
+    bool   IsReady() const { return m_PSO != nullptr; }
+    Uint64 GetDispatchCount() const { return m_DispatchCount; }
 
 private:
-    struct SkinningConstants
+    struct Constants
     {
-        Uint32 SourceVertexBase = 0;
-        Uint32 DestVertexBase   = 0;
-        Uint32 JointBase        = 0;
-        Uint32 VertexCount      = 0;
+        RTXPTSkinningDispatch Range;
+        Uint32                Padding[2] = {};
     };
-    static_assert(sizeof(SkinningConstants) == 16, "SkinningConstants must stay 16-byte aligned");
+    static_assert(sizeof(Constants) == 32, "Constants must match cbSkinningConstants in SkinnedVertexBuild.csh");
 
-    bool CreateBuffers(IRenderDevice* pDevice);
-    bool CreatePipeline(IRenderDevice* pDevice, IEngineFactory* pEngineFactory, IRenderStateCache* pStateCache);
-    bool CreateAssetBindings(IRenderDevice* pDevice, const RTXPTSceneGraphData& SceneData);
-    bool BuildNodeTable(const RTXPTSceneGraphData& SceneData);
-    bool UploadJointMatrices(IDeviceContext* pContext, const RTXPTSceneGraphData& SceneData);
-
-    std::vector<RTXPTSkinnedSceneNodeGeometry> m_Nodes;
-    std::vector<float4x4>                      m_JointMatrices;
-    std::vector<RTXPTSkinnedSceneAssetBinding> m_AssetBindings;
-    RefCntAutoPtr<IBuffer>                     m_SkinnedVertexBuffer;
-    RefCntAutoPtr<IBuffer>                     m_JointMatrixBuffer;
-    RefCntAutoPtr<IBuffer>                     m_SkinningConstantsCB;
-    RefCntAutoPtr<IPipelineState>              m_PSO;
-    RTXPTSkinnedSceneGeometryStats             m_Stats;
+    RefCntAutoPtr<IPipelineState>         m_PSO;
+    RefCntAutoPtr<IShaderResourceBinding> m_SRB;
+    RefCntAutoPtr<IBuffer>                m_Constants;
+    RTXPTSkinningBindings                 m_Bound;
+    Uint64                                m_DispatchCount = 0;
 };
-
-using RTXPTSkinnedNodeGeometry  = RTXPTSkinnedSceneNodeGeometry;
-using RTXPTSkinnedGeometryStats = RTXPTSkinnedSceneGeometryStats;
-using RTXPTSkinnedGeometry      = RTXPTSkinnedSceneGeometry;
 
 } // namespace Diligent

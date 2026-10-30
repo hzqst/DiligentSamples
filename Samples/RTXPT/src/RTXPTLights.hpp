@@ -36,11 +36,16 @@
 #include "RenderDevice.h"
 #include "RTXPTLightSourceHistory.hpp"
 #include "RTXPTLightPacking.hpp"
+#include "RTXPTSceneRuntime.hpp"
 
 namespace Diligent
 {
 
 struct RTXPTSceneGraphData;
+
+// The analytic lights of a loaded scene: its light nodes and the KHR_lights_punctual lights of its model instances,
+// with the keys that identify them across lighting updates.
+void BuildRTXPTSceneLights(const RTXPTSceneGraphData& SceneData, std::vector<RTXPTSceneLight>& Lights);
 
 struct RTXPTLightStats
 {
@@ -55,6 +60,11 @@ public:
     void Reset();
     bool Upload(IRenderDevice* pDevice, const GLTF::Scene& Scene, const GLTF::ModelTransforms& Transforms);
     bool Upload(IRenderDevice* pDevice, const RTXPTSceneGraphData& SceneData);
+    // Replaces the analytic lights; the emissive triangles are kept.
+    bool UploadAnalyticLights(IRenderDevice* pDevice, const std::vector<RTXPTSceneLight>& Lights);
+    // Replaces the emissive triangle sources. The buffer is reused while it holds TriangleCount triangles; the
+    // emissive triangle pass fills it.
+    bool SetEmissiveTriangles(IRenderDevice* pDevice, std::vector<RTXPTLightSourceRange> Sources, Uint32 TriangleCount, float ProxyWeight);
     // Counts the scene's emissive-area-light triangles. Emitter classification (here, the material flag, and
     // the per-sub-instance EmissiveTriangleOffset allocation) is unconditional now that bindless is mandatory.
     bool UploadEmissiveTriangles(IRenderDevice* pDevice, const RTXPTSceneGraphData& SceneData);

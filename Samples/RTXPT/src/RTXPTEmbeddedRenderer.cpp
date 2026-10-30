@@ -4,8 +4,9 @@
 #include "RTXPTLights.hpp"
 #include "RTXPTLightsBaker.hpp"
 #include "RTXPTEnvMapBaker.hpp"
-#include "RTXPTAccelerationStructures.hpp"
-#include "RTXPTEmissiveTrianglePass.hpp"
+#include "RTXPTSceneFrame.hpp"
+#include "RTXPTSceneImporter.hpp"
+#include "RTXPTSceneRuntime.hpp"
 #include "RTXPTRayTracingPass.hpp"
 #include "RTXPTAccumulationPass.hpp"
 #include "RTXPTToneMappingPass.hpp"
@@ -31,22 +32,24 @@ struct RTXPTEmbeddedScene::Impl
 {
     //Declared first, so they are released last: the shaders and pipelines created from the caches use them until
     //they are released.
-    RefCntAutoPtr<IRenderStateCache>   Cache;
-    RefCntAutoPtr<IPipelineStateCache> PSOCache;
-    //The scene buffers and material textures the views bind, kept so views can be created after the source scene and
-    //materials are gone.
-    RefCntAutoPtr<IBuffer>                    VertexBuffer, IndexBuffer, MaterialBuffer;
-    std::vector<RefCntAutoPtr<IDeviceObject>> TextureReferences;
-    std::vector<IDeviceObject*>               Textures;
-    VALUE_TYPE                                IndexType = VT_UNDEFINED;
-    RTXPTLights                               Lights;
-    RTXPTEnvMapBaker                          Environment;
-    RTXPTAccelerationStructures               AS;
-    RTXPTEmissiveTrianglePass                 Emissive;
-    RTXPTEnvMapSettings                       EnvironmentSettings;
-    bool                                      Ready{};
+    RefCntAutoPtr<IRenderStateCache>               Cache;
+    RefCntAutoPtr<IPipelineStateCache>             PSOCache;
+    RefCntAutoPtr<IShaderSourceInputStreamFactory> Shaders;
+    RefCntAutoPtr<IRenderDevice>                   Device;
+    //The runtime scene keeps the model buffers and material textures its assets reference, so frames can be
+    //prepared after the source scene and materials are gone.
+    RTXPTSceneRuntime      Runtime;
+    RTXPTImportedScene     Imported;
+    RTXPTSceneFrameBuilder Frames;
+    RTXPTEnvMapBaker       Environment;
+    RTXPTEnvMapSettings    EnvironmentSettings;
+    bool                   Ready{};
 
-    IDeviceObject* const* GetTextures() const { return Textures.empty() ? nullptr : Textures.data(); }
+    bool Prepare(IDeviceContext* Context, std::string& Error)
+    {
+        RTXPTShaderSourceScope ShaderScope{Shaders};
+        return Frames.Prepare(Context, Runtime.GetSnapshot(), Error);
+    }
 };
 
 RTXPTEmbeddedScene::RTXPTEmbeddedScene() :
@@ -79,22 +82,33 @@ bool RTXPTEmbeddedScene::Initialize(IRenderDevice* Device, IDeviceContext* Conte
     }
     S.Cache    = CreateInfo.Cache;
     S.PSOCache = CreateInfo.PSOCache;
+    S.Shaders  = CreateInfo.Shaders;
+    S.Device   = Device;
     RTXPTShaderSourceScope ShaderScope{CreateInfo.Shaders};
     auto*                  Factory = Device->GetEngineFactory();
-    S.VertexBuffer                 = Scene.GetVertexBuffer0(Device, Context);
-    S.IndexBuffer                  = Scene.GetIndexBuffer(Device, Context);
-    S.MaterialBuffer               = Materials.GetMaterialBuffer();
-    S.IndexType                    = Scene.GetIndexType();
-    S.Textures.assign(Materials.GetTextureBindings(), Materials.GetTextureBindings() + Materials.GetTextureCount());
-    S.TextureReferences.assign(S.Textures.begin(), S.Textures.end());
 
-    const auto& Graph = Scene.GetSceneGraphData();
-    Error             = "RTXPT scene lights or acceleration structures could not be built";
-    if (!S.Lights.Upload(Device, Graph) || !S.Lights.UploadEmissiveTriangles(Device, Graph) ||
-        !S.AS.BuildStaticScene(Device, Context, Graph, S.IndexType, true) ||
-        !S.AS.UploadSubInstanceTransforms(Context))
+    if (S.Runtime.BeginUpdate() != RTXPTSceneResult::Ok)
+        return false;
+    RTXPTSceneSnapshotPtr Snapshot;
+    if (!ImportRTXPTScene(Device, Context, Scene, Materials, S.Runtime, S.Imported, Error))
+    {
+        S.Runtime.CancelUpdate();
+        return false;
+    }
+    if (S.Runtime.CommitUpdate(Snapshot) != RTXPTSceneResult::Ok)
+    {
+        Error = "RTXPT scene import could not be committed";
+        return false;
+    }
+
+    RTXPTSceneFrameBuilderCreateInfo FramesCI;
+    FramesCI.pEngineFactory = Factory;
+    FramesCI.pStateCache    = S.Cache;
+    FramesCI.pPSOCache      = S.PSOCache;
+    if (!S.Frames.Initialize(Device, FramesCI, Error))
         return false;
 
+    const auto& Graph = Scene.GetSceneGraphData();
     //Only the scene can opt into an environment. Absence means black, never the Sample's default sky.
     S.EnvironmentSettings         = RTXPTEnvMapBaker::MakeSceneDefaultSettings(Graph);
     S.EnvironmentSettings.Enabled = std::any_of(Graph.Lights.begin(), Graph.Lights.end(),
@@ -115,28 +129,7 @@ bool RTXPTEmbeddedScene::Initialize(IRenderDevice* Device, IDeviceContext* Conte
         !S.Environment.Update(Device, Context, EnvironmentUpdate))
         return false;
 
-    //The pass writes the emissive triangles of the lights once; views only read them.
-    Error = "RTXPT emissive geometry preparation failed";
-    RTXPTEmissiveTrianglePassCreateInfo EmissiveCI;
-    EmissiveCI.pEngineFactory              = Factory;
-    EmissiveCI.pStateCache                 = S.Cache;
-    EmissiveCI.pPSOCache                   = S.PSOCache;
-    EmissiveCI.pMaterialBuffer             = S.MaterialBuffer;
-    EmissiveCI.pSubInstanceBuffer          = S.AS.GetSubInstanceBuffer();
-    EmissiveCI.pSubInstanceTransformBuffer = S.AS.GetSubInstanceTransformBuffer();
-    //Static scenes have no skinning, so the static vertices stand in for the skinned ones.
-    EmissiveCI.pVertexBuffer           = S.VertexBuffer;
-    EmissiveCI.pSkinnedVertexBuffer    = S.VertexBuffer;
-    EmissiveCI.pIndexBuffer            = S.IndexBuffer;
-    EmissiveCI.IndexValueType          = S.IndexType;
-    EmissiveCI.pEmissiveTriangleBuffer = S.Lights.GetEmissiveTriangleBuffer();
-    EmissiveCI.pMaterialTextures       = S.GetTextures();
-    EmissiveCI.MaterialTextureCount    = static_cast<Uint32>(S.Textures.size());
-    EmissiveCI.EnableMaterialTextures  = !S.Textures.empty();
-    EmissiveCI.ComputeSupported        = true;
-    if (!S.Emissive.Initialize(Device, EmissiveCI))
-        return false;
-    if (S.Lights.GetEmissiveTriangleCount() && !S.Emissive.Dispatch(Context, S.AS.GetStats().SubInstanceCount))
+    if (!S.Frames.Prepare(Context, Snapshot, Error))
         return false;
     Context->Flush();
     Context->WaitForIdle();
@@ -146,6 +139,16 @@ bool RTXPTEmbeddedScene::Initialize(IRenderDevice* Device, IDeviceContext* Conte
 }
 
 bool RTXPTEmbeddedScene::IsReady() const { return m_Impl->Ready; }
+
+bool RTXPTEmbeddedScene::Prepare(IDeviceContext* Context, std::string& Error)
+{
+    if (!m_Impl->Ready || !Context)
+    {
+        Error = "RTXPT scene is not initialized";
+        return false;
+    }
+    return m_Impl->Prepare(Context, Error);
+}
 
 struct RTXPTEmbeddedView::Impl
 {
@@ -163,10 +166,83 @@ struct RTXPTEmbeddedView::Impl
     RTXPTAccumulationPass              Accumulation;
     RTXPTToneMappingPass               ToneMapping;
     RTXPTToneMappingParameters         ToneParameters;
+    RTXPTLightsBakerSettings           Lighting;
     PathTracerCameraData               PreviousCamera{};
     PathTracerViewData                 PreviousView{};
     Uint32                             Width{}, Height{}, FrameIndex{}, Samples{};
-    bool                               Ready{};
+    //The scene frame revisions this view's light sampling and history last followed.
+    Uint64 LightingRevision{}, EmissiveRevision{}, ContentRevision{};
+    bool   LightsBakerReady{};
+    bool   Ready{};
+
+    //The path tracer is compiled for the size of the scene's bindless table, which grows with the scene.
+    bool InitializeRays(Uint32 MaterialTextureCount)
+    {
+        RTXPTShaderSourceScope        ShaderScope{Scene->Shaders};
+        RTXPTRayTracingPassCreateInfo RaysCI;
+        RaysCI.pEngineFactory               = Device->GetEngineFactory();
+        RaysCI.pStateCache                  = Cache;
+        RaysCI.pPSOCache                    = PSOCache;
+        RaysCI.pFrameConstants              = Constants;
+        RaysCI.IndexValueType               = VT_UINT32;
+        RaysCI.MaterialTextureCount         = MaterialTextureCount;
+        RaysCI.EnableMaterialTextures       = true;
+        RaysCI.EnableAnyHit                 = true;
+        RaysCI.RayTracingSupported          = true;
+        RaysCI.StandaloneRTShadersSupported = true;
+        RaysCI.NEECandidateSamples          = kNEECandidateSamples;
+        RaysCI.NEEFullSamples               = kNEEFullSamples;
+        return Rays.Initialize(Device, Context, RaysCI);
+    }
+
+    //Follows the lighting of the scene frame and binds its resources.
+    bool BindFrame(const RTXPTSceneFrame& Frame)
+    {
+        const auto& S = *Scene;
+        if (!LightsBakerReady || Frame.LightingRevision != LightingRevision)
+        {
+            Lighting.ResetFeedback = !LightsBakerReady;
+            if (!LightsBaker.UpdateBegin(Device, *Frame.pLights, Lighting))
+                return false;
+            LightsBakerReady = true;
+            LightingRevision = Frame.LightingRevision;
+            EmissiveRevision = Frame.EmissiveRevision;
+        }
+        else if (Frame.EmissiveRevision != EmissiveRevision)
+        {
+            //The emissive triangles were rebuilt in place; refresh the light buffers and sampling weights.
+            LightsBaker.RequestProxyRebuild();
+            EmissiveRevision = Frame.EmissiveRevision;
+        }
+        if (Rays.GetStats().MaterialTextureCount != Frame.MaterialTextureCount && !InitializeRays(Frame.MaterialTextureCount))
+            return false;
+
+        RTXPTRayTracingBindings Bindings;
+        Bindings.pTLAS                         = Frame.pTLAS;
+        Bindings.TLASBuildIndex                = Frame.BuildIndex;
+        Bindings.pMaterialBuffer               = Frame.pMaterialBuffer;
+        Bindings.pSubInstanceBuffer            = Frame.pSubInstanceBuffer;
+        Bindings.pVertexBuffer                 = Frame.pVertexBuffer;
+        Bindings.pSkinnedVertexBuffer          = Frame.pSkinnedVertexBuffer;
+        Bindings.pIndexBuffer                  = Frame.pIndexBuffer;
+        Bindings.pMaterialTextures             = Frame.ppMaterialTextures;
+        Bindings.MaterialTextureCount          = Frame.MaterialTextureCount;
+        Bindings.pLightBuffer                  = LightsBaker.GetLightBuffer();
+        Bindings.pLightExBuffer                = LightsBaker.GetLightExBuffer();
+        Bindings.pLightingControlBuffer        = LightsBaker.GetControlBuffer();
+        Bindings.pLightProxyCounters           = LightsBaker.GetLightProxyCounters();
+        Bindings.pLightSamplingProxies         = LightsBaker.GetLightSamplingProxies();
+        Bindings.pLocalSamplingBuffer          = LightsBaker.GetLocalSamplingBuffer();
+        Bindings.pEnvironmentLightLookup       = LightsBaker.GetEnvironmentLightLookup();
+        Bindings.pFeedbackTotalWeightUAV       = LightsBaker.GetFeedbackTotalWeightUAV();
+        Bindings.pFeedbackCandidatesUAV        = LightsBaker.GetFeedbackCandidatesUAV();
+        Bindings.pEnvironmentMapSRV            = S.Environment.GetEnvironmentMapSRV();
+        Bindings.pEnvironmentImportanceMapSRV  = S.Environment.GetImportanceMapSRV();
+        Bindings.pEnvironmentRadianceMapSRV    = S.Environment.GetRadianceMapSRV();
+        Bindings.pEnvironmentSampler           = S.Environment.GetEnvironmentSampler();
+        Bindings.pEnvironmentImportanceSampler = S.Environment.GetImportanceSampler();
+        return Rays.Bind(Context, Bindings);
+    }
 
     bool CreateTarget(const char* Name, TEXTURE_FORMAT Format, BIND_FLAGS Flags, RefCntAutoPtr<ITexture>& Target)
     {
@@ -230,15 +306,13 @@ bool RTXPTEmbeddedView::Initialize(IRenderDevice* Device, IDeviceContext* Contex
         return false;
 
     //Light sampling keeps screen-sized feedback and reads this view's depth and motion every frame, so it is per view.
-    RTXPTLightsBakerSettings Lighting;
-    Lighting.ImportanceSamplingType = 1;
-    Lighting.ViewportSize = Lighting.PrevViewportSize = float2{float(Width), float(Height)};
-    Lighting.EnvMapParams                             = S.Environment.GetLightsBakerParams();
-    Lighting.pEnvironmentRadianceMap                  = S.Environment.GetRadianceMapSRV();
-    Lighting.EnvMapImportanceMapResolution            = S.Environment.GetStats().ImportanceResolution;
-    Lighting.EnvMapImportanceMapMipCount              = S.Environment.GetStats().ImportanceMipLevels;
-    Lighting.ResetFeedback                            = true;
-    Error                                             = "RTXPT light sampling preparation failed";
+    R.Lighting.ImportanceSamplingType = 1;
+    R.Lighting.ViewportSize = R.Lighting.PrevViewportSize = float2{float(Width), float(Height)};
+    R.Lighting.EnvMapParams                               = S.Environment.GetLightsBakerParams();
+    R.Lighting.pEnvironmentRadianceMap                    = S.Environment.GetRadianceMapSRV();
+    R.Lighting.EnvMapImportanceMapResolution              = S.Environment.GetStats().ImportanceResolution;
+    R.Lighting.EnvMapImportanceMapMipCount                = S.Environment.GetStats().ImportanceMipLevels;
+    Error                                                 = "RTXPT light sampling preparation failed";
     RTXPTLightsBakerCreateInfo LightsBakerCI;
     LightsBakerCI.pEngineFactory   = Factory;
     LightsBakerCI.pStateCache      = R.Cache;
@@ -246,47 +320,12 @@ bool RTXPTEmbeddedView::Initialize(IRenderDevice* Device, IDeviceContext* Contex
     LightsBakerCI.Width            = Width;
     LightsBakerCI.Height           = Height;
     LightsBakerCI.ComputeSupported = true;
-    if (!R.LightsBaker.CreateResources(Device, LightsBakerCI) ||
-        !R.LightsBaker.UpdateBegin(Device, S.Lights, Lighting))
+    if (!R.LightsBaker.CreateResources(Device, LightsBakerCI))
         return false;
 
-    Error = "RTXPT ray tracing shaders or bindings failed";
-    RTXPTRayTracingPassCreateInfo RaysCI;
-    RaysCI.pEngineFactory                = Factory;
-    RaysCI.pStateCache                   = R.Cache;
-    RaysCI.pPSOCache                     = R.PSOCache;
-    RaysCI.pFrameConstants               = R.Constants;
-    RaysCI.pMaterialBuffer               = S.MaterialBuffer;
-    RaysCI.pSubInstanceBuffer            = S.AS.GetSubInstanceBuffer();
-    RaysCI.pLightBuffer                  = R.LightsBaker.GetLightBuffer();
-    RaysCI.pLightExBuffer                = R.LightsBaker.GetLightExBuffer();
-    RaysCI.pLightingControlBuffer        = R.LightsBaker.GetControlBuffer();
-    RaysCI.pLightProxyCounters           = R.LightsBaker.GetLightProxyCounters();
-    RaysCI.pLightSamplingProxies         = R.LightsBaker.GetLightSamplingProxies();
-    RaysCI.pLocalSamplingBuffer          = R.LightsBaker.GetLocalSamplingBuffer();
-    RaysCI.pEnvironmentLightLookup       = R.LightsBaker.GetEnvironmentLightLookup();
-    RaysCI.pFeedbackTotalWeightUAV       = R.LightsBaker.GetFeedbackTotalWeightUAV();
-    RaysCI.pFeedbackCandidatesUAV        = R.LightsBaker.GetFeedbackCandidatesUAV();
-    RaysCI.pEnvironmentMapSRV            = S.Environment.GetEnvironmentMapSRV();
-    RaysCI.pEnvironmentImportanceMapSRV  = S.Environment.GetImportanceMapSRV();
-    RaysCI.pEnvironmentRadianceMapSRV    = S.Environment.GetRadianceMapSRV();
-    RaysCI.pEnvironmentSampler           = S.Environment.GetEnvironmentSampler();
-    RaysCI.pEnvironmentImportanceSampler = S.Environment.GetImportanceSampler();
-    //Static scenes have no skinning, so the static vertices stand in for the skinned ones.
-    RaysCI.pVertexBuffer                = S.VertexBuffer;
-    RaysCI.pSkinnedVertexBuffer         = S.VertexBuffer;
-    RaysCI.pIndexBuffer                 = S.IndexBuffer;
-    RaysCI.IndexValueType               = S.IndexType;
-    RaysCI.pTLAS                        = S.AS.GetTLAS();
-    RaysCI.pMaterialTextures            = S.GetTextures();
-    RaysCI.MaterialTextureCount         = static_cast<Uint32>(S.Textures.size());
-    RaysCI.EnableMaterialTextures       = !S.Textures.empty();
-    RaysCI.EnableAnyHit                 = true;
-    RaysCI.RayTracingSupported          = true;
-    RaysCI.StandaloneRTShadersSupported = true;
-    RaysCI.NEECandidateSamples          = kNEECandidateSamples;
-    RaysCI.NEEFullSamples               = kNEEFullSamples;
-    if (!R.Rays.Initialize(Device, Context, RaysCI))
+    Error                        = "RTXPT ray tracing shaders or bindings failed";
+    const RTXPTSceneFrame& Frame = S.Frames.GetFrame();
+    if (!Frame.pTLAS || !R.InitializeRays(Frame.MaterialTextureCount) || !R.BindFrame(Frame))
         return false;
     Error = "RTXPT accumulation or tone mapping initialization failed";
     if (!R.Accumulation.Initialize(Device, Factory, R.Cache, R.PSOCache, true) ||
@@ -309,11 +348,20 @@ bool RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, const PathTra
         Error = "RTXPT view is not initialized";
         return false;
     }
-    const auto& S = *R.Scene;
-    //Reference accumulation restarts on any camera/projection change. The host additionally resets cuts,
-    //pipeline changes and discontinuities; successful executed frames alone advance history.
+    const auto&            S     = *R.Scene;
+    const RTXPTSceneFrame& Frame = S.Frames.GetFrame();
+    if (!Frame.pTLAS)
+    {
+        Error = "RTXPT scene frame is not prepared";
+        return false;
+    }
+    Error = "RTXPT light sampling or scene bindings failed";
+    if (!R.BindFrame(Frame))
+        return false;
+    //Reference accumulation restarts on any camera/projection or scene content change. The host additionally resets
+    //cuts, pipeline changes and discontinuities; successful executed frames alone advance history.
     ResetHistory = ResetHistory || !R.Samples || std::memcmp(&Camera, &R.PreviousCamera, sizeof(Camera)) != 0 ||
-        std::memcmp(&View, &R.PreviousView, sizeof(View)) != 0;
+        std::memcmp(&View, &R.PreviousView, sizeof(View)) != 0 || Frame.Snapshot->ContentRevision != R.ContentRevision;
     const Uint32    Samples = ResetHistory ? 1u : R.Samples + 1u;
     SampleConstants Constants;
     Constants.view                      = View;
@@ -332,8 +380,8 @@ bool RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, const PathTra
     PT.resetAccumulation                = ResetHistory;
     PT.camera                           = Camera;
     PT.prevCamera                       = ResetHistory ? Camera : R.PreviousCamera;
-    PT.analyticLightCount               = S.Lights.GetStats().LightCount;
-    PT.environmentNEEEnabled            = (S.Lights.GetEmissiveTriangleCount() << 1u) | (S.EnvironmentSettings.Enabled ? 1u : 0u);
+    PT.analyticLightCount               = Frame.pLights->GetStats().LightCount;
+    PT.environmentNEEEnabled            = (Frame.pLights->GetEmissiveTriangleCount() << 1u) | (S.EnvironmentSettings.Enabled ? 1u : 0u);
     Constants.envMap                    = S.Environment.GetConstants();
     {
         MapHelper<SampleConstants> Mapped{R.Context, R.Constants, MAP_WRITE, MAP_FLAG_DISCARD};
@@ -372,9 +420,10 @@ bool RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, const PathTra
     Error           = "RTXPT tone mapping failed";
     if (!R.ToneMapping.Render(R.Context, Tone))
         return false;
-    R.PreviousCamera = Camera;
-    R.PreviousView   = View;
-    R.Samples        = Samples;
+    R.PreviousCamera  = Camera;
+    R.PreviousView    = View;
+    R.Samples         = Samples;
+    R.ContentRevision = Frame.Snapshot->ContentRevision;
     ++R.FrameIndex;
     Error.clear();
     return true;

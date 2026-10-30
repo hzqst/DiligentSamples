@@ -436,6 +436,7 @@ bool RTXPTMaterialIsEmissiveAreaLight(const GLTF::Material&         Material,
 
 void RTXPTMaterials::Reset()
 {
+    m_MaterialData.clear();
     m_MaterialBuffer.Release();
     m_TextureBindings.clear();
     m_TextureViews.clear();
@@ -673,6 +674,7 @@ bool RTXPTMaterials::Upload(IRenderDevice*             pDevice,
 
     m_Stats.TextureCount  = static_cast<Uint32>(m_TextureBindings.size());
     m_Stats.MaterialCount = static_cast<Uint32>(MaterialData.size());
+    m_MaterialData        = MaterialData;
     return CreateMaterialBuffer(pDevice, MaterialData);
 }
 

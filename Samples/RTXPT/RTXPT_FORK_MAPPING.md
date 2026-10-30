@@ -1,5 +1,19 @@
 # RTXPT Fork Mapping
 
+## Runtime scene and scene frames (2026-10-30)
+
+The sample and the embedded renderer no longer build acceleration structures from the loaded glTF scene.
+`RTXPTSceneImporter` registers the scene in an `RTXPTSceneRuntime` (geometry, materials, instances, lights;
+handles and immutable snapshots), and `RTXPTSceneFrameBuilder` prepares every frame from the current snapshot
+on the context that traces it: resident geometry arenas and a rigid BLAS cache, per-instance skinning and
+BLAS updates, a material table and a bindless texture table sized in steps, a TLAS rebuilt each frame, and the
+emissive triangles. The ray tracing pass keeps only compile options at initialization and receives the frame
+resources through `RTXPTRayTracingPass::Bind`; light sampling follows the frame lighting and emissive revisions.
+`RTXPTAccelerationStructures` was removed.
+
+GPU instance preparation below is not used by the scene frames: `--gpu_tlas` was removed and the TLAS is
+built from CPU instance records. `GPUTLAS.hpp` and `TLASCull.hlsl` stay for `VisibilityRayTest.cpp`.
+
 ## GPU instance preparation and TLAS (#28, 2026-10-26)
 
 Reference: RTXPT-fork `9503910839f013f7ee0a2590a1131d84160ca712`,

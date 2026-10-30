@@ -252,7 +252,7 @@ using RTXPTSceneSnapshotPtr = std::shared_ptr<const RTXPTSceneSnapshot>;
 
 // Asset repository and runtime scene. Updates are serial: BeginUpdate, setters, then CommitUpdate or CancelUpdate.
 // A failed setter leaves the pending update unchanged; a cancelled update publishes nothing and invalidates the
-// handles it created. Assets are registered and released outside updates; an instance keeps its assets alive after
+// handles it created. Assets can be registered and released at any time; an instance keeps its assets alive after
 // they are released from the repository.
 class RTXPTSceneRuntime
 {

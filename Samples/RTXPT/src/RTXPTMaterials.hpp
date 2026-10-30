@@ -104,12 +104,18 @@ public:
     // and (being non-default views) keep the underlying texture resources alive on every backend.
     Uint32                GetTextureCount() const { return static_cast<Uint32>(m_TextureBindings.size()); }
     IDeviceObject* const* GetTextureBindings() const { return m_TextureBindings.empty() ? nullptr : m_TextureBindings.data(); }
+    ITextureView*         GetTextureView(Uint32 Index) const { return Index < m_TextureViews.size() ? m_TextureViews[Index].RawPtr() : nullptr; }
+
+    // The uploaded material records, one per scene material (RTXPTModelAsset::MaterialRemap), indexing the
+    // bindless table above.
+    const std::vector<MaterialPTData>& GetMaterialData() const { return m_MaterialData; }
 
 private:
     bool AppendTextureViews(IRenderDevice* pDevice, IDeviceContext* pContext, const GLTF::Model& Model, std::vector<Uint32>& TextureRemap, std::vector<Uint32>& ColorTextureRemap);
     bool CreateMaterialBuffer(IRenderDevice* pDevice, const std::vector<MaterialPTData>& MaterialData);
 
     RefCntAutoPtr<IBuffer>                   m_MaterialBuffer;
+    std::vector<MaterialPTData>              m_MaterialData;
     std::vector<RefCntAutoPtr<ITextureView>> m_TextureViews;
     std::vector<IDeviceObject*>              m_TextureBindings;
     RTXPTMaterialStats                       m_Stats;

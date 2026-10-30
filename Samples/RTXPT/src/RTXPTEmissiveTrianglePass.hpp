@@ -26,6 +26,8 @@
 
 #pragma once
 
+#include <vector>
+
 #include "Buffer.h"
 #include "BufferView.h"
 #include "DeviceContext.h"
@@ -49,23 +51,32 @@ struct RTXPTEmissiveTrianglePassStats
     Uint32 DispatchCount        = 0;
 };
 
+// How the pass compiles its pipeline. The scene resources are bound later with Bind.
 struct RTXPTEmissiveTrianglePassCreateInfo
 {
-    IEngineFactory*       pEngineFactory              = nullptr;
-    IRenderStateCache*    pStateCache                 = nullptr;
-    IPipelineStateCache*  pPSOCache                   = nullptr;
+    IEngineFactory*      pEngineFactory = nullptr;
+    IRenderStateCache*   pStateCache    = nullptr;
+    IPipelineStateCache* pPSOCache      = nullptr;
+    VALUE_TYPE           IndexValueType = VT_UNDEFINED;
+    // The size of the bindless material-texture table the pipeline is compiled for.
+    Uint32 MaterialTextureCount   = 0;
+    bool   EnableMaterialTextures = false;
+    bool   ComputeSupported       = false;
+};
+
+// The scene resources the pass reads and the emissive triangle buffer it writes. Changing any object creates a new
+// resource binding, so dispatches recorded with the previous one keep their resources.
+struct RTXPTEmissiveTriangleBindings
+{
     IBuffer*              pMaterialBuffer             = nullptr;
     IBuffer*              pSubInstanceBuffer          = nullptr;
     IBuffer*              pSubInstanceTransformBuffer = nullptr;
     IBuffer*              pVertexBuffer               = nullptr;
     IBuffer*              pSkinnedVertexBuffer        = nullptr;
     IBuffer*              pIndexBuffer                = nullptr;
-    VALUE_TYPE            IndexValueType              = VT_UNDEFINED;
     IBuffer*              pEmissiveTriangleBuffer     = nullptr;
     IDeviceObject* const* pMaterialTextures           = nullptr;
     Uint32                MaterialTextureCount        = 0;
-    bool                  EnableMaterialTextures      = false;
-    bool                  ComputeSupported            = false;
 };
 
 class RTXPTEmissiveTrianglePass
@@ -74,6 +85,9 @@ public:
     void Reset();
 
     bool Initialize(IRenderDevice* pDevice, const RTXPTEmissiveTrianglePassCreateInfo& CreateInfo);
+
+    // Binds the resources of the following dispatches; repeating the bound objects keeps the resource binding.
+    bool Bind(const RTXPTEmissiveTriangleBindings& Bindings);
 
     bool Dispatch(IDeviceContext* pContext, Uint32 SubInstanceCount);
 
@@ -84,7 +98,12 @@ private:
     RefCntAutoPtr<IPipelineState>         m_PSO;
     RefCntAutoPtr<IShaderResourceBinding> m_SRB;
     RefCntAutoPtr<IBufferView>            m_IndexBufferView;
+    RefCntAutoPtr<IBuffer>                m_IndexBuffer;
     RefCntAutoPtr<IBuffer>                m_Constants;
+    RTXPTEmissiveTriangleBindings         m_Bound;
+    std::vector<IDeviceObject*>           m_BoundTextures;
+    VALUE_TYPE                            m_IndexValueType = VT_UNDEFINED;
+    bool                                  m_UseTextures    = false;
     RTXPTEmissiveTrianglePassStats        m_Stats;
 };
 

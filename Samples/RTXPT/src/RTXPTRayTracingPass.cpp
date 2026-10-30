@@ -37,6 +37,9 @@
 
 #include "AsyncPrefix.hpp"
 
+#include <algorithm>
+#include <cstring>
+
 namespace Diligent
 {
 
@@ -88,9 +91,17 @@ void RTXPTRayTracingPass::Reset()
         State.Stats = {};
     }
     m_MiniConstantsCB.Release();
-    m_TLAS.Release();
     m_IndexBufferView.Release();
-    m_Stats = {};
+    m_IndexBuffer.Release();
+    m_Bound       = {};
+    m_HasBindings = false;
+    m_BoundTextures.clear();
+    m_IndexValueType      = VT_UNDEFINED;
+    m_UseTextures         = false;
+    m_UseAnyHitTextures   = false;
+    m_UseHitObject        = false;
+    m_UseInlineVisibility = false;
+    m_Stats               = {};
 }
 
 void RTXPTRayTracingPass::UnbindSharcBuffers()
@@ -130,19 +141,19 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice* pDevice, IDeviceContext* pCo
         return false;
     }
 
-    if (CreateInfo.pFrameConstants == nullptr || CreateInfo.pTLAS == nullptr)
+    if (CreateInfo.pFrameConstants == nullptr)
     {
-        DEV_ERROR("RTXPT reference path tracer requires frame constants and TLAS");
+        DEV_ERROR("RTXPT reference path tracer requires frame constants");
         return false;
     }
 
-    if (CreateInfo.pVertexBuffer == nullptr || CreateInfo.pSkinnedVertexBuffer == nullptr || CreateInfo.pIndexBuffer == nullptr)
+    if (CreateInfo.IndexValueType != VT_UINT16 && CreateInfo.IndexValueType != VT_UINT32)
     {
-        DEV_ERROR("RTXPT reference path tracer requires vertex, skinned vertex, and index buffers");
+        LOG_ERROR_MESSAGE("Reference path tracer requires VT_UINT16 or VT_UINT32 indices");
         return false;
     }
 
-    const bool UseTextures         = CreateInfo.EnableMaterialTextures && CreateInfo.pMaterialTextures != nullptr && CreateInfo.MaterialTextureCount > 0;
+    const bool UseTextures         = CreateInfo.EnableMaterialTextures && CreateInfo.MaterialTextureCount > 0;
     const bool UseAnyHit           = CreateInfo.EnableAnyHit;
     const bool UseInlineVisibility = CreateInfo.EnableInlineVisibility &&
         (pDevice->GetAdapterInfo().RayTracing.CapFlags & RAY_TRACING_CAP_FLAG_INLINE_RAY_TRACING) != 0;
@@ -153,7 +164,11 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice* pDevice, IDeviceContext* pCo
     const bool UseThreadReorder = UseHitObject && CreateInfo.EnableThreadReorder;
     LOG_INFO_MESSAGE("RTXPT scatter rays: ", UseHitObject ? (UseThreadReorder ? "HitObject + reorder" : "HitObject") : "TraceRay");
 
-    m_TLAS = CreateInfo.pTLAS;
+    m_IndexValueType      = CreateInfo.IndexValueType;
+    m_UseTextures         = UseTextures;
+    m_UseAnyHitTextures   = UseTextures && UseAnyHit && (!UseHitObject || !UseInlineVisibility);
+    m_UseHitObject        = UseHitObject;
+    m_UseInlineVisibility = UseInlineVisibility;
 
     BufferDesc MiniCBDesc;
     MiniCBDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
@@ -182,67 +197,12 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice* pDevice, IDeviceContext* pCo
                                        (SHADER_TYPE_RAY_CLOSEST_HIT | SHADER_TYPE_RAY_ANY_HIT) :
                                        SHADER_TYPE_RAY_CLOSEST_HIT) |
         (UseHitObject ? SHADER_TYPE_RAY_GEN : SHADER_TYPE_UNKNOWN);
-    const SHADER_TYPE MaterialStages = HitStages | SHADER_TYPE_RAY_GEN;
-    const SHADER_TYPE EnvStages      = SHADER_TYPE_RAY_GEN | HitStages |
+    const SHADER_TYPE EnvStages = SHADER_TYPE_RAY_GEN | HitStages |
         (!UseHitObject || !UseInlineVisibility ? SHADER_TYPE_RAY_MISS : SHADER_TYPE_UNKNOWN);
-    const SHADER_TYPE ConstStages       = EnvStages | HitStages;
-    const SHADER_TYPE DirectLightStages = ConstStages;
-    const SHADER_TYPE DynamicStages     = EnvStages;
+    const SHADER_TYPE ConstStages   = EnvStages | HitStages;
+    const SHADER_TYPE DynamicStages = EnvStages;
 
-    m_Stats.MaterialBridgeBound      = true;
-    m_Stats.SubInstanceBound         = true;
-    m_Stats.LightBridgeBound         = true;
-    m_Stats.LightsBakerBridgeBound   = true;
-    m_Stats.EnvironmentBridgeBound   = true;
-    m_Stats.EmissiveLightBridgeBound = true;
-    m_Stats.VertexBufferBound        = true;
-    m_Stats.SkinnedVertexBufferBound = true;
-    m_Stats.IndexBufferBound         = true;
-    m_Stats.MaterialTexturesBound    = true;
-    m_Stats.MaterialTextureCount     = UseTextures ? CreateInfo.MaterialTextureCount : 0;
-
-    IDeviceObject* pMaterialsView = CreateInfo.pMaterialBuffer != nullptr ? CreateInfo.pMaterialBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
-    IDeviceObject* pSubInstanceView =
-        CreateInfo.pSubInstanceBuffer != nullptr ? CreateInfo.pSubInstanceBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
-    IDeviceObject* pLightsView   = CreateInfo.pLightBuffer != nullptr ? CreateInfo.pLightBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
-    IDeviceObject* pLightsExView = CreateInfo.pLightExBuffer != nullptr ? CreateInfo.pLightExBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
-    IDeviceObject* pLightingControlView =
-        CreateInfo.pLightingControlBuffer != nullptr ? CreateInfo.pLightingControlBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
-    IDeviceObject* pLightProxyCountersView =
-        CreateInfo.pLightProxyCounters != nullptr ? CreateInfo.pLightProxyCounters->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
-    IDeviceObject* pLightSamplingProxiesView =
-        CreateInfo.pLightSamplingProxies != nullptr ? CreateInfo.pLightSamplingProxies->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
-    IDeviceObject* pLocalSamplingView =
-        CreateInfo.pLocalSamplingBuffer != nullptr ? CreateInfo.pLocalSamplingBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
-    IDeviceObject* pEnvironmentMapView               = CreateInfo.pEnvironmentMapSRV;
-    IDeviceObject* pEnvironmentImportanceMapView     = CreateInfo.pEnvironmentImportanceMapSRV;
-    IDeviceObject* pEnvironmentRadianceMapView       = CreateInfo.pEnvironmentRadianceMapSRV;
-    IDeviceObject* pEnvironmentSamplerView           = CreateInfo.pEnvironmentSampler;
-    IDeviceObject* pEnvironmentImportanceSamplerView = CreateInfo.pEnvironmentImportanceSampler;
-    IDeviceObject* pVertexView =
-        CreateInfo.pVertexBuffer != nullptr ? CreateInfo.pVertexBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
-    IDeviceObject* pSkinnedVertexView =
-        CreateInfo.pSkinnedVertexBuffer != nullptr ? CreateInfo.pSkinnedVertexBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
-
-    // The GLTF loader creates the index buffer in BUFFER_MODE_FORMATTED but does not pre-create a typed view;
-    // create one here so HLSL can declare it as Buffer<uint>.
-    if (CreateInfo.IndexValueType != VT_UINT16 && CreateInfo.IndexValueType != VT_UINT32)
-    {
-        LOG_ERROR_MESSAGE("Reference path tracer requires VT_UINT16 or VT_UINT32 indices");
-        return false;
-    }
-    BufferViewDesc IndexViewDesc;
-    IndexViewDesc.Name                 = "RTXPT reference index buffer SRV";
-    IndexViewDesc.ViewType             = BUFFER_VIEW_SHADER_RESOURCE;
-    IndexViewDesc.Format.ValueType     = CreateInfo.IndexValueType;
-    IndexViewDesc.Format.NumComponents = 1;
-    IndexViewDesc.Format.IsNormalized  = false;
-    CreateInfo.pIndexBuffer->CreateView(IndexViewDesc, &m_IndexBufferView);
-    VERIFY(m_IndexBufferView, "Failed to create RTXPT index buffer view");
-    if (!m_IndexBufferView)
-        return false;
-
-    bool EnvironmentBridgeReflectedAny = false;
+    m_Stats.MaterialTextureCount = UseTextures ? CreateInfo.MaterialTextureCount : 0;
 
     auto CreateVariant = [&](RTXPTPathTraceVariant Variant) {
         VariantState& State = m_Variants[GetVariantIndex(Variant)];
@@ -387,29 +347,14 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice* pDevice, IDeviceContext* pCo
             .AddVariable(DynamicStages, "u_DenoisingLayersHeader", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
             .AddVariable(DynamicStages, "u_DenoisingLayersBuffer", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC);
 
+        // Scene, lighting and environment resources are mutable: Bind creates new resource bindings when they change.
+        // None of their buffers is USAGE_DYNAMIC, so they need no dynamic offsets, whose Vulkan descriptors are limited.
         ResourceLayout
             .AddVariable(ConstStages, "g_Const", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
-            .AddVariable(ConstStages, "g_MiniConst", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
-            .AddVariable(ConstStages, "t_SceneBVH", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
-            .AddVariable(MaterialStages, "t_PTMaterialData", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
-            .AddVariable(HitStages, "t_SubInstanceData", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
-            .AddVariable(HitStages, "t_VertexBuffer", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
-            .AddVariable(HitStages, "t_SkinnedVertexBuffer", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
-            .AddVariable(HitStages, "t_IndexBuffer", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
-            .AddVariable(DirectLightStages, "t_Lights", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
-            .AddVariable(DirectLightStages, "t_LightsEx", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
-            .AddVariable(DirectLightStages, "t_LightingControl", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
-            .AddVariable(DirectLightStages, "t_LightProxyCounters", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
-            .AddVariable(DirectLightStages, "t_LightSamplingProxies", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
-            .AddVariable(DirectLightStages, "t_LocalSamplingBuffer", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
-            .AddVariable(EnvStages, "t_EnvironmentLightLookup", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
-            .AddVariable(DirectLightStages, "u_FeedbackTotalWeight", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
-            .AddVariable(DirectLightStages, "u_FeedbackCandidates", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
-            .AddVariable(EnvStages, "t_EnvironmentMap", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
-            .AddVariable(EnvStages, "t_EnvironmentImportanceMap", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
-            .AddVariable(EnvStages, "t_EnvironmentRadianceMap", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
-            .AddVariable(EnvStages, "s_EnvironmentMapSampler", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
-            .AddVariable(EnvStages, "s_EnvironmentImportanceSampler", SHADER_RESOURCE_VARIABLE_TYPE_STATIC);
+            .AddVariable(ConstStages, "g_MiniConst", SHADER_RESOURCE_VARIABLE_TYPE_STATIC);
+        for (const char* Name : {"t_PTMaterialData", "t_SubInstanceData", "t_VertexBuffer", "t_SkinnedVertexBuffer", "t_Lights", "t_LightsEx",
+                                 "t_LightingControl", "t_LightProxyCounters", "t_LightSamplingProxies", "t_LocalSamplingBuffer"})
+            ResourceLayout.AddVariable(ConstStages, Name, SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE, SHADER_VARIABLE_FLAG_NO_DYNAMIC_BUFFERS);
 
         if (UseTextures)
         {
@@ -431,145 +376,33 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice* pDevice, IDeviceContext* pCo
             return false;
         }
 
-        auto SetStaticForStages = [&](SHADER_TYPE Stages, const char* Name, IDeviceObject* pObject, const char* ObjectName,
-                                      bool Required = true, bool* pFoundAny = nullptr) {
-            bool Ok       = true;
+        auto SetStatic = [&](const char* Name, IDeviceObject* pObject, bool Required) {
             bool FoundAny = false;
             for (SHADER_TYPE Stage : {SHADER_TYPE_RAY_GEN, SHADER_TYPE_RAY_MISS, SHADER_TYPE_RAY_CLOSEST_HIT, SHADER_TYPE_RAY_ANY_HIT})
             {
-                if ((Stages & Stage) == 0)
+                // Stages outside ConstStages are inactive in some variants and would warn on lookup.
+                if ((ConstStages & Stage) == 0)
                     continue;
-
-                IShaderResourceVariable* pVar = State.PSO->GetStaticVariableByName(Stage, Name);
-                if (pVar == nullptr)
-                    continue;
-                FoundAny = true;
-
-                if (pObject == nullptr)
+                if (IShaderResourceVariable* pVar = State.PSO->GetStaticVariableByName(Stage, Name))
                 {
-                    DEV_ERROR("RTXPT static resource object is null: ", ObjectName);
-                    Ok = false;
-                    continue;
+                    pVar->Set(pObject, SET_SHADER_RESOURCE_FLAG_ALLOW_OVERWRITE);
+                    FoundAny = true;
                 }
-
-                pVar->Set(pObject, SET_SHADER_RESOURCE_FLAG_ALLOW_OVERWRITE);
             }
-            if (pFoundAny != nullptr)
-                *pFoundAny = FoundAny;
             if (!FoundAny && Required)
             {
                 UNEXPECTED("RTXPT static shader variable is missing: ", Name, " for variant: ", GetVariantName(Variant));
                 return false;
             }
-            return Ok;
+            return true;
         };
 
-        const bool BuildDenoisingLayersVariant = Variant == RTXPTPathTraceVariant::BuildDenoisingLayers;
-        const bool FrameConstantsBound =
-            SetStaticForStages(ConstStages, "g_Const", CreateInfo.pFrameConstants, "frame constants");
         // BUILD always reads the current sub-sample from g_MiniConst. FILL may reflect it through
         // hit shaders, but some Fill PSO resource tables omit it, so bind opportunistically there.
-        const bool MiniConstantsRequired = BuildDenoisingLayersVariant;
-        const bool MiniConstantsBound =
-            SetStaticForStages(ConstStages | HitStages, "g_MiniConst", m_MiniConstantsCB, "mini constants", MiniConstantsRequired);
-        const bool TLASBound =
-            SetStaticForStages(ConstStages, "t_SceneBVH", m_TLAS, "TLAS");
-
-        if (!FrameConstantsBound || !MiniConstantsBound || !TLASBound)
+        const bool MiniConstantsRequired = Variant == RTXPTPathTraceVariant::BuildDenoisingLayers;
+        if (!SetStatic("g_Const", CreateInfo.pFrameConstants, true) ||
+            !SetStatic("g_MiniConst", m_MiniConstantsCB, MiniConstantsRequired))
             return false;
-
-        const bool MaterialBridgeBound = SetStaticForStages(MaterialStages, "t_PTMaterialData", pMaterialsView, "material buffer");
-        const bool SubInstanceBound    = SetStaticForStages(HitStages, "t_SubInstanceData", pSubInstanceView, "sub-instance buffer");
-
-        bool       LightBridgeReflected = false;
-        const bool LightBridgeBound =
-            SetStaticForStages(DirectLightStages, "t_Lights", pLightsView, "packed light buffer", false, &LightBridgeReflected) &&
-            SetStaticForStages(DirectLightStages, "t_LightsEx", pLightsExView, "packed light extensions", false);
-
-        bool       LightingControlFound      = false;
-        bool       LightProxyCountersFound   = false;
-        bool       LightSamplingProxiesFound = false;
-        bool       LocalSamplingBufferFound  = false;
-        bool       FeedbackTotalWeightFound  = false;
-        bool       FeedbackCandidatesFound   = false;
-        const bool LightsBakerBridgeBound =
-            SetStaticForStages(DirectLightStages, "t_LightingControl", pLightingControlView, "LightsBaker control buffer", false, &LightingControlFound) &&
-            SetStaticForStages(DirectLightStages, "t_LightProxyCounters", pLightProxyCountersView, "LightsBaker proxy counters", false, &LightProxyCountersFound) &&
-            SetStaticForStages(DirectLightStages, "t_LightSamplingProxies", pLightSamplingProxiesView, "LightsBaker sampling proxies", false, &LightSamplingProxiesFound) &&
-            SetStaticForStages(DirectLightStages, "t_LocalSamplingBuffer", pLocalSamplingView, "LightsBaker local sampling buffer", false, &LocalSamplingBufferFound) &&
-            SetStaticForStages(DirectLightStages, "u_FeedbackTotalWeight", CreateInfo.pFeedbackTotalWeightUAV, "LightsBaker feedback total weight", false, &FeedbackTotalWeightFound) &&
-            SetStaticForStages(DirectLightStages, "u_FeedbackCandidates", CreateInfo.pFeedbackCandidatesUAV, "LightsBaker feedback candidates", false, &FeedbackCandidatesFound);
-        const bool LightsBakerBridgeReflected =
-            LightingControlFound || LightProxyCountersFound || LightSamplingProxiesFound ||
-            LocalSamplingBufferFound || FeedbackTotalWeightFound || FeedbackCandidatesFound;
-        bool       EnvironmentMapFound               = false;
-        bool       EnvironmentImportanceMapFound     = false;
-        bool       EnvironmentRadianceMapFound       = false;
-        bool       EnvironmentSamplerFound           = false;
-        bool       EnvironmentImportanceSamplerFound = false;
-        const bool EnvironmentBridgeOk =
-            SetStaticForStages(EnvStages, "t_EnvironmentLightLookup", CreateInfo.pEnvironmentLightLookup, "environment light lookup", false) &&
-            SetStaticForStages(EnvStages, "t_EnvironmentMap", pEnvironmentMapView, "environment map", false, &EnvironmentMapFound) &&
-            SetStaticForStages(EnvStages, "t_EnvironmentImportanceMap", pEnvironmentImportanceMapView, "environment importance map", false, &EnvironmentImportanceMapFound) &&
-            SetStaticForStages(EnvStages, "t_EnvironmentRadianceMap", pEnvironmentRadianceMapView, "environment radiance map", false, &EnvironmentRadianceMapFound) &&
-            SetStaticForStages(EnvStages, "s_EnvironmentMapSampler", pEnvironmentSamplerView, "environment map sampler", false, &EnvironmentSamplerFound) &&
-            SetStaticForStages(EnvStages, "s_EnvironmentImportanceSampler", pEnvironmentImportanceSamplerView, "environment importance sampler", false, &EnvironmentImportanceSamplerFound);
-        const bool EnvironmentBridgeReflected =
-            EnvironmentMapFound || EnvironmentImportanceMapFound || EnvironmentRadianceMapFound ||
-            EnvironmentSamplerFound || EnvironmentImportanceSamplerFound;
-        EnvironmentBridgeReflectedAny           = EnvironmentBridgeReflectedAny || EnvironmentBridgeReflected;
-        const bool EmissiveLightBridgeReflected = LightBridgeReflected;
-        const bool EmissiveLightBridgeBound     = LightBridgeBound;
-        const bool VertexBufferBound            = SetStaticForStages(HitStages, "t_VertexBuffer", pVertexView, "vertex buffer");
-        const bool SkinnedVertexBufferBound =
-            SetStaticForStages(HitStages, "t_SkinnedVertexBuffer", pSkinnedVertexView, "skinned vertex buffer");
-        const bool IndexBufferBound = SetStaticForStages(HitStages, "t_IndexBuffer", m_IndexBufferView, "index buffer");
-
-        m_Stats.MaterialBridgeBound      = m_Stats.MaterialBridgeBound && MaterialBridgeBound;
-        m_Stats.SubInstanceBound         = m_Stats.SubInstanceBound && SubInstanceBound;
-        m_Stats.LightBridgeBound         = m_Stats.LightBridgeBound && (!LightBridgeReflected || LightBridgeBound);
-        m_Stats.LightsBakerBridgeBound   = m_Stats.LightsBakerBridgeBound && (!LightsBakerBridgeReflected || LightsBakerBridgeBound);
-        m_Stats.EnvironmentBridgeBound   = m_Stats.EnvironmentBridgeBound && (!EnvironmentBridgeReflected || EnvironmentBridgeOk);
-        m_Stats.EmissiveLightBridgeBound = m_Stats.EmissiveLightBridgeBound && (!EmissiveLightBridgeReflected || EmissiveLightBridgeBound);
-        m_Stats.VertexBufferBound        = m_Stats.VertexBufferBound && VertexBufferBound;
-        m_Stats.SkinnedVertexBufferBound = m_Stats.SkinnedVertexBufferBound && SkinnedVertexBufferBound;
-        m_Stats.IndexBufferBound         = m_Stats.IndexBufferBound && IndexBufferBound;
-
-        if (!MaterialBridgeBound || !SubInstanceBound || !LightBridgeBound || !LightsBakerBridgeBound ||
-            (EnvironmentBridgeReflected && !EnvironmentBridgeOk) || !EmissiveLightBridgeBound ||
-            !VertexBufferBound || !SkinnedVertexBufferBound || !IndexBufferBound)
-            return false;
-
-        State.PSO->CreateShaderResourceBinding(&State.SRB, true);
-        VERIFY(State.SRB, "Failed to create RTXPT path trace RT SRB");
-        if (!State.SRB)
-        {
-            DEV_ERROR("Failed to create RTXPT path trace RT SRB for variant: ", GetVariantName(Variant));
-            return false;
-        }
-
-        if (UseTextures)
-        {
-            IShaderResourceVariable* pClosestHitTexVar =
-                State.SRB->GetVariableByName(SHADER_TYPE_RAY_CLOSEST_HIT, "t_BindlessTextures");
-            IShaderResourceVariable* pAnyHitTexVar = UseAnyHit && (!UseHitObject || !UseInlineVisibility) ?
-                State.SRB->GetVariableByName(SHADER_TYPE_RAY_ANY_HIT, "t_BindlessTextures") :
-                nullptr;
-            if (pClosestHitTexVar == nullptr || (UseAnyHit && (!UseHitObject || !UseInlineVisibility) && pAnyHitTexVar == nullptr))
-            {
-                UNEXPECTED("Failed to find RTXPT material texture array binding for variant: ", GetVariantName(Variant));
-                m_Stats.MaterialTexturesBound = false;
-                return false;
-            }
-            pClosestHitTexVar->SetArray(CreateInfo.pMaterialTextures, 0, CreateInfo.MaterialTextureCount);
-            if (UseHitObject)
-            {
-                if (auto* pRayGenTexVar = State.SRB->GetVariableByName(SHADER_TYPE_RAY_GEN, "t_BindlessTextures"))
-                    pRayGenTexVar->SetArray(CreateInfo.pMaterialTextures, 0, CreateInfo.MaterialTextureCount);
-            }
-            if (pAnyHitTexVar != nullptr)
-                pAnyHitTexVar->SetArray(CreateInfo.pMaterialTextures, 0, CreateInfo.MaterialTextureCount);
-        }
 
         ShaderBindingTableDesc SBTDesc;
         SBTDesc.Name = "RTXPT path trace SBT";
@@ -582,20 +415,12 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice* pDevice, IDeviceContext* pCo
             return false;
         }
 
+        // Hit groups follow the instances of each TLAS build and are bound by Bind.
         State.SBT->BindRayGenShader("Main");
         if (!UseHitObject || !UseInlineVisibility)
             State.SBT->BindMissShader(UseHitObject ? nullptr : "PrimaryMiss", kRTXPTPrimaryRayIndex);
-        State.SBT->BindHitGroupForTLAS(m_TLAS, kRTXPTPrimaryRayIndex, "PrimaryHit");
-        // The shared TLAS keeps a two-ray stride even when visibility uses RayQuery.
-        // Explicitly bind its unused slot so SBT validation sees a complete table.
-        if (UseInlineVisibility)
-            State.SBT->BindHitGroupForTLAS(m_TLAS, kRTXPTVisibilityRayIndex, nullptr);
         if (!UseInlineVisibility)
-        {
             State.SBT->BindMissShader("VisibilityMiss", kRTXPTVisibilityRayIndex);
-            State.SBT->BindHitGroupForTLAS(m_TLAS, kRTXPTVisibilityRayIndex, "VisibilityHit");
-        }
-        pContext->UpdateSBT(State.SBT);
 
         State.Stats.Ready = true;
         return true;
@@ -619,13 +444,199 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice* pDevice, IDeviceContext* pCo
     if (CreateInfo.EnableSharc && (!CreateVariant(RTXPTPathTraceVariant::SharcTrain) || !CreateVariant(RTXPTPathTraceVariant::SharcFill)))
         return false;
 
-    m_Stats.EnvironmentBridgeBound = EnvironmentBridgeReflectedAny && m_Stats.EnvironmentBridgeBound;
-    if (!UseTextures)
-        m_Stats.MaterialTexturesBound = false;
     m_Stats.AnyHitEnabled           = UseAnyHit;
     m_Stats.InlineVisibilityEnabled = UseInlineVisibility;
     LOG_INFO_MESSAGE("RTXPT visibility rays: ", UseInlineVisibility ? "inline RayQuery" : "TraceRay");
     m_Stats.Ready = true;
+    return true;
+}
+
+bool RTXPTRayTracingPass::Bind(IDeviceContext* pContext, const RTXPTRayTracingBindings& Bindings)
+{
+    if (!m_Stats.Ready || pContext == nullptr)
+    {
+        DEV_ERROR("RTXPT path tracer must be initialized before binding resources");
+        return false;
+    }
+    if (Bindings.pTLAS == nullptr || Bindings.pMaterialBuffer == nullptr || Bindings.pSubInstanceBuffer == nullptr ||
+        Bindings.pVertexBuffer == nullptr || Bindings.pSkinnedVertexBuffer == nullptr || Bindings.pIndexBuffer == nullptr)
+    {
+        DEV_ERROR("RTXPT path tracer requires a TLAS and the material, sub-instance, vertex, skinned vertex and index buffers");
+        return false;
+    }
+    if (m_UseTextures && (Bindings.pMaterialTextures == nullptr || Bindings.MaterialTextureCount != m_Stats.MaterialTextureCount))
+    {
+        DEV_ERROR("RTXPT path tracer was compiled for ", m_Stats.MaterialTextureCount, " material textures, but ",
+                  Bindings.MaterialTextureCount, " are bound");
+        return false;
+    }
+
+    const Uint32 TextureCount  = m_UseTextures ? Bindings.MaterialTextureCount : 0;
+    const bool   TexturesEqual = m_BoundTextures.size() == TextureCount &&
+        std::equal(m_BoundTextures.begin(), m_BoundTextures.end(), Bindings.pMaterialTextures);
+    RTXPTRayTracingBindings Key = Bindings;
+    Key.TLASBuildIndex          = m_Bound.TLASBuildIndex;
+    Key.pMaterialTextures       = m_Bound.pMaterialTextures;
+    const bool ObjectsEqual     = m_HasBindings && TexturesEqual && std::memcmp(&Key, &m_Bound, sizeof(Key)) == 0;
+
+    if (!ObjectsEqual && !CreateBindings(Bindings))
+    {
+        m_HasBindings = false;
+        return false;
+    }
+
+    if (!ObjectsEqual || Bindings.TLASBuildIndex != m_Bound.TLASBuildIndex)
+    {
+        // The hit groups follow the instances and geometries of this TLAS build.
+        for (VariantState& State : m_Variants)
+        {
+            if (!State.Stats.Ready)
+                continue;
+            State.SBT->ResetHitGroups();
+            State.SBT->BindHitGroupForTLAS(Bindings.pTLAS, kRTXPTPrimaryRayIndex, "PrimaryHit");
+            // The shared TLAS keeps a two-ray stride even when visibility uses RayQuery.
+            // Explicitly bind its unused slot so SBT validation sees a complete table.
+            State.SBT->BindHitGroupForTLAS(Bindings.pTLAS, kRTXPTVisibilityRayIndex, m_UseInlineVisibility ? nullptr : "VisibilityHit");
+            pContext->UpdateSBT(State.SBT);
+        }
+        ++m_Stats.SBTRefreshCount;
+    }
+
+    m_Bound                   = Bindings;
+    m_Bound.pMaterialTextures = nullptr;
+    m_BoundTextures.assign(Bindings.pMaterialTextures, Bindings.pMaterialTextures + TextureCount);
+    m_HasBindings = true;
+    return true;
+}
+
+bool RTXPTRayTracingPass::CreateBindings(const RTXPTRayTracingBindings& Bindings)
+{
+    if (m_IndexBuffer != Bindings.pIndexBuffer)
+    {
+        // Index buffers are BUFFER_MODE_FORMATTED without a pre-created typed view; HLSL declares Buffer<uint>.
+        m_IndexBufferView.Release();
+        m_IndexBuffer = Bindings.pIndexBuffer;
+        BufferViewDesc IndexViewDesc;
+        IndexViewDesc.Name                 = "RTXPT reference index buffer SRV";
+        IndexViewDesc.ViewType             = BUFFER_VIEW_SHADER_RESOURCE;
+        IndexViewDesc.Format.ValueType     = m_IndexValueType;
+        IndexViewDesc.Format.NumComponents = 1;
+        IndexViewDesc.Format.IsNormalized  = false;
+        Bindings.pIndexBuffer->CreateView(IndexViewDesc, &m_IndexBufferView);
+        if (!m_IndexBufferView)
+        {
+            m_IndexBuffer.Release();
+            DEV_ERROR("Failed to create RTXPT index buffer view");
+            return false;
+        }
+    }
+
+    auto BufferSRV = [](IBuffer* pBuffer) -> IDeviceObject* {
+        return pBuffer != nullptr ? pBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE) : nullptr;
+    };
+    struct Resource
+    {
+        const char*    Name;
+        IDeviceObject* pObject;
+        bool           Required;
+    };
+    const Resource Resources[] = {
+        {"t_SceneBVH", Bindings.pTLAS, true},
+        {"t_PTMaterialData", BufferSRV(Bindings.pMaterialBuffer), true},
+        {"t_SubInstanceData", BufferSRV(Bindings.pSubInstanceBuffer), true},
+        {"t_VertexBuffer", BufferSRV(Bindings.pVertexBuffer), true},
+        {"t_SkinnedVertexBuffer", BufferSRV(Bindings.pSkinnedVertexBuffer), true},
+        {"t_IndexBuffer", m_IndexBufferView, true},
+        {"t_Lights", BufferSRV(Bindings.pLightBuffer), false},
+        {"t_LightsEx", BufferSRV(Bindings.pLightExBuffer), false},
+        {"t_LightingControl", BufferSRV(Bindings.pLightingControlBuffer), false},
+        {"t_LightProxyCounters", BufferSRV(Bindings.pLightProxyCounters), false},
+        {"t_LightSamplingProxies", BufferSRV(Bindings.pLightSamplingProxies), false},
+        {"t_LocalSamplingBuffer", BufferSRV(Bindings.pLocalSamplingBuffer), false},
+        {"u_FeedbackTotalWeight", Bindings.pFeedbackTotalWeightUAV, false},
+        {"u_FeedbackCandidates", Bindings.pFeedbackCandidatesUAV, false},
+        {"t_EnvironmentLightLookup", Bindings.pEnvironmentLightLookup, false},
+        {"t_EnvironmentMap", Bindings.pEnvironmentMapSRV, false},
+        {"t_EnvironmentImportanceMap", Bindings.pEnvironmentImportanceMapSRV, false},
+        {"t_EnvironmentRadianceMap", Bindings.pEnvironmentRadianceMapSRV, false},
+        {"s_EnvironmentMapSampler", Bindings.pEnvironmentSampler, false},
+        {"s_EnvironmentImportanceSampler", Bindings.pEnvironmentImportanceSampler, false},
+    };
+
+    bool EnvironmentReflected = false;
+    for (VariantState& State : m_Variants)
+    {
+        if (!State.Stats.Ready)
+            continue;
+
+        RefCntAutoPtr<IShaderResourceBinding> pSRB;
+        State.PSO->CreateShaderResourceBinding(&pSRB, true);
+        if (!pSRB)
+        {
+            DEV_ERROR("Failed to create RTXPT path trace RT SRB");
+            return false;
+        }
+
+        for (const Resource& R : Resources)
+        {
+            bool FoundAny = false;
+            for (SHADER_TYPE Stage : {SHADER_TYPE_RAY_GEN, SHADER_TYPE_RAY_MISS, SHADER_TYPE_RAY_CLOSEST_HIT, SHADER_TYPE_RAY_ANY_HIT})
+            {
+                IShaderResourceVariable* pVar = pSRB->GetVariableByName(Stage, R.Name);
+                if (pVar == nullptr)
+                    continue;
+                FoundAny = true;
+                if (R.pObject == nullptr)
+                {
+                    // A reflected resource must be bound, even when only some variants use it.
+                    DEV_ERROR("RTXPT resource object is null: ", R.Name);
+                    return false;
+                }
+                pVar->Set(R.pObject);
+            }
+            if (!FoundAny && R.Required)
+            {
+                UNEXPECTED("RTXPT shader variable is missing: ", R.Name);
+                return false;
+            }
+            if (FoundAny && (std::strncmp(R.Name, "t_Environment", 13) == 0 || std::strncmp(R.Name, "s_Environment", 13) == 0))
+                EnvironmentReflected = true;
+        }
+
+        if (m_UseTextures)
+        {
+            IShaderResourceVariable* pClosestHitTexVar = pSRB->GetVariableByName(SHADER_TYPE_RAY_CLOSEST_HIT, "t_BindlessTextures");
+            IShaderResourceVariable* pAnyHitTexVar     = m_UseAnyHitTextures ?
+                pSRB->GetVariableByName(SHADER_TYPE_RAY_ANY_HIT, "t_BindlessTextures") :
+                nullptr;
+            if (pClosestHitTexVar == nullptr || (m_UseAnyHitTextures && pAnyHitTexVar == nullptr))
+            {
+                UNEXPECTED("Failed to find RTXPT material texture array binding");
+                return false;
+            }
+            pClosestHitTexVar->SetArray(Bindings.pMaterialTextures, 0, Bindings.MaterialTextureCount);
+            if (m_UseHitObject)
+            {
+                if (IShaderResourceVariable* pRayGenTexVar = pSRB->GetVariableByName(SHADER_TYPE_RAY_GEN, "t_BindlessTextures"))
+                    pRayGenTexVar->SetArray(Bindings.pMaterialTextures, 0, Bindings.MaterialTextureCount);
+            }
+            if (pAnyHitTexVar != nullptr)
+                pAnyHitTexVar->SetArray(Bindings.pMaterialTextures, 0, Bindings.MaterialTextureCount);
+        }
+        State.SRB = std::move(pSRB);
+    }
+
+    m_Stats.MaterialBridgeBound      = true;
+    m_Stats.SubInstanceBound         = true;
+    m_Stats.VertexBufferBound        = true;
+    m_Stats.SkinnedVertexBufferBound = true;
+    m_Stats.IndexBufferBound         = true;
+    m_Stats.LightBridgeBound         = true;
+    m_Stats.LightsBakerBridgeBound   = true;
+    m_Stats.EmissiveLightBridgeBound = true;
+    m_Stats.EnvironmentBridgeBound   = EnvironmentReflected;
+    m_Stats.MaterialTexturesBound    = m_UseTextures;
+    ++m_Stats.BindingCount;
     return true;
 }
 
@@ -648,6 +659,11 @@ bool RTXPTRayTracingPass::Dispatch(IDeviceContext*                pContext,
     if (!IsReady(Variant))
     {
         DEV_ERROR("RTXPT path trace variant is not ready: ", GetVariantName(Variant));
+        return false;
+    }
+    if (!m_HasBindings)
+    {
+        DEV_ERROR("RTXPT path trace resources are not bound");
         return false;
     }
     if (pContext == nullptr)

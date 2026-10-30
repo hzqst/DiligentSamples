@@ -416,9 +416,7 @@ RTXPTSceneRuntime::~RTXPTSceneRuntime() = default;
 
 RTXPTSceneResult RTXPTSceneRuntime::RegisterGeometry(const RTXPTGeometryDesc& Desc, RTXPTGeometryHandle& Handle)
 {
-    Handle = {};
-    if (m_Impl->bUpdating)
-        return RTXPTSceneResult::InvalidState;
+    Handle                        = {};
     const RTXPTSceneResult Result = ValidateGeometryDesc(Desc);
     if (Result != RTXPTSceneResult::Ok)
         return Result;
@@ -461,9 +459,7 @@ RTXPTSceneResult RTXPTSceneRuntime::RegisterGeometry(const RTXPTGeometryDesc& De
 
 RTXPTSceneResult RTXPTSceneRuntime::RegisterMaterial(const RTXPTMaterialDesc& Desc, RTXPTMaterialHandle& Handle)
 {
-    Handle = {};
-    if (m_Impl->bUpdating)
-        return RTXPTSceneResult::InvalidState;
+    Handle                        = {};
     const RTXPTSceneResult Result = ValidateMaterialDesc(Desc);
     if (Result != RTXPTSceneResult::Ok)
         return Result;
@@ -487,8 +483,6 @@ RTXPTSceneResult RTXPTSceneRuntime::RegisterMaterial(const RTXPTMaterialDesc& De
 
 RTXPTSceneResult RTXPTSceneRuntime::ReleaseGeometry(RTXPTGeometryHandle Handle)
 {
-    if (m_Impl->bUpdating)
-        return RTXPTSceneResult::InvalidState;
     return Impl::Guard([&]() {
         return m_Impl->Geometries.Remove(Handle) ? RTXPTSceneResult::Ok : RTXPTSceneResult::InvalidHandle;
     });
@@ -496,8 +490,6 @@ RTXPTSceneResult RTXPTSceneRuntime::ReleaseGeometry(RTXPTGeometryHandle Handle)
 
 RTXPTSceneResult RTXPTSceneRuntime::ReleaseMaterial(RTXPTMaterialHandle Handle)
 {
-    if (m_Impl->bUpdating)
-        return RTXPTSceneResult::InvalidState;
     return Impl::Guard([&]() {
         return m_Impl->Materials.Remove(Handle) ? RTXPTSceneResult::Ok : RTXPTSceneResult::InvalidHandle;
     });
