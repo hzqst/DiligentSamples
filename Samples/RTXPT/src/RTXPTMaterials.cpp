@@ -342,6 +342,11 @@ Uint32 AppendExternalTexture(IRenderDevice*                            pDevice,
 
 } // namespace
 
+RefCntAutoPtr<ITextureView> CreateRTXPTMaterialTextureView(IRenderDevice* pDevice, IDeviceContext* pContext, ITexture* pTexture, bool SRGB)
+{
+    return CreateGLTFMaterialTextureView(pDevice, pContext, pTexture, SRGB);
+}
+
 bool RTXPTMaterialIsAlphaTested(const GLTF::Material& Material)
 {
     return Material.Attribs.AlphaMode == GLTF::Material::ALPHA_MODE_MASK &&

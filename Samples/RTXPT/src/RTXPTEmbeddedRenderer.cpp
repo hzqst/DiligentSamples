@@ -45,10 +45,10 @@ struct RTXPTEmbeddedScene::Impl
     RTXPTEnvMapSettings    EnvironmentSettings;
     bool                   Ready{};
 
-    bool Prepare(IDeviceContext* Context, std::string& Error)
+    bool Prepare(IDeviceContext* Context, const RTXPTSceneSnapshotPtr& Snapshot, std::string& Error)
     {
         RTXPTShaderSourceScope ShaderScope{Shaders};
-        return Frames.Prepare(Context, Runtime.GetSnapshot(), Error);
+        return Frames.Prepare(Context, Snapshot, Error);
     }
 };
 
@@ -147,8 +147,22 @@ bool RTXPTEmbeddedScene::Prepare(IDeviceContext* Context, std::string& Error)
         Error = "RTXPT scene is not initialized";
         return false;
     }
-    return m_Impl->Prepare(Context, Error);
+    return m_Impl->Prepare(Context, m_Impl->Runtime.GetSnapshot(), Error);
 }
+
+bool RTXPTEmbeddedScene::Prepare(IDeviceContext* Context, const RTXPTSceneSnapshotPtr& Snapshot, std::string& Error)
+{
+    if (!m_Impl->Ready || !Context || !Snapshot)
+    {
+        Error = "RTXPT scene is not initialized or the snapshot is missing";
+        return false;
+    }
+    return m_Impl->Prepare(Context, Snapshot, Error);
+}
+
+RTXPTSceneRuntime& RTXPTEmbeddedScene::GetRuntime() { return m_Impl->Runtime; }
+
+const RTXPTImportedScene& RTXPTEmbeddedScene::GetImportedScene() const { return m_Impl->Imported; }
 
 struct RTXPTEmbeddedView::Impl
 {

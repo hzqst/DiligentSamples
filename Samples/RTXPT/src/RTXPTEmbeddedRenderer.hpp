@@ -3,6 +3,7 @@
 #include <memory>
 #include <string>
 #include "RTXPTFrameConstants.hpp"
+#include "RTXPTSceneRuntime.hpp"
 #include "RenderDevice.h"
 #include "DeviceContext.h"
 #include "Texture.h"
@@ -11,6 +12,7 @@ namespace Diligent
 {
 class RTXPTScene;
 class RTXPTMaterials;
+struct RTXPTImportedScene;
 struct IRenderStateCache;
 struct IPipelineStateCache;
 
@@ -51,6 +53,8 @@ struct RTXPTEmbeddedViewCreateInfo
 
 //The runtime scene of RTXPTScene and RTXPTMaterials and its prepared GPU frame. It keeps the GPU objects of both that
 //its frames use, so it does not need them after Initialize. It must outlive every view created for it.
+//The host may add its own assets and instances to the runtime scene, and change or disable the imported instances,
+//through GetRuntime; it then prepares the snapshots it commits.
 class RTXPTEmbeddedScene
 {
 public:
@@ -64,6 +68,11 @@ public:
     //Prepares the frame of the current scene state; views render the last prepared frame. Call once per host frame
     //before rendering its views, on the context the views render with.
     bool Prepare(IDeviceContext* Context, std::string& Error);
+    //Prepares the frame of Snapshot, a snapshot committed by GetRuntime, as Prepare does.
+    bool Prepare(IDeviceContext* Context, const RTXPTSceneSnapshotPtr& Snapshot, std::string& Error);
+    //The runtime scene, with the imported scene as its first commit. Valid once the scene is ready.
+    RTXPTSceneRuntime&        GetRuntime();
+    const RTXPTImportedScene& GetImportedScene() const;
 
 private:
     friend class RTXPTEmbeddedView;
