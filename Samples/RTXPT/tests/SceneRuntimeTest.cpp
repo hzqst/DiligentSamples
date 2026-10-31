@@ -533,6 +533,44 @@ static void TestSkinnedVertexHistory()
     Require(!History.PreparePose(4), "absence does not discard reusable current pose cache");
 }
 
+static void TestIndependentSurfaceLifetimes()
+{
+    RTXPTSceneRuntime   Runtime;
+    RTXPTSceneHistory   History;
+    const auto          Geometry = RegisterTriangle(Runtime);
+    const auto          Variant  = RegisterTriangle(Runtime);
+    const auto          Material = RegisterMaterial(Runtime);
+    RTXPTInstanceHandle A, B;
+    const auto          Commit = [&]() {
+        RTXPTSceneSnapshotPtr Snapshot;
+        RequireResult(RTXPTSceneResult::Ok, Runtime.CommitUpdate(Snapshot), "paired history commit");
+        return Snapshot;
+    };
+    RequireResult(RTXPTSceneResult::Ok, Runtime.BeginUpdate(), "paired history begin");
+    RequireResult(RTXPTSceneResult::Ok, Runtime.CreateInstance(MakeInstance(Geometry, Material), A), "paired A");
+    RequireResult(RTXPTSceneResult::Ok, Runtime.CreateInstance(MakeInstance(Geometry, Material, 2), B), "paired B");
+    History.Publish(Commit());
+    // A new immutable geometry version (including a UV-layout variant) replaces only its own instance.
+    RequireResult(RTXPTSceneResult::Ok, Runtime.BeginUpdate(), "replace paired A");
+    RequireResult(RTXPTSceneResult::Ok, Runtime.RemoveInstance(A), "remove paired A");
+    RTXPTInstanceHandle Replacement;
+    RequireResult(RTXPTSceneResult::Ok, Runtime.CreateInstance(MakeInstance(Variant, Material), Replacement), "create variant");
+    const auto Changed = Commit();
+    Require(A.Slot == Replacement.Slot && A.Generation != Replacement.Generation, "variant exercises slot reuse");
+    History.BeginPrepare();
+    for (const auto& Instance : Changed->Instances)
+        Require((Instance->Handle.Slot == B.Slot) == (History.FindPreviousRigid(*Instance) != nullptr), "only unchanged B retains its previous surface");
+    History.Publish(Changed);
+    RequireResult(RTXPTSceneResult::Ok, Runtime.BeginUpdate(), "disable paired A");
+    RequireResult(RTXPTSceneResult::Ok, Runtime.SetInstanceEnabled(Replacement, false), "disable paired replacement");
+    History.Publish(Commit());
+    RequireResult(RTXPTSceneResult::Ok, Runtime.BeginUpdate(), "restore paired A");
+    RequireResult(RTXPTSceneResult::Ok, Runtime.SetInstanceEnabled(Replacement, true), "restore paired replacement");
+    const auto Restored = Commit();
+    for (const auto& Instance : Restored->Instances)
+        Require((Instance->Handle.Slot == B.Slot) == (History.FindPreviousRigid(*Instance) != nullptr), "restoration invalidates A without discarding B");
+}
+
 int main()
 {
     try
@@ -544,6 +582,7 @@ int main()
         TestInstanceLifecycle();
         TestPosesMaterialsAndLights();
         TestPreparedRigidHistory();
+        TestIndependentSurfaceLifetimes();
         TestSkinnedVertexHistory();
     }
     catch (const std::exception& Error)
