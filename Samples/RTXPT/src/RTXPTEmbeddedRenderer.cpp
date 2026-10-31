@@ -50,6 +50,8 @@ struct RTXPTEmbeddedScene::Impl
 
     RTXPTErrorCode Prepare(IDeviceContext* Context, const RTXPTSceneSnapshotPtr& Snapshot)
     {
+        if (!Context || !Snapshot)
+            return Frames.Prepare(Context, Snapshot);
         RTXPTShaderSourceScope  ShaderScope{Shaders};
         auto                    Timing = Profiler.BeginFrame(Device, Context, EnableProfiling, {}, Frames.GetStats().PrepareCount + 1);
         RTXPTGpuProfiler::Scope PrepareTiming{&Profiler, Context, RTXPTGpuProfiler::Stage::ScenePrepare};
@@ -138,8 +140,6 @@ RTXPTErrorCode RTXPTEmbeddedScene::Prepare(IDeviceContext* Context)
 {
     if (!m_Impl->Ready)
         return RTXPTErrorCode::NotInitialized;
-    if (!Context)
-        return RTXPTErrorCode::InvalidArgument;
     return m_Impl->Prepare(Context, m_Impl->Runtime.GetSnapshot());
 }
 
@@ -147,8 +147,6 @@ RTXPTErrorCode RTXPTEmbeddedScene::Prepare(IDeviceContext* Context, const RTXPTS
 {
     if (!m_Impl->Ready)
         return RTXPTErrorCode::NotInitialized;
-    if (!Context || !Snapshot)
-        return RTXPTErrorCode::InvalidArgument;
     return m_Impl->Prepare(Context, Snapshot);
 }
 
@@ -157,6 +155,7 @@ RTXPTSceneRuntime& RTXPTEmbeddedScene::GetRuntime() { return m_Impl->Runtime; }
 const RTXPTImportedScene& RTXPTEmbeddedScene::GetImportedScene() const { return m_Impl->Imported; }
 
 const RTXPTSceneFrameStats& RTXPTEmbeddedScene::GetFrameStats() const { return m_Impl->Frames.GetStats(); }
+RTXPTPreparedSceneToken     RTXPTEmbeddedScene::GetPreparedToken() const { return m_Impl->Frames.GetFrame().Prepared; }
 RTXPTGpuProfiler&           RTXPTEmbeddedScene::GetProfiler() { return m_Impl->Profiler; }
 
 struct RTXPTEmbeddedView::Impl
@@ -176,6 +175,8 @@ struct RTXPTEmbeddedView::Impl
     RTXPTToneMappingPass               ToneMapping;
     RTXPTToneMappingParameters         ToneParameters;
     RTXPTRealtimeRawPipeline           Raw;
+    RTXPTPreparedSceneToken            LastScene;
+    RTXPTViewHistoryInfo               History;
     RTXPTViewMode                      Mode = RTXPTViewMode::Reference;
     RTXPTLightsBakerSettings           Lighting;
     PathTracerCameraData               PreviousCamera{};
@@ -189,12 +190,20 @@ struct RTXPTEmbeddedView::Impl
     bool             EnableProfiling{};
     RTXPTGpuProfiler Profiler;
 
-    void AcceptFrame(const PathTracerCameraData& Camera, const PathTracerViewData& View, Uint32 SampleCount, Uint64 Revision)
+    void AcceptFrame(const PathTracerCameraData& Camera, const PathTracerViewData& View, Uint32 SampleCount, Uint64 Revision, const RTXPTPreparedSceneToken& Prepared)
     {
-        PreviousCamera  = Camera;
-        PreviousView    = View;
-        Samples         = SampleCount;
-        ContentRevision = Revision;
+        History.Scene                         = Prepared;
+        History.PreviousViewScene             = LastScene;
+        LastScene                             = Prepared;
+        const auto& Stats                     = Scene->Frames.GetStats();
+        History.ValidPreviousRigidInstances   = Stats.ValidPreviousRigidInstances;
+        History.InvalidHistoryInstances       = Stats.InvalidHistoryInstances;
+        History.PreviousTransformStorageBytes = Stats.PreviousTransformStorageBytes;
+        History.LightFeedbackHistoryFrames    = LightsBaker.GetFeedbackHistoryFrameCount();
+        PreviousCamera                        = Camera;
+        PreviousView                          = View;
+        Samples                               = SampleCount;
+        ContentRevision                       = Revision;
         ++FrameIndex;
         OutputValid = true;
     }
@@ -380,6 +389,7 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
     auto& R       = *m_Impl;
     ResetHistory  = ResetHistory || !R.OutputValid;
     R.OutputValid = false;
+    R.History     = {};
     R.Raw.InvalidateOutput();
     if (!R.Ready)
         return RTXPTErrorCode::NotInitialized;
@@ -393,8 +403,11 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
         return RTXPTErrorCode::InvalidArgument;
     const auto&            S     = *R.Scene;
     const RTXPTSceneFrame& Frame = S.Frames.GetFrame();
-    if (!Frame.pTLAS)
+    if (!Frame.pTLAS || !Frame.Prepared.IsValid())
         return RTXPTErrorCode::FrameNotPrepared;
+    const bool CameraCorrespondenceValid = !ResetHistory && R.LastScene.IsPreviousOf(Frame.Prepared);
+    if (R.Mode == RTXPTViewMode::RealtimeRaw)
+        ResetHistory = !CameraCorrespondenceValid;
     if (!R.BindFrame(Frame))
         return RTXPTErrorCode::SceneBindingsFailed;
     //Reference accumulation restarts on any camera/projection or scene content change. The host additionally resets
@@ -425,12 +438,19 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
     Constants.envMap                    = S.Environment.GetConstants();
     if (R.Mode == RTXPTViewMode::RealtimeRaw)
     {
+        // Light feedback cannot reject individual surfaces yet. Reset that consumer conservatively, while retaining
+        // per-surface motion validity for debug/future consumers.
+        const bool FeedbackReset = ResetHistory || Frame.InvalidHistoryInstances != 0;
+        if (FeedbackReset)
+            R.LightsBaker.RequestFeedbackReset();
         PT.sampleBaseIndex = PT.sampleIndex = R.FrameIndex;
         auto       Timing                   = R.Profiler.BeginFrame(R.Device, R.Context, R.EnableProfiling, {}, R.FrameIndex + 1);
         const auto Code                     = R.Raw.Render(R.Context, R.Rays, R.LightsBaker, Constants, ToneParameters, R.DisplayRTV, &R.Profiler);
         if (Code != RTXPTErrorCode::Ok)
             return Code;
-        R.AcceptFrame(Camera, View, 0, Frame.Snapshot->ContentRevision);
+        R.History.CameraCorrespondenceValid = CameraCorrespondenceValid;
+        R.History.LightFeedbackReset        = FeedbackReset;
+        R.AcceptFrame(Camera, View, 0, Frame.Snapshot->ContentRevision, Frame.Prepared);
         return RTXPTErrorCode::Ok;
     }
     {
@@ -467,7 +487,7 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
     Tone.pParams    = &ToneParameters;
     if (!R.ToneMapping.Render(R.Context, Tone))
         return RTXPTErrorCode::ToneMappingFailed;
-    R.AcceptFrame(Camera, View, Samples, Frame.Snapshot->ContentRevision);
+    R.AcceptFrame(Camera, View, Samples, Frame.Snapshot->ContentRevision, Frame.Prepared);
     return RTXPTErrorCode::Ok;
 }
 
@@ -507,6 +527,7 @@ RTXPTViewOutputInfo RTXPTEmbeddedView::GetOutputInfo(RTXPTViewOutput Output) con
     Info.FrameIndex     = Info.Valid ? R.FrameIndex : 0;
     return Info;
 }
+const RTXPTViewHistoryInfo&  RTXPTEmbeddedView::GetHistoryInfo() const { return m_Impl->History; }
 RTXPTGpuProfiler&            RTXPTEmbeddedView::GetProfiler() { return m_Impl->Profiler; }
 Uint32                       RTXPTEmbeddedView::GetTraceCount() const { return m_Impl->Rays.GetStats().TraceCount; }
 Uint32                       RTXPTEmbeddedView::GetAccumulationCount() const { return m_Impl->Samples; }

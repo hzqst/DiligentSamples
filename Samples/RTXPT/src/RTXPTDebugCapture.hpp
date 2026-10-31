@@ -29,15 +29,23 @@ public:
             if (!std::filesystem::create_directories(Directory))
                 return false;
             std::ofstream Manifest{Directory / "manifest.json.pending"};
+            const auto&   History = View.GetHistoryInfo();
             Manifest << std::setprecision(17)
                      << "{\n\"schema\":1,\"mode\":\"RealtimeRaw\",\"frame_index\":" << Color.FrameIndex
                      << ",\"render_size\":[" << Color.Size.Width << ',' << Color.Size.Height
                      << "],\"display_size\":[" << Color.Size.Width << ',' << Color.Size.Height
                      << "],\"spp\":1,\"sample_base_index\":" << Color.FrameIndex - 1
-                     << ",\"jitter\":[0,0],\"dynamic_motion_validated\":false,\"previous_surface_storage_bytes\":0,"
-                        "\"valid_correspondence_count\":null,\"total_gpu_memory_bytes\":null,"
+                     << ",\"jitter\":[0,0],\"dynamic_motion_validated\":false,\"previous_surface_storage_bytes\":" << History.PreviousTransformStorageBytes
+                     << ",\"prepared_epoch\":" << History.Scene.Epoch << ",\"prepared_execution\":" << History.Scene.Execution
+                     << ",\"previous_prepared_execution\":" << History.Scene.PreviousExecution
+                     << ",\"previous_view_execution\":" << History.PreviousViewScene.Execution
+                     << ",\"camera_correspondence_valid\":" << (History.CameraCorrespondenceValid ? "true" : "false")
+                     << ",\"light_feedback_reset\":" << (History.LightFeedbackReset ? "true" : "false")
+                     << ",\"valid_previous_rigid_instances\":" << History.ValidPreviousRigidInstances
+                     << ",\"invalid_history_instances\":" << History.InvalidHistoryInstances << ','
+                     << "\"valid_correspondence_count\":null,\"total_gpu_memory_bytes\":null,"
                         "\"byte_order\":\"little\",\"row_order\":\"top_to_bottom\","
-                        "\"primary_motion_convention\":\"current_to_previous; xy=render_local_pixels_without_jitter; z=previous_clip_w-current_clip_w\","
+                        "\"primary_motion_convention\":\"current_to_previous; xy=render_local_pixels_without_jitter; z=previous_clip_w-current_clip_w; w=direct_rigid_surface_and_camera_correspondence\","
                         "\"virtual_motion_convention\":\"packed layer world-space current_to_previous\",\"resources\":[\n";
             struct Output
             {

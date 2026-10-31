@@ -220,6 +220,13 @@ struct RTXPTSceneLight
 // A new instance: one mesh of a geometry under one transform, with a complete binding of its material slots.
 // Skinned geometry requires its initial palette (pPose, PoseMatrixCount == JointCount). UserKey identifies the
 // instance in light sampling history and diagnostics; it does not need to be unique.
+enum class RTXPTInstanceContinuity : Uint32
+{
+    Untracked,
+    Continuous,
+    Reset,
+};
+
 struct RTXPTInstanceDesc
 {
     RTXPTGeometryHandle        Geometry;
@@ -231,6 +238,8 @@ struct RTXPTInstanceDesc
     const float4x4*            pPose           = nullptr;
     Uint32                     PoseMatrixCount = 0;
     Uint64                     UserKey         = 0;
+    // Native runtime handles are stable; hosts with ambiguous identity must explicitly opt out.
+    RTXPTInstanceContinuity Continuity = RTXPTInstanceContinuity::Continuous;
 };
 
 struct RTXPTGeometryMesh
@@ -291,9 +300,11 @@ struct RTXPTSceneInstanceState
     bool                                                   Enabled = true;
     Uint64                                                 UserKey = 0;
     // Incremented when the corresponding state of this instance changes; equal values mean equal state.
-    Uint64 TransformRevision = 0;
-    Uint64 PoseRevision      = 0;
-    Uint64 MaterialRevision  = 0;
+    Uint64                  TransformRevision = 0;
+    Uint64                  PoseRevision      = 0;
+    Uint64                  MaterialRevision  = 0;
+    RTXPTInstanceContinuity Continuity        = RTXPTInstanceContinuity::Continuous;
+    Uint64                  HistoryRevision   = 0;
 };
 
 // An immutable committed scene version. Later updates never change it.
@@ -339,6 +350,8 @@ public:
     RTXPTSceneResult SetInstancePose(RTXPTInstanceHandle Handle, const float4x4* pPose, Uint32 MatrixCount);
     RTXPTSceneResult SetInstanceMaterial(RTXPTInstanceHandle Handle, Uint32 Slot, RTXPTMaterialHandle Material);
     RTXPTSceneResult SetInstanceEnabled(RTXPTInstanceHandle Handle, bool Enabled);
+    // Reset marks a discontinuity; later Continuous updates may use that reset frame as their new baseline.
+    RTXPTSceneResult SetInstanceContinuity(RTXPTInstanceHandle Handle, RTXPTInstanceContinuity Continuity);
     RTXPTSceneResult RemoveInstance(RTXPTInstanceHandle Handle);
     RTXPTSceneResult SetLights(const RTXPTSceneLight* pLights, Uint32 LightCount);
     RTXPTSceneResult CommitUpdate(RTXPTSceneSnapshotPtr& Snapshot);

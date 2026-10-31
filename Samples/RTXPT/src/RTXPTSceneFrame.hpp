@@ -22,6 +22,7 @@
 #include "TopLevelAS.h"
 #include "RTXPTLights.hpp"
 #include "RTXPTSceneRuntime.hpp"
+#include "RTXPTSceneHistory.hpp"
 
 namespace Diligent
 {
@@ -53,22 +54,27 @@ struct RTXPTSceneFrameStats
     Uint64 EmissiveBuildCount     = 0;
     Uint64 PipelineCompileCount   = 0;
 
-    Uint32 InstanceCount         = 0;
-    Uint32 SubInstanceCount      = 0;
-    Uint32 ResidentGeometryCount = 0;
-    Uint32 ResidentMaterialCount = 0;
-    Uint32 BLASCount             = 0;
-    Uint32 SkinnedInstanceCount  = 0;
-    Uint32 TextureCount          = 0;
-    Uint32 TextureCapacity       = 0;
-    Uint32 EmissiveTriangleCount = 0;
+    Uint32 InstanceCount                 = 0;
+    Uint32 SubInstanceCount              = 0;
+    Uint32 ResidentGeometryCount         = 0;
+    Uint32 ResidentMaterialCount         = 0;
+    Uint32 BLASCount                     = 0;
+    Uint32 SkinnedInstanceCount          = 0;
+    Uint32 TextureCount                  = 0;
+    Uint32 TextureCapacity               = 0;
+    Uint32 EmissiveTriangleCount         = 0;
+    Uint32 ValidPreviousRigidInstances   = 0;
+    Uint32 InvalidHistoryInstances       = 0;
+    Uint64 PreviousTransformStorageBytes = 0;
 };
 
 // The GPU scene of one prepared snapshot. The objects belong to the builder and stay valid until its next Prepare or
 // Reset: record every use of them before that. Revisions tell users what to refresh.
 struct RTXPTSceneFrame
 {
-    RTXPTSceneSnapshotPtr Snapshot;
+    RTXPTSceneSnapshotPtr   Snapshot;
+    RTXPTPreparedSceneToken Prepared;
+    Uint32                  InvalidHistoryInstances = 0;
     // Identifies this build of pTLAS. Shader binding tables follow its instances.
     Uint64 BuildIndex = 0;
     // Changes when any object below changes, so resource bindings must be recreated.

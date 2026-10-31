@@ -589,7 +589,8 @@ RTXPTSceneResult RTXPTSceneRuntime::CreateInstance(const RTXPTInstanceDesc& Desc
     if (ppGeometry == nullptr)
         return RTXPTSceneResult::InvalidHandle;
     const RTXPTGeometryAsset& Geometry = **ppGeometry;
-    if (Desc.MeshIndex >= Geometry.Meshes.size() || !IsValidRTXPTInstanceTransform(Desc.Transform))
+    if (Desc.MeshIndex >= Geometry.Meshes.size() || !IsValidRTXPTInstanceTransform(Desc.Transform) ||
+        Desc.Continuity > RTXPTInstanceContinuity::Reset)
         return RTXPTSceneResult::InvalidArgument;
     if (Desc.MaterialCount != Geometry.MaterialSlotCount || Desc.pMaterials == nullptr)
         return RTXPTSceneResult::InvalidArgument;
@@ -614,8 +615,9 @@ RTXPTSceneResult RTXPTSceneRuntime::CreateInstance(const RTXPTInstanceDesc& Desc
             pState->Materials.push_back(*I.Materials.Find(Desc.pMaterials[i]));
         if (Desc.pPose != nullptr)
             pState->Pose = std::make_shared<const std::vector<float4x4>>(Desc.pPose, Desc.pPose + Desc.PoseMatrixCount);
-        pState->Enabled = Desc.Enabled;
-        pState->UserKey = Desc.UserKey;
+        pState->Enabled    = Desc.Enabled;
+        pState->UserKey    = Desc.UserKey;
+        pState->Continuity = Desc.Continuity;
 
         // Reserve first, so that nothing below throws once the pending state changes.
         Impl::SceneState& Pending = I.Pending;
@@ -640,6 +642,7 @@ RTXPTSceneResult RTXPTSceneRuntime::CreateInstance(const RTXPTInstanceDesc& Desc
         pState->TransformRevision = I.NewRevision();
         pState->PoseRevision      = I.NewRevision();
         pState->MaterialRevision  = I.NewRevision();
+        pState->HistoryRevision   = I.NewRevision();
 
         Pending.Generations[Slot] = Generation;
         Pending.Instances[Slot]   = std::move(pState);
@@ -746,6 +749,28 @@ RTXPTSceneResult RTXPTSceneRuntime::SetInstanceEnabled(RTXPTInstanceHandle Handl
         pState->Enabled                  = Enabled;
         I.Pending.Instances[Handle.Slot] = std::move(pState);
         I.bContentChanged                = true;
+        return RTXPTSceneResult::Ok;
+    });
+}
+
+RTXPTSceneResult RTXPTSceneRuntime::SetInstanceContinuity(RTXPTInstanceHandle Handle, RTXPTInstanceContinuity Continuity)
+{
+    Impl& I = *m_Impl;
+    if (!I.bUpdating)
+        return RTXPTSceneResult::InvalidState;
+    const auto pCurrent = I.FindInstance(Handle);
+    if (!pCurrent)
+        return RTXPTSceneResult::InvalidHandle;
+    if (Continuity > RTXPTInstanceContinuity::Reset)
+        return RTXPTSceneResult::InvalidArgument;
+    if (Continuity == pCurrent->Continuity && Continuity != RTXPTInstanceContinuity::Reset)
+        return RTXPTSceneResult::Ok;
+    return Impl::Guard([&]() {
+        auto pState        = std::make_shared<RTXPTSceneInstanceState>(*pCurrent);
+        pState->Continuity = Continuity;
+        if (Continuity == RTXPTInstanceContinuity::Reset || pCurrent->Continuity == RTXPTInstanceContinuity::Untracked)
+            pState->HistoryRevision = I.NewRevision();
+        I.Pending.Instances[Handle.Slot] = std::move(pState);
         return RTXPTSceneResult::Ok;
     });
 }
