@@ -19,13 +19,18 @@ public:
     Uint32      FrameCount = 64;
     bool        Processed  = false; // Capture reconstruction output before bloom/tone mapping.
     bool        Sequence   = false; // Write individual linear frames for temporal validation.
+    bool        Display    = false; // Explicitly allow stored UNORM display values, without decoding them.
+    bool        Succeeded() const { return m_Done && m_Succeeded; }
     void        Capture(IRenderDevice* Device, IDeviceContext* Context, ITexture* Texture, Uint32 Frame)
     {
         if (Path.empty() || m_Done || Frame < StartFrame || !Texture) return;
-        const auto& Desc = Texture->GetDesc();
-        if (Desc.Format != TEX_FORMAT_RGBA16_FLOAT)
+        const auto& Desc         = Texture->GetDesc();
+        const bool  HalfFloat    = Desc.Format == TEX_FORMAT_RGBA16_FLOAT;
+        const bool  FullFloat    = Desc.Format == TEX_FORMAT_RGBA32_FLOAT;
+        const bool  DisplayBytes = Display && (Desc.Format == TEX_FORMAT_RGBA8_UNORM || Desc.Format == TEX_FORMAT_RGBA8_UNORM_SRGB);
+        if (!HalfFloat && !FullFloat && !DisplayBytes)
         {
-            LOG_ERROR_MESSAGE("HDR capture requires RGBA16_FLOAT");
+            LOG_ERROR_MESSAGE("Capture requires RGBA16/32_FLOAT or explicitly enabled RGBA8 display storage");
             m_Done = true;
             return;
         }
@@ -65,15 +70,23 @@ public:
         }
         for (Uint32 Y = 0; Y < Desc.Height; ++Y)
         {
-            const auto* Row = reinterpret_cast<const Uint16*>(static_cast<const Uint8*>(Map.pData) + Y * Map.Stride);
+            const auto* Row = static_cast<const Uint8*>(Map.pData) + Y * Map.Stride;
             for (Uint32 X = 0; X < Desc.Width; ++X)
                 for (Uint32 C = 0; C < 3; ++C)
                 {
-                    Uint16 H        = Row[X * 4 + C];
-                    int    Exponent = (H >> 10) & 31;
-                    float  Value    = Exponent == 0 ? std::ldexp(float(H & 1023), -24) :
-                                                  (Exponent == 31 ? NAN : std::ldexp(float(1024 + (H & 1023)), Exponent - 25));
-                    if (H & 0x8000) Value = -Value;
+                    float Value;
+                    if (HalfFloat)
+                    {
+                        Uint16 H        = reinterpret_cast<const Uint16*>(Row)[X * 4 + C];
+                        int    Exponent = (H >> 10) & 31;
+                        Value           = Exponent == 0 ? std::ldexp(float(H & 1023), -24) :
+                                                (Exponent == 31 ? NAN : std::ldexp(float(1024 + (H & 1023)), Exponent - 25));
+                        if (H & 0x8000) Value = -Value;
+                    }
+                    else if (FullFloat)
+                        Value = reinterpret_cast<const float*>(Row)[X * 4 + C];
+                    else
+                        Value = float(Row[X * 4 + C]) / 255.0f;
                     m_Sum[(size_t{Y} * Desc.Width + X) * 3 + C] += Value;
                 }
         }
@@ -89,6 +102,8 @@ public:
                 for (auto& Value : m_Sum) Value /= float(m_Count);
             for (Uint32 Y = Desc.Height; Y-- > 0;)
                 File.write(reinterpret_cast<const char*>(m_Sum.data() + size_t{Y} * Desc.Width * 3), Desc.Width * 3 * sizeof(float));
+            File.flush();
+            m_Succeeded = bool(File);
             if (!File) LOG_ERROR_MESSAGE("HDR capture write failed: ", OutputPath);
             else
                 LOG_INFO_MESSAGE("HDR capture saved: ", OutputPath, " (", Sequence ? 1u : m_Count, " frames)");
@@ -98,8 +113,9 @@ public:
     }
 
 private:
-    bool               m_Done  = false;
-    Uint32             m_Count = 0;
+    bool               m_Done      = false;
+    bool               m_Succeeded = false;
+    Uint32             m_Count     = 0;
     std::vector<float> m_Sum;
 };
 } // namespace Diligent
