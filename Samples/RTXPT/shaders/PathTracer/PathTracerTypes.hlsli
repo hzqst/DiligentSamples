@@ -130,6 +130,7 @@ namespace PathTracer
         ActiveBSDF             bsdf;
 #if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
         float3 prevPosW;
+        bool previousSurfaceValid;
 #endif
         uint    neeTriangleLightIndex;
         uint    neeAnalyticLightIndex;
@@ -139,6 +140,7 @@ namespace PathTracer
                                 ActiveBSDF bsdf,
 #if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
                                 float3 prevPosW,
+                                bool previousSurfaceValid,
 #endif
                                 uint neeTriangleLightIndex,
                                 uint neeAnalyticLightIndex,
@@ -149,6 +151,7 @@ namespace PathTracer
             ret.bsdf                  = bsdf;
 #if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
             ret.prevPosW              = prevPosW;
+            ret.previousSurfaceValid = previousSurfaceValid;
 #endif
             ret.neeTriangleLightIndex = neeTriangleLightIndex;
             ret.neeAnalyticLightIndex = neeAnalyticLightIndex;

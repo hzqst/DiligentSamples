@@ -347,6 +347,7 @@ struct RTXPTSceneFrameBuilder::Impl
     std::vector<MaterialPTData>                 MaterialData;
     std::vector<Uint32>                         DirtyMaterialRows;
     UploadBuffer<SubInstanceData>               SubInstances;
+    RTXPTSceneHistory                           History;
     UploadBuffer<float4x4>                      SubInstanceTransforms;
 
     std::unordered_map<Uint64, GeometryResidency> Geometries;
@@ -951,6 +952,7 @@ struct RTXPTSceneFrameBuilder::Impl
         Uint32                             EmissiveTriangles = 0;
         float                              ProxyWeight       = 0.0f;
         std::vector<SkinJob>               SkinJobs;
+        Uint32                             ValidPreviousRigidInstances = 0;
         TLASInstances.reserve(Snapshot->Instances.size());
         InstanceNames.reserve(Snapshot->Instances.size() + 1u);
 
@@ -1032,6 +1034,9 @@ struct RTXPTSceneFrameBuilder::Impl
                 pBLAS          = Entry.BLAS;
             }
 
+            const auto* Previous = History.FindPreviousRigid(*pState);
+            if (Previous)
+                ++ValidPreviousRigidInstances;
             const Uint32 SubInstanceBase = static_cast<Uint32>(SubInstanceRows.size());
             if (Uint64{SubInstanceBase} + PrimitiveCount > kMaxSubInstanceCount)
                 return RTXPTErrorCode::SubInstanceLimitExceeded;
@@ -1044,8 +1049,13 @@ struct RTXPTSceneFrameBuilder::Impl
                 // Skinned instances read their own skinned vertices.
                 const Uint32 VertexBase = Geometry.IsSkinned() ? SkinnedInstances[Handle].OutputBase : pGeometry->VertexBase;
                 Row.Flags               = Geometry.IsSkinned() ? kSubInstanceFlag_Skinned : 0u;
-                Row.VertexOffset        = VertexBase + (Primitive.IndexCount > 0 ? 0u : Primitive.FirstVertex);
-                Row.VertexCount         = Primitive.VertexCount;
+                if (Previous)
+                {
+                    Row.Flags |= kSubInstanceFlag_PreviousRigidSurface;
+                    Row.PreviousTransform = Previous->Transform;
+                }
+                Row.VertexOffset = VertexBase + (Primitive.IndexCount > 0 ? 0u : Primitive.FirstVertex);
+                Row.VertexCount  = Primitive.VertexCount;
                 if (Primitive.IndexCount > 0)
                 {
                     Row.Flags |= kSubInstanceFlag_Indexed;
@@ -1182,17 +1192,21 @@ struct RTXPTSceneFrameBuilder::Impl
         Frame.pLights                     = &Lights;
         Frame.InstanceCount               = InstanceCount;
         Frame.SubInstanceCount            = static_cast<Uint32>(SubInstanceRows.size());
+        Frame.InvalidHistoryInstances     = InstanceCount - ValidPreviousRigidInstances;
 
-        Stats.InstanceCount         = InstanceCount;
-        Stats.SubInstanceCount      = Frame.SubInstanceCount;
-        Stats.ResidentGeometryCount = static_cast<Uint32>(Geometries.size());
-        Stats.ResidentMaterialCount = static_cast<Uint32>(Materials.size());
-        Stats.BLASCount             = static_cast<Uint32>(BLASes.size());
-        Stats.SkinnedInstanceCount  = static_cast<Uint32>(SkinJobs.size());
-        Stats.TextureCount          = static_cast<Uint32>(TextureSlotOfView.size());
-        Stats.TextureCapacity       = Frame.MaterialTextureCount;
-        Stats.EmissiveTriangleCount = EmissiveTriangles;
-        HasPrepared                 = true;
+        Stats.InstanceCount                 = InstanceCount;
+        Stats.SubInstanceCount              = Frame.SubInstanceCount;
+        Stats.ResidentGeometryCount         = static_cast<Uint32>(Geometries.size());
+        Stats.ResidentMaterialCount         = static_cast<Uint32>(Materials.size());
+        Stats.BLASCount                     = static_cast<Uint32>(BLASes.size());
+        Stats.SkinnedInstanceCount          = static_cast<Uint32>(SkinJobs.size());
+        Stats.TextureCount                  = static_cast<Uint32>(TextureSlotOfView.size());
+        Stats.TextureCapacity               = Frame.MaterialTextureCount;
+        Stats.EmissiveTriangleCount         = EmissiveTriangles;
+        Stats.ValidPreviousRigidInstances   = ValidPreviousRigidInstances;
+        Stats.InvalidHistoryInstances       = Frame.InvalidHistoryInstances;
+        Stats.PreviousTransformStorageBytes = SubInstances.Buffer->GetDesc().Size / sizeof(SubInstanceData) * sizeof(float4x4);
+        HasPrepared                         = true;
         return RTXPTErrorCode::Ok;
     }
 
@@ -1247,6 +1261,7 @@ struct RTXPTSceneFrameBuilder::Impl
         MaterialData.clear();
         DirtyMaterialRows.clear();
         SubInstances.Clear();
+        History.Reset();
         SubInstanceTransforms.Clear();
         Geometries.clear();
         Materials.clear();
@@ -1340,6 +1355,8 @@ bool RTXPTSceneFrameBuilder::IsInitialized() const
 RTXPTErrorCode RTXPTSceneFrameBuilder::Prepare(IDeviceContext* pContext, const RTXPTSceneSnapshotPtr& Snapshot, RTXPTGpuProfiler* Profiler)
 {
     Impl& I = *m_Impl;
+    I.History.BeginPrepare();
+    I.Frame = {};
     if (!I.Initialized)
         return RTXPTErrorCode::NotInitialized;
     if (pContext == nullptr || !Snapshot)
@@ -1349,7 +1366,10 @@ RTXPTErrorCode RTXPTSceneFrameBuilder::Prepare(IDeviceContext* pContext, const R
     {
         Code = I.Prepare(pContext, Snapshot, Profiler);
         if (Code == RTXPTErrorCode::Ok)
+        {
+            I.Frame.Prepared = I.History.Publish(Snapshot);
             return Code;
+        }
     }
     catch (const std::bad_alloc&)
     {

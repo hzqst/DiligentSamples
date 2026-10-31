@@ -34,6 +34,46 @@ and TLAS is separate. Nested intervals must not be summed with Total/ScenePrepar
 NRD, TAA, SR, RR and Bloom are not active in Raw. Total GPU allocation is unavailable;
 the manifest does not pass readback byte counts off as VRAM residency.
 
+## Prepared rigid surface history
+
+`SceneRuntimeTest.cpp` exercises the production `RTXPTSceneHistory` with stable
+slot/generation handles, compact-row removal, reset/untracked transitions,
+cancelled updates, opaque versus coverage-changing material changes, geometry
+replacement, disabled/restored instances, slot reuse and residency reset. Run
+`build_scene_runtime_test.bat` from a VS x64 Native Tools prompt. The existing
+`test_scene_frame_retry.py` additionally checks resource allocation/pose retries.
+
+Each successful scene Prepare publishes an epoch/execution/previous-execution
+token. It identifies ordered GPU command recording, not completion or a CPU
+snapshot ID. A failed Prepare invalidates its public frame without advancing the
+last successful baseline. Preparing the same snapshot twice advances execution;
+rendering the same prepared execution twice conservatively invalidates that
+view's camera correspondence. A view missing preparations must also restart.
+
+The shader reconstructs the same immutable triangle and barycentrics through the
+previous instance transform. It retains the existing path-space motion transform.
+Primary motion xyz remains current-to-previous render-local pixels with clip-w
+depth change in z. Its w is now one only for a direct rigid surface with valid
+surface and camera correspondence. It does not establish visibility/disocclusion
+validity. Skinned and reflected paths remain invalid here; the aggregate
+`DynamicMotionValidated` capability remains false. Hosts must explicitly use
+Untracked when they cannot promise continuity. Reset is a discontinuity event;
+a subsequent Continuous frame can use the reset frame as its new baseline.
+
+Capture metadata includes scene/view tokens, rigid valid/invalid instance counts,
+light-feedback reset, and allocated previous-transform matrix bytes. Instance
+counts are not pixel correspondence counts or total GPU memory. Since the light
+feedback consumer cannot reject individual surfaces, any invalid instance or
+camera correspondence resets that consumer conservatively. Raw radiance never
+uses Reference accumulation. Normal continuous rigid/camera motion need not reset.
+
+Host GPU regression uses an independent planar projection oracle for translation,
+combined camera/object translation, rotation and nonuniform scale, with a fixed
+0.25-pixel tolerance for FP16 output. It also checks interrupted views, repeated
+snapshots, explicit resets, failed Prepare/retry, and multiple recorded frames
+without intervening readback waits. These tests do not validate skinned motion,
+moving mirrors, semantic camera identity, teleport detection, or reconstruction.
+
 ## Frozen Reference baseline
 
 `capture_reference_baseline.py` runs the Sample reference path at a fixed scene

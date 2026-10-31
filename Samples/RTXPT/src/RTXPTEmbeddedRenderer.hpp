@@ -4,6 +4,7 @@
 #include <string>
 #include "RTXPTFrameConstants.hpp"
 #include "RTXPTSceneRuntime.hpp"
+#include "RTXPTSceneHistory.hpp"
 #include "RenderDevice.h"
 #include "DeviceContext.h"
 #include "Texture.h"
@@ -89,6 +90,19 @@ struct RTXPTViewOutputInfo
     bool                Valid          = false;
 };
 
+// Current successful Render only; invalidated with the output on failure. Tokens are not GPU completion fences.
+struct RTXPTViewHistoryInfo
+{
+    RTXPTPreparedSceneToken Scene;
+    RTXPTPreparedSceneToken PreviousViewScene;
+    bool                    CameraCorrespondenceValid     = false;
+    bool                    LightFeedbackReset            = false;
+    Uint32                  LightFeedbackHistoryFrames    = 0;
+    Uint32                  ValidPreviousRigidInstances   = 0;
+    Uint32                  InvalidHistoryInstances       = 0;
+    Uint64                  PreviousTransformStorageBytes = 0;
+};
+
 //Sizes are local to the view texture; host viewport offsets belong to final composition only.
 //Both modes currently require equal nonempty render/display sizes and an sRGB RGBA8 output RTV.
 struct RTXPTEmbeddedViewCreateInfo
@@ -129,6 +143,7 @@ public:
     //The work counters of the frames prepared for the scene since Initialize, its first frame included: each Prepare
     //prepares one frame and builds its TLAS once.
     const RTXPTSceneFrameStats& GetFrameStats() const;
+    RTXPTPreparedSceneToken     GetPreparedToken() const;
     RTXPTGpuProfiler&           GetProfiler();
 
 private:
@@ -156,6 +171,7 @@ public:
     RTXPTViewOutputInfo          GetOutputInfo(RTXPTViewOutput Output) const;
     const RTXPTRealtimeRawStats& GetRealtimeRawStats() const;
     IBuffer*                     GetRealtimeLayerBuffer() const;
+    const RTXPTViewHistoryInfo&  GetHistoryInfo() const;
     Uint32                       GetTraceCount() const;
     Uint32                       GetAccumulationCount() const;
     RTXPTGpuProfiler&            GetProfiler();

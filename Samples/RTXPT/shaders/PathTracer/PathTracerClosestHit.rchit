@@ -59,6 +59,13 @@ namespace PathTracer
         frontFacing                  = dot(-rayDir, geometricNormal) >= 0.0;
         faceNormal                   = frontFacing ? geometricNormal : -geometricNormal;
         worldPos                     = Bridge::computeWorldHitPosition(V0, V1, V2, Attributes.barycentrics);
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
+        const bool previousSurfaceValid = (subInstance.Flags & kSubInstanceFlagPreviousRigidSurface) != 0u &&
+                                          g_Const.ptConsts.resetAccumulation == 0u;
+        const float3 bary = float3(1.0 - Attributes.barycentrics.x - Attributes.barycentrics.y, Attributes.barycentrics);
+        const float3 localPosition = V0.position * bary.x + V1.position * bary.y + V2.position * bary.z;
+        const float3 previousWorldPosition = previousSurfaceValid ? mul(float4(localPosition, 1.0), subInstance.PreviousTransform).xyz : worldPos;
+#endif
         worldNormal                  = Bridge::interpolateNormal(V0, V1, V2, Attributes.barycentrics);
         if (dot(worldNormal, worldNormal) < 1e-6)
             worldNormal = faceNormal;
@@ -185,7 +192,8 @@ namespace PathTracer
         return SurfaceData::make(shadingData,
                                  bsdf,
 #if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
-                                 worldPos,
+                                 previousWorldPosition,
+                                 previousSurfaceValid,
 #endif
                                  neeTriangleLightIndex,
                                  0xFFFFFFFFu,

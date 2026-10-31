@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 #include "../src/RTXPTSceneRuntime.hpp"
+#include "../src/RTXPTSceneHistory.hpp"
 using namespace Diligent;
 
 static void Require(bool OK, const std::string& Text)
@@ -379,6 +380,114 @@ static void TestPosesMaterialsAndLights()
     Runtime.CancelUpdate();
 }
 
+static void TestPreparedRigidHistory()
+{
+    RTXPTSceneRuntime   Runtime;
+    RTXPTSceneHistory   History;
+    const auto          Geometry = RegisterTriangle(Runtime);
+    const auto          Material = RegisterMaterial(Runtime);
+    RTXPTInstanceHandle A, B;
+    auto                Commit = [&]() {
+        RTXPTSceneSnapshotPtr Snapshot;
+        RequireResult(RTXPTSceneResult::Ok, Runtime.CommitUpdate(Snapshot), "history commit");
+        return Snapshot;
+    };
+    RequireResult(RTXPTSceneResult::Ok, Runtime.BeginUpdate(), "history begin");
+    RequireResult(RTXPTSceneResult::Ok, Runtime.CreateInstance(MakeInstance(Geometry, Material, 1), A), "history A");
+    RequireResult(RTXPTSceneResult::Ok, Runtime.CreateInstance(MakeInstance(Geometry, Material, 2), B), "history B");
+    const auto First = Commit();
+    History.BeginPrepare();
+    Require(!History.FindPreviousRigid(*First->Instances[0]), "new instance has no previous surface");
+    const auto Token1 = History.Publish(First);
+    Require(Token1.IsValid() && 1 == Token1.Execution && 0 == Token1.PreviousExecution, "first prepared token");
+
+    RequireResult(RTXPTSceneResult::Ok, Runtime.BeginUpdate(), "move begin");
+    RequireResult(RTXPTSceneResult::Ok, Runtime.SetInstanceTransform(B, Translation(5)), "move B");
+    RequireResult(RTXPTSceneResult::Ok, Runtime.RemoveInstance(A), "remove A before B");
+    const auto Moved = Commit();
+    History.BeginPrepare();
+    Require(!History.GetToken().IsValid(), "preparing/failed frame invalidates published token");
+    const auto* Previous = History.FindPreviousRigid(*Moved->Instances[0]);
+    Require(Previous && 2.0f == Previous->Transform._41, "compact row zero still corresponds to B, not A");
+    // A failed preparation publishes nothing. Retrying still resolves the last successful surface.
+    History.BeginPrepare();
+    Require(Previous == History.FindPreviousRigid(*Moved->Instances[0]), "failed prepare does not advance previous surface");
+    const auto Token2 = History.Publish(Moved);
+    Require(Token1.IsPreviousOf(Token2) && Token1.Epoch == Token2.Epoch, "successful prepare advances one execution");
+    History.BeginPrepare();
+    const auto Repeated = History.Publish(Moved);
+    Require(Token2.IsPreviousOf(Repeated) && Repeated.Execution != Moved->SnapshotId, "same snapshot has distinct prepared executions");
+
+    RequireResult(RTXPTSceneResult::Ok, Runtime.BeginUpdate(), "reset begin");
+    RequireResult(RTXPTSceneResult::Ok, Runtime.SetInstanceContinuity(B, RTXPTInstanceContinuity::Reset), "explicit reset");
+    const auto Reset = Commit();
+    History.BeginPrepare();
+    Require(!History.FindPreviousRigid(*Reset->Instances[0]), "teleport rejects old surface");
+    History.Publish(Reset);
+    RequireResult(RTXPTSceneResult::Ok, Runtime.BeginUpdate(), "resume begin");
+    RequireResult(RTXPTSceneResult::Ok, Runtime.SetInstanceContinuity(B, RTXPTInstanceContinuity::Continuous), "resume continuity");
+    const auto Resumed = Commit();
+    Require(History.FindPreviousRigid(*Resumed->Instances[0]), "reset frame can become the next continuous baseline");
+    History.Publish(Resumed);
+    RequireResult(RTXPTSceneResult::Ok, Runtime.BeginUpdate(), "untracked begin");
+    constexpr auto InvalidContinuity = static_cast<RTXPTInstanceContinuity>(static_cast<Uint32>(RTXPTInstanceContinuity::Reset) + 1);
+    RequireResult(RTXPTSceneResult::InvalidArgument, Runtime.SetInstanceContinuity(B, InvalidContinuity), "invalid continuity");
+    RequireResult(RTXPTSceneResult::Ok, Runtime.SetInstanceContinuity(B, RTXPTInstanceContinuity::Untracked), "untracked identity");
+    const auto Untracked = Commit();
+    Require(!History.FindPreviousRigid(*Untracked->Instances[0]), "untracked surface rejects history");
+    History.Publish(Untracked);
+    RequireResult(RTXPTSceneResult::Ok, Runtime.BeginUpdate(), "tracked again begin");
+    RequireResult(RTXPTSceneResult::Ok, Runtime.SetInstanceContinuity(B, RTXPTInstanceContinuity::Continuous), "tracked again");
+    const auto TrackedAgain = Commit();
+    Require(!History.FindPreviousRigid(*TrackedAgain->Instances[0]), "untracked past cannot become valid retrospectively");
+    History.Publish(TrackedAgain);
+
+    RequireResult(RTXPTSceneResult::Ok, Runtime.BeginUpdate(), "cancel reset begin");
+    RequireResult(RTXPTSceneResult::Ok, Runtime.SetInstanceContinuity(B, RTXPTInstanceContinuity::Reset), "cancelled reset");
+    Runtime.CancelUpdate();
+    Require(History.FindPreviousRigid(*Runtime.GetSnapshot()->Instances[0]), "cancelled CPU update cannot invalidate the published correspondence");
+    auto OpaqueChanged         = *TrackedAgain->Instances[0];
+    OpaqueChanged.Materials[0] = std::make_shared<RTXPTMaterialAsset>(*OpaqueChanged.Materials[0]);
+    Require(History.FindPreviousRigid(OpaqueChanged), "opaque material identity alone does not change geometric correspondence");
+    auto MaskedMaterial = std::make_shared<RTXPTMaterialAsset>(*OpaqueChanged.Materials[0]);
+    MaskedMaterial->Data.flags |= kMaterialFlag_AlphaTested;
+    OpaqueChanged.Materials[0] = MaskedMaterial;
+    Require(!History.FindPreviousRigid(OpaqueChanged), "changed coverage/failed masked binding rejects surface history");
+
+    auto SkinnedGeometry        = std::make_shared<RTXPTGeometryAsset>(*TrackedAgain->Instances[0]->Geometry);
+    SkinnedGeometry->JointCount = 1;
+    auto SkinnedState           = std::make_shared<RTXPTSceneInstanceState>(*TrackedAgain->Instances[0]);
+    SkinnedState->Geometry      = SkinnedGeometry;
+    auto SkinnedSnapshot        = std::make_shared<RTXPTSceneSnapshot>();
+    SkinnedSnapshot->Instances.push_back(SkinnedState);
+    RTXPTSceneHistory SkinnedHistory;
+    SkinnedHistory.Publish(SkinnedSnapshot);
+    Require(!SkinnedHistory.FindPreviousRigid(*SkinnedState), "skinned geometry cannot pretend current deformation is previous data");
+
+    auto OtherGeometry     = *TrackedAgain->Instances[0];
+    OtherGeometry.Geometry = std::make_shared<RTXPTGeometryAsset>(*OtherGeometry.Geometry);
+    Require(!History.FindPreviousRigid(OtherGeometry), "different immutable geometry/layout version rejects correspondence");
+    RequireResult(RTXPTSceneResult::Ok, Runtime.BeginUpdate(), "disable begin");
+    RequireResult(RTXPTSceneResult::Ok, Runtime.SetInstanceEnabled(B, false), "disable");
+    History.Publish(Commit());
+    RequireResult(RTXPTSceneResult::Ok, Runtime.BeginUpdate(), "restore begin");
+    RequireResult(RTXPTSceneResult::Ok, Runtime.SetInstanceEnabled(B, true), "restore");
+    const auto Restored = Commit();
+    Require(!History.FindPreviousRigid(*Restored->Instances[0]), "absence then recovery has no previous surface");
+    History.Publish(Restored);
+    RequireResult(RTXPTSceneResult::Ok, Runtime.BeginUpdate(), "reuse begin");
+    RequireResult(RTXPTSceneResult::Ok, Runtime.RemoveInstance(B), "remove B");
+    RTXPTInstanceHandle Reused;
+    RequireResult(RTXPTSceneResult::Ok, Runtime.CreateInstance(MakeInstance(Geometry, Material, 5), Reused), "reuse slot");
+    const auto ReusedSnapshot = Commit();
+    Require(B.Slot == Reused.Slot && B.Generation != Reused.Generation, "test exercises slot reuse");
+    Require(!History.FindPreviousRigid(*ReusedSnapshot->Instances[0]), "generation prevents inherited history");
+    const auto OldEpoch = History.GetToken().Epoch;
+    History.Reset();
+    const auto NewToken = History.Publish(ReusedSnapshot);
+    Require(NewToken.Epoch != OldEpoch && !Repeated.IsPreviousOf(NewToken), "residency reset creates a different epoch");
+}
+
 int main()
 {
     try
@@ -389,6 +498,7 @@ int main()
         TestUpdateRules();
         TestInstanceLifecycle();
         TestPosesMaterialsAndLights();
+        TestPreparedRigidHistory();
     }
     catch (const std::exception& Error)
     {

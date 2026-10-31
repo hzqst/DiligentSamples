@@ -3,6 +3,7 @@
 
 // Mirrors Diligent::kSubInstanceFlag_Indexed in RTXPTAccelerationStructures.hpp.
 static const uint kSubInstanceFlagIndexed = 0x1u;
+static const uint kSubInstanceFlagPreviousRigidSurface = 0x4u;
 static const uint kSubInstanceFlagSkinned = 0x2u;
 
 // Maximum area-light solid-angle pdf (G4). Mirrors RTXPT-fork PolymorphicLight.hlsli:25 MAX_SOLID_ANGLE_PDF;
@@ -225,6 +226,7 @@ struct SubInstanceData
     uint VertexCount;
     uint emissiveTriangleOffset; // First entry in t_EmissiveTriangles for this sub-instance (G4).
     uint _padding1;
+    row_major float4x4 PreviousTransform;
 };
 
 // Mirrors Diligent::MaterialPTData in RTXPTMaterials.hpp (must keep order/size in sync; total size 144 bytes).
