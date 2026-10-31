@@ -212,7 +212,9 @@ const char* GetRTXPTErrorCodeString(RTXPTErrorCode Code)
         case RTXPTErrorCode::TraceFailed: return "the light sampling or path tracing dispatch failed";
         case RTXPTErrorCode::AccumulationFailed: return "the accumulation failed";
         case RTXPTErrorCode::ToneMappingFailed: return "the tone mapping failed";
-        case RTXPTErrorCode::UnsupportedViewConfiguration: return "reference requires equal render/display sizes and an sRGB RGBA8 output RTV";
+        case RTXPTErrorCode::UnsupportedViewConfiguration: return "embedded views require a supported mode, equal render/display sizes and an sRGB RGBA8 output RTV";
+        case RTXPTErrorCode::GuidesFailed: return "realtime guides failed";
+        case RTXPTErrorCode::RealtimeMergeFailed: return "realtime layer merge failed";
     }
     return "unknown error";
 }

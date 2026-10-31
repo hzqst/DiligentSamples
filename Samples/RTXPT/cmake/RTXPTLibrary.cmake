@@ -1,4 +1,4 @@
-# Reusable scene and embedded reference renderer. This entry point does not
+# Reusable scene and embedded Reference/RealtimeRaw renderer. This entry point does not
 # fetch assets or optional denoising/reconstruction SDKs. Hosts supply Diligent
 # dependencies, either source targets or an interface target for an installed SDK.
 include_guard(GLOBAL)
@@ -14,7 +14,8 @@ function(add_rtxpt_library target)
         RTXPTLightProxyBuildPass RTXPTEnvMapBaker RTXPTEnvMapBakerPass
         RTXPTEmissiveTrianglePass RTXPTRayTracingPass RTXPTSkinnedGeometry
         RTXPTSceneRuntime RTXPTSceneFrame RTXPTSceneImporter RTXPTComputePass
-        RTXPTAccumulationPass RTXPTToneMappingPass)
+        RTXPTAccumulationPass RTXPTToneMappingPass RTXPTRenderTargets
+        RTXPTDenoisingGuidesBaker RTXPTPostProcessPass RTXPTRealtimeRawPipeline)
     set(source_files)
     foreach(source IN LISTS sources)
         list(APPEND source_files "${root}/src/${source}.cpp")

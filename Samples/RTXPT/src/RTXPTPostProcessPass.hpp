@@ -48,6 +48,12 @@ namespace Diligent
 
 struct IRenderStateCache;
 
+enum class RTXPTPostProcessPassSet
+{
+    All,
+    RealtimeRaw,
+};
+
 enum class RTXPTPostProcessPassId : Uint32
 {
     DenoisingLayersDebugViz,
@@ -95,7 +101,7 @@ class RTXPTPostProcessPass
 {
 public:
     void Reset();
-    bool Initialize(IRenderDevice* pDevice, IEngineFactory* pEngineFactory, IRenderStateCache* pStateCache, IBuffer* pFrameConstants, bool ComputeSupported);
+    bool Initialize(IRenderDevice* pDevice, IEngineFactory* pEngineFactory, IRenderStateCache* pStateCache, IBuffer* pFrameConstants, bool ComputeSupported, RTXPTPostProcessPassSet PassSet = RTXPTPostProcessPassSet::All);
     bool RunDenoisingLayersDebugViz(IDeviceContext* pContext, const RTXPTDenoiserPostProcessAttribs& Attribs);
     bool RunDenoiserPrepare(IDeviceContext* pContext, const RTXPTDenoiserPostProcessAttribs& Attribs);
     bool RunDenoiserFinalMerge(IDeviceContext* pContext, const RTXPTDenoiserPostProcessAttribs& Attribs);

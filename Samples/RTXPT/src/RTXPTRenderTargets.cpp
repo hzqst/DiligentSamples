@@ -67,20 +67,6 @@ bool FormatsMatch(const RTXPTRenderTargetFormats& Lhs, const RTXPTRenderTargetFo
         Lhs.DenoiserAvgLayerRadianceHalfRes == Rhs.DenoiserAvgLayerRadianceHalfRes;
 }
 
-Uint64 ComputeGenericTSLineStride(Uint32 ImageWidth)
-{
-    const Uint64 SafeWidth  = std::max(ImageWidth, Uint32{1});
-    const Uint64 TileCountX = (SafeWidth + kRTXPTGenericTSTileSize - 1u) / kRTXPTGenericTSTileSize;
-    return TileCountX * kRTXPTGenericTSTileSize;
-}
-
-Uint64 ComputeGenericTSPlaneStride(Uint32 ImageWidth, Uint32 ImageHeight)
-{
-    const Uint64 SafeHeight = std::max(ImageHeight, Uint32{1});
-    const Uint64 TileCountY = (SafeHeight + kRTXPTGenericTSTileSize - 1u) / kRTXPTGenericTSTileSize;
-    return ComputeGenericTSLineStride(ImageWidth) * TileCountY * kRTXPTGenericTSTileSize;
-}
-
 // Array slices of DenoisingLayersHeader, one branch ID plane each (see DenoisingLayers.hlsli).
 constexpr Uint32 kDenoisingLayersHeaderPlaneCount = 4;
 
@@ -102,7 +88,7 @@ TextureDesc MakeTargetDesc(const char* Name, Uint32 Width, Uint32 Height, TEXTUR
 
 Uint64 ComputeDenoisingLayersElementCount(Uint32 ImageWidth, Uint32 ImageHeight)
 {
-    return ComputeGenericTSPlaneStride(ImageWidth, ImageHeight) * kRTXPTDenoisingLayerCount;
+    return ComputeRTXPTLayerPlaneStride(ImageWidth, ImageHeight) * kRTXPTDenoisingLayerCount;
 }
 
 } // namespace

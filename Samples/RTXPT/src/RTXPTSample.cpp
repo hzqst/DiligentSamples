@@ -306,20 +306,6 @@ PathTracerCameraData MakePathTracerCameraData(const FirstPersonCamera& Camera,
     return Data;
 }
 
-Uint32 ComputeGenericTSLineStride(Uint32 ImageWidth)
-{
-    const Uint32 SafeWidth  = std::max(ImageWidth, Uint32{1});
-    const Uint32 TileCountX = (SafeWidth + kRTXPTGenericTSTileSize - 1u) / kRTXPTGenericTSTileSize;
-    return TileCountX * kRTXPTGenericTSTileSize;
-}
-
-Uint32 ComputeGenericTSPlaneStride(Uint32 ImageWidth, Uint32 ImageHeight)
-{
-    const Uint32 SafeHeight = std::max(ImageHeight, Uint32{1});
-    const Uint32 TileCountY = (SafeHeight + kRTXPTGenericTSTileSize - 1u) / kRTXPTGenericTSTileSize;
-    return ComputeGenericTSLineStride(ImageWidth) * TileCountY * kRTXPTGenericTSTileSize;
-}
-
 float ComputeSuperResolutionTexLODBias(Uint32 RenderWidth, Uint32 RenderHeight, Uint32 DisplayWidth, Uint32 DisplayHeight)
 {
     const float RenderPixels  = static_cast<float>(std::max(RenderWidth, Uint32{1}) * std::max(RenderHeight, Uint32{1}));
@@ -659,6 +645,7 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
 {
     CommandLineParser Args{argc, argv};
     Args.Parse("realtime", m_RealtimeUI.RealtimeMode);
+    Args.Parse("realtime_raw", m_RealtimeRawEnabled);
     Args.Parse("embedded_reference", m_UseEmbeddedReference);
     Args.Parse("asyncPrefix", m_EnableAsyncPrefix);
     Args.Parse("async_queue", m_CreateAsyncQueue);
@@ -712,6 +699,25 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
                                                {{"native", RAY_RECONSTRUCTION_QUALITY_NATIVE}, {"quality", RAY_RECONSTRUCTION_QUALITY_QUALITY}, {"balanced", RAY_RECONSTRUCTION_QUALITY_BALANCED}, {"performance", RAY_RECONSTRUCTION_QUALITY_PERFORMANCE}, {"ultra_performance", RAY_RECONSTRUCTION_QUALITY_ULTRA_PERFORMANCE}}, m_RayReconstructionSettings.Quality);
     Args.ParseEnum<RAY_RECONSTRUCTION_DLSS_PRESET>("rr_preset", 0,
                                                    {{"F", RAY_RECONSTRUCTION_DLSS_PRESET_F}, {"E", RAY_RECONSTRUCTION_DLSS_PRESET_E}}, m_RayReconstructionSettings.Preset);
+    if (m_RealtimeRawEnabled)
+    {
+        if (m_UseEmbeddedReference || m_ValidateRayReconstruction || m_ValidateSubSampling || m_ValidateAsyncPrefix)
+        {
+            LOG_ERROR_MESSAGE("RealtimeRaw cannot be combined with embedded_reference or advanced validation modes");
+            return CommandLineStatus::Error;
+        }
+        m_RealtimeUI.RealtimeMode              = true;
+        m_RealtimeUI.RealtimeSamplesPerPixel   = 1;
+        m_RealtimeUI.RealtimeSubSamplingMode   = 0;
+        m_RealtimeUI.StandaloneDenoiser        = false;
+        m_RealtimeUI.RealtimeAA                = RTXPTRealtimeAAMode::Disabled;
+        m_ReferenceUI.NEEType                  = 1;
+        m_ReferenceUI.EnableBloom              = false;
+        m_ReferenceUI.ToneMapping.AutoExposure = false;
+        m_SharcSettings.Enabled                = false;
+        m_EnableVulkanRayReconstruction        = false;
+        m_EnableAsyncPrefix = m_CreateAsyncQueue = false;
+    }
     if (m_ReferenceCapture.Enabled())
     {
         if (m_RealtimeUI.RealtimeMode || m_UseEmbeddedReference || m_ReferenceCapture.Samples == 0 ||
@@ -784,6 +790,7 @@ void RTXPTSample::ResetSceneDependentResources()
     m_EmbeddedDisplaySRV.Release();
     m_EmbeddedReference.reset();
     m_EmbeddedScene.reset();
+    m_RealtimeRaw.reset();
     m_EmbeddedBlit.Reset();
     m_Materials.Reset();
     m_LightsBaker.SceneReloaded();
@@ -1360,8 +1367,8 @@ void RTXPTSample::UpdateFrameConstants(double CurrTime)
                                                 static_cast<Int32>(kRTXPTDenoisingLayerMaxVertexIndex))),
                  m_MaxBounces);
     PtConsts.allowPrimarySurfaceReplacement = m_RealtimeUI.AllowPrimarySurfaceReplacement ? 1u : 0u;
-    PtConsts.genericTSLineStride            = ComputeGenericTSLineStride(RenderWidth);
-    PtConsts.genericTSPlaneStride           = ComputeGenericTSPlaneStride(RenderWidth, RenderHeight);
+    PtConsts.genericTSLineStride            = static_cast<Uint32>(ComputeRTXPTLayerLineStride(RenderWidth));
+    PtConsts.genericTSPlaneStride           = static_cast<Uint32>(ComputeRTXPTLayerPlaneStride(RenderWidth, RenderHeight));
 
     PtConsts.NEEEnabled          = m_EnableNEE ? 1u : 0u;
     PtConsts.NEEType             = static_cast<Uint32>(std::clamp(m_ReferenceUI.NEEType, 0, 2));
@@ -1582,8 +1589,14 @@ bool RTXPTSample::EnsureRenderTargets()
     const bool                        WasRR                 = m_RenderTargets.HasRayReconstructionRenderTargets();
 
     SanitizeRealtimeSettings(m_RealtimeUI);
-    const RTXPTRenderTargetCreateInfo CreateInfo =
+    RTXPTRenderTargetCreateInfo CreateInfo =
         MakeRenderTargetCreateInfo(m_CurrentTargetDimensions, m_RealtimeUI, m_FeatureCaps.RayTracing);
+    if (m_RealtimeRawEnabled)
+    {
+        //The shared Raw view owns layers/guides and never needs progressive radiance storage.
+        CreateInfo.CreateRealtimeResources   = false;
+        CreateInfo.CreateAccumulatedRadiance = false;
+    }
     if (WasRR && (!(OldDimensions == CreateInfo.Dimensions) || !CreateInfo.CreateRayReconstructionResources))
     {
         DrainAsyncPrefix();
@@ -2214,6 +2227,13 @@ bool RTXPTSample::RunRealtimePostProcess()
 
 bool RTXPTSample::RunRealtimePathTraceOnly()
 {
+    if (m_RealtimeRawEnabled)
+    {
+        const bool Ok = RunRealtimeRaw();
+        if (!Ok)
+            ClearFallback(float4{0.9f, 0.15f, 0.05f, 1.0f});
+        return Ok;
+    }
     if (!m_RenderTargets.HasRealtimeRenderTargets())
     {
         RecordRealtimePathTraceStatus(m_RenderTargets.GetLastFailureReason());
@@ -2282,6 +2302,40 @@ bool RTXPTSample::RunRealtimePathTraceOnly()
     }
 
     return true;
+}
+
+bool RTXPTSample::RunRealtimeRaw()
+{
+    DrainAsyncPrefix();
+    if (m_RealtimeRaw)
+        m_RealtimeRaw->InvalidateOutput();
+    if (!PrepareSceneFrame())
+        return false;
+    const Uint32 Width = m_RenderTargets.GetRenderWidth(), Height = m_RenderTargets.GetRenderHeight();
+    if (!m_RealtimeRaw || m_RealtimeRaw->GetTargets().GetRenderWidth() != Width || m_RealtimeRaw->GetTargets().GetRenderHeight() != Height)
+    {
+        auto       Raw  = std::make_unique<RTXPTRealtimeRawPipeline>();
+        const auto Code = Raw->Initialize(m_pDevice, m_pStateCache, m_pPSOCache, m_FrameConstantsCB,
+                                          Width, Height, m_RenderTargets.GetLdrColorRTV()->GetDesc().Format);
+        if (Code != RTXPTErrorCode::Ok)
+        {
+            RecordRealtimePathTraceStatus(GetRTXPTErrorCodeString(Code));
+            return false;
+        }
+        m_RealtimeRaw = std::move(Raw);
+    }
+    const auto Code                 = m_RealtimeRaw->Render(m_pImmediateContext, m_RayTracingPass, m_LightsBaker,
+                                            m_LastFrameConstants, m_ReferenceUI.ToneMapping, m_RenderTargets.GetLdrColorRTV());
+    m_LastRealtimePathTraceExecuted = Code == RTXPTErrorCode::Ok;
+    m_LastRealtimeFinalMergeReady   = m_LastRealtimePathTraceExecuted;
+    if (Code != RTXPTErrorCode::Ok)
+    {
+        RecordRealtimePathTraceStatus(GetRTXPTErrorCodeString(Code));
+        return false;
+    }
+    RecordRealtimePathTraceStatus("RealtimeRaw: current frame; dynamic motion not validated");
+    m_HDRCapture.Capture(m_pDevice, m_pImmediateContext, m_RealtimeRaw->GetTargets().GetOutputColorSRV()->GetTexture(), m_FrameIndex);
+    return m_BlitPass.Render(m_pImmediateContext, m_pSwapChain, m_RenderTargets.GetPresentationSRV());
 }
 
 bool RTXPTSample::CanUseAsyncPrefix() const
@@ -2454,6 +2508,9 @@ void RTXPTSample::Render()
 
 void RTXPTSample::Update(double CurrTime, double ElapsedTime, bool DoUpdateUI)
 {
+    //The Raw validation preset is fixed until the common view settings entry point is added.
+    if (m_RealtimeRawEnabled)
+        DoUpdateUI = false;
     if (m_ReferenceCapture.Enabled())
     {
         CurrTime                               = m_ReferenceCapture.Time;
@@ -2525,7 +2582,18 @@ void RTXPTSample::Update(double CurrTime, double ElapsedTime, bool DoUpdateUI)
     UpdateFrameConstants(CurrTime);
 #if PLATFORM_WIN32
     if (m_ExitAfterFrames != 0 && m_FrameIndex >= m_ExitAfterFrames)
-        PostQuitMessage(0);
+    {
+        if (m_RealtimeRawEnabled)
+        {
+            const auto Stats = m_RealtimeRaw ? m_RealtimeRaw->GetStats() : RTXPTRealtimeRawStats{};
+            std::cout << "RealtimeRaw: frames=" << Stats.CompletedFrames << " build=" << Stats.BuildDispatches
+                      << " fill=" << Stats.FillDispatches << " guides=" << Stats.GuideBakes
+                      << " merge=" << Stats.MergeDispatches << " dynamicMotionValidated=" << Stats.DynamicMotionValidated << std::endl;
+            PostQuitMessage(m_LastFrameSucceeded && Stats.OutputValid ? 0 : 1);
+        }
+        else
+            PostQuitMessage(0);
+    }
 #endif
 }
 

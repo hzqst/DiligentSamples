@@ -211,6 +211,7 @@ private:
 
     std::array<VariantState, static_cast<size_t>(RTXPTPathTraceVariant::Count)> m_Variants;
     RefCntAutoPtr<IBuffer>                                                      m_MiniConstantsCB;
+    RefCntAutoPtr<IBuffer>                                                      m_FrameConstants;
     RefCntAutoPtr<IBufferView>                                                  m_IndexBufferView;
     RefCntAutoPtr<IBuffer>                                                      m_IndexBuffer;
     RTXPTRayTracingBindings                                                     m_Bound;
