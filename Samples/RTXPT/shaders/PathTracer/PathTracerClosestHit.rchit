@@ -60,10 +60,19 @@ namespace PathTracer
         faceNormal                   = frontFacing ? geometricNormal : -geometricNormal;
         worldPos                     = Bridge::computeWorldHitPosition(V0, V1, V2, Attributes.barycentrics);
 #if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
-        const bool previousSurfaceValid = (subInstance.Flags & kSubInstanceFlagPreviousRigidSurface) != 0u &&
+        const bool previousSurfaceValid = (subInstance.Flags & (kSubInstanceFlagPreviousRigidSurface | kSubInstanceFlagPreviousSkinnedSurface)) != 0u &&
                                           g_Const.ptConsts.resetAccumulation == 0u;
         const float3 bary = float3(1.0 - Attributes.barycentrics.x - Attributes.barycentrics.y, Attributes.barycentrics);
-        const float3 localPosition = V0.position * bary.x + V1.position * bary.y + V2.position * bary.z;
+        float3 localPosition = V0.position * bary.x + V1.position * bary.y + V2.position * bary.z;
+        if (previousSurfaceValid && (subInstance.Flags & kSubInstanceFlagPreviousSkinnedSurface) != 0u)
+        {
+            // Positions are already deformed in model-local space. Normal influences and the current pose must not
+            // participate in this reconstruction; apply the previous entity transform exactly once below.
+            const uint3 indices = Bridge::getTriangleIndices(subInstance, PrimitiveIndex()) + subInstance.PreviousVertexOffset;
+            localPosition = t_SkinnedVertexBuffer[indices.x].positionAndNormalX.xyz * bary.x +
+                            t_SkinnedVertexBuffer[indices.y].positionAndNormalX.xyz * bary.y +
+                            t_SkinnedVertexBuffer[indices.z].positionAndNormalX.xyz * bary.z;
+        }
         const float3 previousWorldPosition = previousSurfaceValid ? mul(float4(localPosition, 1.0), subInstance.PreviousTransform).xyz : worldPos;
 #endif
         worldNormal                  = Bridge::interpolateNormal(V0, V1, V2, Attributes.barycentrics);
