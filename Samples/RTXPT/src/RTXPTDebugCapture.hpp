@@ -48,7 +48,8 @@ public:
                      << ",\"invalid_history_instances\":" << History.InvalidHistoryInstances << ','
                      << "\"valid_correspondence_count\":null,\"total_gpu_memory_bytes\":null,"
                         "\"byte_order\":\"little\",\"row_order\":\"top_to_bottom\","
-                        "\"primary_motion_convention\":\"current_to_previous; xy=render_local_pixels_without_jitter; z=previous_clip_w-current_clip_w; w=direct_surface_and_camera_correspondence\","
+                        "\"primary_motion_convention\":\"current_to_previous; xy=render_local_pixels_without_jitter; z=previous_clip_w-current_clip_w; w=exported_surface_and_all_retained_paths_valid\","
+                        "\"specular_motion_convention\":\"current_to_previous; xy=render_local_pixels_without_jitter; z=previous_clip_w-current_clip_w; w=one_supported_reflected_path_valid\","
                         "\"virtual_motion_convention\":\"packed layer world-space current_to_previous\",\"resources\":[\n";
             struct Output
             {
@@ -60,6 +61,7 @@ public:
                 {RTXPTViewOutput::Display, "display"},
                 {RTXPTViewOutput::RayDistance, "ray_distance_not_view_z"},
                 {RTXPTViewOutput::PrimaryMotion, "primary_motion"},
+                {RTXPTViewOutput::SpecularMotion, "specular_motion"},
                 {RTXPTViewOutput::SpecularHitDistance, "specular_hit_distance"},
                 {RTXPTViewOutput::AverageLayerRadiance, "average_layer_radiance"},
                 {RTXPTViewOutput::LayerHeader, "layer_header"}};
@@ -91,7 +93,7 @@ public:
                      << ",\"line_stride\":" << ComputeRTXPTLayerLineStride(Color.Size.Width)
                      << ",\"plane_stride\":" << ComputeRTXPTLayerPlaneStride(Color.Size.Width, Color.Size.Height)
                      << ",\"layout\":\"shaders/PathTracer/DenoisingLayers.hlsli:DenoisingLayer\","
-                        "\"validity\":\"layer header and VertexIndexAndRoughness high 16 bits; inactive/padding undefined\"},\n";
+                        "\"validity\":\"layer header and VertexIndexAndRoughness high 16 bits; PreviousVirtualPosition.w is path history validity; inactive/padding undefined\"},\n";
             View.GetProfiler().Poll();
             WriteTiming(Manifest, View.GetProfiler());
             Manifest << ",\"unavailable_stages\":[\"NRD\",\"TAA\",\"SR\",\"RR\",\"Bloom\"]\n}\n";

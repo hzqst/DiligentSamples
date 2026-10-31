@@ -104,6 +104,8 @@ void RTXPTRenderTargets::Reset()
     m_Depth.Release();
     m_PreviousDepth.Release();
     m_ScreenMotionVectors.Release();
+    m_SpecularMotion.Release();
+    m_PreviousAvgLayerRadiance.Release();
     m_TemporalFeedback1.Release();
     m_TemporalFeedback2.Release();
     m_CombinedHistoryClampRelax.Release();
@@ -376,6 +378,8 @@ bool RTXPTRenderTargets::Resize(IRenderDevice* pDevice, const RTXPTRenderTargetC
     RefCntAutoPtr<ITexture>                                        Depth;
     RefCntAutoPtr<ITexture>                                        PreviousDepth;
     RefCntAutoPtr<ITexture>                                        ScreenMotionVectors;
+    RefCntAutoPtr<ITexture>                                        SpecularMotion;
+    RefCntAutoPtr<ITexture>                                        PreviousAvgLayerRadiance;
     RefCntAutoPtr<ITexture>                                        TemporalFeedback1;
     RefCntAutoPtr<ITexture>                                        TemporalFeedback2;
     RefCntAutoPtr<ITexture>                                        CombinedHistoryClampRelax;
@@ -427,6 +431,9 @@ bool RTXPTRenderTargets::Resize(IRenderDevice* pDevice, const RTXPTRenderTargetC
 
     if (!CreateTarget(pDevice, MakeTargetDesc("RTXPT ScreenMotionVectors", RenderWidth, RenderHeight, Formats.ScreenMotionVectors, UavFlags), ScreenMotionVectors))
         return FailResize("Failed to create RTXPT ScreenMotionVectors");
+    if (CreateRealtimeResources &&
+        !CreateTarget(pDevice, MakeTargetDesc("RTXPT SpecularMotion", RenderWidth, RenderHeight, TEX_FORMAT_RGBA16_FLOAT, UavFlags), SpecularMotion))
+        return FailResize("Failed to create RTXPT SpecularMotion");
 
     if (!CreateTarget(pDevice, MakeTargetDesc("RTXPT ProcessedOutputColor", DisplayWidth, DisplayHeight, Formats.ProcessedOutputColor, HdrRtFlags), ProcessedOutputColor))
         return FailResize("Failed to create RTXPT ProcessedOutputColor");
@@ -505,6 +512,8 @@ bool RTXPTRenderTargets::Resize(IRenderDevice* pDevice, const RTXPTRenderTargetC
 
         if (!CreateTarget(pDevice, MakeTargetDesc("RTXPT DenoiserAvgLayerRadianceHalfRes", HalfRenderWidth, HalfRenderHeight, Formats.DenoiserAvgLayerRadianceHalfRes, UavFlags), DenoiserAvgLayerRadianceHalfRes))
             return FailResize("Failed to create RTXPT DenoiserAvgLayerRadianceHalfRes");
+        if (!CreateTarget(pDevice, MakeTargetDesc("RTXPT PreviousAvgLayerRadiance", HalfRenderWidth, HalfRenderHeight, Formats.DenoiserAvgLayerRadianceHalfRes, BIND_SHADER_RESOURCE), PreviousAvgLayerRadiance))
+            return FailResize("Failed to create RTXPT PreviousAvgLayerRadiance");
     }
 
     Reset();
@@ -517,6 +526,8 @@ bool RTXPTRenderTargets::Resize(IRenderDevice* pDevice, const RTXPTRenderTargetC
     m_Depth                               = Depth;
     m_PreviousDepth                       = PreviousDepth;
     m_ScreenMotionVectors                 = ScreenMotionVectors;
+    m_SpecularMotion                      = SpecularMotion;
+    m_PreviousAvgLayerRadiance            = PreviousAvgLayerRadiance;
     m_TemporalFeedback1                   = TemporalFeedback1;
     m_TemporalFeedback2                   = TemporalFeedback2;
     m_CombinedHistoryClampRelax           = CombinedHistoryClampRelax;
@@ -615,6 +626,7 @@ bool RTXPTRenderTargets::HasRealtimeRenderTargets() const
                     [](const RefCntAutoPtr<ITexture>& Texture) { return Texture != nullptr; });
 
     return m_PreviousDepth != nullptr &&
+        m_SpecularMotion != nullptr &&
         m_StableRadiance != nullptr &&
         m_DenoisingLayersHeader != nullptr &&
         m_DenoisingLayersBuffer != nullptr &&
@@ -631,6 +643,7 @@ bool RTXPTRenderTargets::HasRealtimeRenderTargets() const
           HasPerPlaneOutputs &&
           (!m_DenoiserValidationRequested || m_DenoiserOutValidation != nullptr))) &&
         m_DenoiserAvgLayerRadianceHalfRes != nullptr &&
+        m_PreviousAvgLayerRadiance != nullptr &&
         m_DenoisingLayersElementCount > 0;
 }
 
@@ -767,6 +780,21 @@ ITextureView* RTXPTRenderTargets::GetScreenMotionVectorsUAV() const
 ITextureView* RTXPTRenderTargets::GetScreenMotionVectorsSRV() const
 {
     return m_ScreenMotionVectors ? m_ScreenMotionVectors->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE) : nullptr;
+}
+
+ITextureView* RTXPTRenderTargets::GetSpecularMotionUAV() const
+{
+    return m_SpecularMotion ? m_SpecularMotion->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS) : nullptr;
+}
+
+ITextureView* RTXPTRenderTargets::GetSpecularMotionSRV() const
+{
+    return m_SpecularMotion ? m_SpecularMotion->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE) : nullptr;
+}
+
+ITextureView* RTXPTRenderTargets::GetPreviousAvgLayerRadianceSRV() const
+{
+    return m_PreviousAvgLayerRadiance ? m_PreviousAvgLayerRadiance->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE) : nullptr;
 }
 
 ITextureView* RTXPTRenderTargets::GetTemporalFeedback1UAV() const

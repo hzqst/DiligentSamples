@@ -115,8 +115,11 @@ struct RTXPTDenoisingLayerData
     Uint32 PackedNoisyRadianceAndSpecAvg[2] = {};
     Uint32 FlagsAndVertexIndex              = 0;
     Uint32 PackedCounters                   = 0;
+    // xyz: previous virtual surface; w: valid path correspondence (not a vendor motion mask).
+    float4 PreviousVirtualPosition = {};
 };
-static_assert(sizeof(RTXPTDenoisingLayerData) == 80, "RTXPTDenoisingLayerData layout must match PathTracer/DenoisingLayers.hlsli DenoisingLayer");
+static_assert(sizeof(RTXPTDenoisingLayerData) == 96, "RTXPTDenoisingLayerData layout must match PathTracer/DenoisingLayers.hlsli DenoisingLayer");
+static_assert(offsetof(RTXPTDenoisingLayerData, PreviousVirtualPosition) == 80, "Previous virtual surface offset must match DenoisingLayer");
 static_assert(offsetof(RTXPTDenoisingLayerData, LastRayTCurrent) == 12, "RTXPTDenoisingLayerData LastRayTCurrent offset must match DenoisingLayer");
 static_assert(offsetof(RTXPTDenoisingLayerData, RayDir) == 16, "RTXPTDenoisingLayerData RayDir offset must match DenoisingLayer");
 static_assert(offsetof(RTXPTDenoisingLayerData, SceneLength) == 28, "RTXPTDenoisingLayerData SceneLength offset must match DenoisingLayer");
@@ -182,6 +185,9 @@ public:
     ITextureView* GetPreviousDepthRTV() const;
     ITextureView* GetScreenMotionVectorsUAV() const;
     ITextureView* GetScreenMotionVectorsSRV() const;
+    ITextureView* GetSpecularMotionUAV() const;
+    ITextureView* GetSpecularMotionSRV() const;
+    ITextureView* GetPreviousAvgLayerRadianceSRV() const;
     ITextureView* GetTemporalFeedback1UAV() const;
     ITextureView* GetTemporalFeedback1SRV() const;
     ITextureView* GetTemporalFeedback2UAV() const;
@@ -279,6 +285,8 @@ private:
     RefCntAutoPtr<ITexture>                                        m_Depth;
     RefCntAutoPtr<ITexture>                                        m_PreviousDepth;
     RefCntAutoPtr<ITexture>                                        m_ScreenMotionVectors;
+    RefCntAutoPtr<ITexture>                                        m_SpecularMotion;
+    RefCntAutoPtr<ITexture>                                        m_PreviousAvgLayerRadiance;
     RefCntAutoPtr<ITexture>                                        m_TemporalFeedback1;
     RefCntAutoPtr<ITexture>                                        m_TemporalFeedback2;
     RefCntAutoPtr<ITexture>                                        m_CombinedHistoryClampRelax;

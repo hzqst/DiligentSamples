@@ -245,6 +245,7 @@ namespace PathTracer
                                     0.0, 0.0, 1.0));
         path.setFlag(PathFlags::denoisingLayerOnDominantBranch, true);
         path.SetMotionVectorSceneLength(0.0);
+        path.previousReflectionPlane = 0.0.xxxx;
 #else
         path.SetL(float4(0.0, 0.0, 0.0, 0.0));
         path.SetFireflyFilterK_BsdfScatterPdf(1.0, 0.0);

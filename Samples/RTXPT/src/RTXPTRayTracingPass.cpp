@@ -340,7 +340,8 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice* pDevice, IDeviceContext* pCo
             TracesVisibilityFromHit && !UseInlineVisibility ? 2 : 1;
         PSOCreateInfo.RayTracingPipeline.ShaderRecordSize = 0;
         PSOCreateInfo.MaxAttributeSize                    = static_cast<Uint32>(sizeof(float) * 2);
-        PSOCreateInfo.MaxPayloadSize                      = static_cast<Uint32>(sizeof(float) * 20);
+        PSOCreateInfo.MaxPayloadSize                      = static_cast<Uint32>(sizeof(float) *
+                                                           (Variant == RTXPTPathTraceVariant::BuildDenoisingLayers ? 24 : 20));
 
         PipelineResourceLayoutDescX ResourceLayout;
         ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE;

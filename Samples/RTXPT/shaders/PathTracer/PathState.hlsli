@@ -38,6 +38,7 @@ enum class PathFlags
     denoisingLayerBaseScatterDiff      = (1 << 18),
     exportSpecHitTQueued            = (1 << 19),
     denoisingLayerOnDominantBranch     = (1 << 20),
+    unsupportedMotionPath             = (1 << 10),
 };
 
 enum class PackedCounters
@@ -55,6 +56,7 @@ struct PathState
     uint2 pack23;
 #if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
     uint2 imageXformPacked;
+    float4 previousReflectionPlane;
 #else
     uint2 pack45;
 #endif

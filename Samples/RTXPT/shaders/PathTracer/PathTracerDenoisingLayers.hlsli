@@ -29,6 +29,12 @@ namespace PathTracer
         newPath.SetOrigin(shadingData.computeNewRayOrigin(lobe.transmission == 0));
         newPath.stableBranchID = DenoisingLayersAdvanceBranchID(oldPath.stableBranchID, deltaLobeIndex);
         newPath.setScatterDelta();
+        const bool supportedReflection = oldPath.getVertexIndex() == 1 && lobe.transmission == 0 &&
+            oldPath.GetMotionVectorSceneLength() == 0 &&
+            dot(surfaceData.previousReflectionPlane.xyz, surfaceData.previousReflectionPlane.xyz) > 0.5;
+        newPath.setFlag(PathFlags::unsupportedMotionPath,
+            oldPath.hasFlag(PathFlags::unsupportedMotionPath) || !supportedReflection);
+        newPath.previousReflectionPlane = surfaceData.previousReflectionPlane;
 
         if (lobe.transmission == 0)
         {
@@ -190,7 +196,23 @@ namespace PathTracer
             float3 virtualWorldPos  = cameraRay.origin + cameraRay.dir * sceneLengthForMVs;
             float3 worldMotion      = surfaceData.prevPosW - surfaceData.shadingData.posW;
             float3 virtualWorldMotion = mul(imageXform, worldMotion);
+            const bool singleReflection = vertexIndex == 2 && !blockedAtSurface &&
+                !path.hasFlag(PathFlags::unsupportedMotionPath);
+            bool historyValid = surfaceData.previousSurfaceValid && (vertexIndex == 1 || singleReflection);
+            float3 previousVirtualPos = virtualWorldPos + virtualWorldMotion;
+            if (singleReflection)
+            {
+                const float4 plane = path.previousReflectionPlane;
+                previousVirtualPos = surfaceData.prevPosW -
+                    2.0 * (dot(plane.xyz, surfaceData.prevPosW) + plane.w) * plane.xyz;
+                virtualWorldMotion = previousVirtualPos - virtualWorldPos;
+            }
+            historyValid = historyValid && all(isfinite(previousVirtualPos)) &&
+                all(isfinite(virtualWorldMotion)) && all(abs(virtualWorldMotion) <= HLF_MAX);
             float3 motionVectors      = Bridge::computeMotionVector(virtualWorldPos, virtualWorldPos + virtualWorldMotion);
+            historyValid = historyValid && all(isfinite(motionVectors)) && all(abs(motionVectors) <= HLF_MAX) &&
+                mul(float4(previousVirtualPos, 1.0), g_Const.previousView.MatWorldToClipNoOffset).w > 0.0;
+            motionVectors = all(isfinite(motionVectors)) ? clamp(motionVectors, -HLF_MAX, HLF_MAX) : 0.0.xxx;
 
             float roughness    = saturate(surfaceData.bsdf.standardData.Roughness());
             float3 worldNormal = normalize(mul((float3x3)imageXform, surfaceData.shadingData.N));
@@ -219,11 +241,15 @@ namespace PathTracer
                                                          diffBSDFEstimate,
                                                          specBSDFEstimate,
                                                          isDominant,
-                                                         0,
-                                                         0);
+                                                         path.flagsAndVertexIndex,
+                                                         path.packedCounters,
+                                                         float4(previousVirtualPos, historyValid ? 1.0 : 0.0));
 
             if (isDominant)
+            {
                 Bridge::ExportSurface(path, surfaceData, sceneLengthForMVs, motionVectors);
+                u_MotionVectors[pixelPos].w = historyValid ? 1.0 : 0.0;
+            }
 
             path.terminate();
         }
@@ -322,8 +348,9 @@ namespace PathTracer
                                                      skyAlbedo,
                                                      blockedAtSurface ? 0.5.xxx : 0.xxx,
                                                      isDominant,
-                                                     0,
-                                                     0);
+                                                     path.flagsAndVertexIndex,
+                                                     path.packedCounters,
+                                                     float4(virtualWorldPos, 0.0));
 
         if (isDominant)
             Bridge::ExportNonSurface(path, virtualWorldPos, motionVectors);

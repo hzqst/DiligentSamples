@@ -441,8 +441,8 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
     Constants.envMap                    = S.Environment.GetConstants();
     if (R.Mode == RTXPTViewMode::RealtimeRaw)
     {
-        // Light feedback cannot reject individual surfaces yet. Reset that consumer conservatively, while retaining
-        // per-surface motion validity for debug/future consumers.
+        // Build supplies per-pixel path validity. Also reset the shared light proposals conservatively when
+        // actual scene instances lack correspondence (including missing/recovered parts).
         const bool FeedbackReset = ResetHistory || Frame.InvalidHistoryInstances != 0;
         if (FeedbackReset)
             R.LightsBaker.RequestFeedbackReset();
@@ -514,6 +514,7 @@ RTXPTViewOutputInfo RTXPTEmbeddedView::GetOutputInfo(RTXPTViewOutput Output) con
         case RTXPTViewOutput::AccumulatedRadiance: Texture = R.Accumulated; break;
         case RTXPTViewOutput::RayDistance: Texture = TextureOf(Targets.GetDepthSRV()); break;
         case RTXPTViewOutput::PrimaryMotion: Texture = TextureOf(Targets.GetScreenMotionVectorsSRV()); break;
+        case RTXPTViewOutput::SpecularMotion: Texture = TextureOf(Targets.GetSpecularMotionSRV()); break;
         case RTXPTViewOutput::SpecularHitDistance: Texture = TextureOf(Targets.GetSpecularHitTSRV()); break;
         case RTXPTViewOutput::AverageLayerRadiance: Texture = TextureOf(Targets.GetDenoiserAvgLayerRadianceHalfResSRV()); break;
         case RTXPTViewOutput::LayerHeader: Texture = TextureOf(Targets.GetDenoisingLayersHeaderSRV()); break;

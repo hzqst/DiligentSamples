@@ -6,7 +6,11 @@
 // Packed and aligned representation of PathState in a pre-raytrace state.
 struct PAYLOAD_QUALIFIER PathPayload
 {
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
+    uint4 packed[6] PAYLOAD_FIELD_RW_ALL;
+#else
     uint4 packed[5] PAYLOAD_FIELD_RW_ALL;
+#endif
 
 #ifdef PATH_STATE_DEFINED
     static PathPayload pack(const PathState path);
@@ -26,6 +30,7 @@ PathPayload PathPayload::pack(const PathState path)
     p.packed[2].xy = path.pack23;
 #if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
     p.packed[2].zw = path.imageXformPacked;
+    p.packed[5] = asuint(path.previousReflectionPlane);
 #else
     p.packed[2].zw = path.pack45;
 #endif
@@ -56,6 +61,7 @@ PathState PathPayload::unpack(const PathPayload p)
     path.pack23 = p.packed[2].xy;
 #if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
     path.imageXformPacked = p.packed[2].zw;
+    path.previousReflectionPlane = asfloat(p.packed[5]);
 #else
     path.pack45 = p.packed[2].zw;
 #endif

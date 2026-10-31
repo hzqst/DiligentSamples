@@ -64,6 +64,8 @@ enum class RTXPTViewOutput
     //Raw debug inputs: ray distance is NOT view-space Z; motion remains unvalidated for dynamic surfaces until M2.
     RayDistance,
     PrimaryMotion,
+    // Current-to-previous render-local pixel motion for one supported reflected path; w is validity.
+    SpecularMotion,
     SpecularHitDistance,
     AverageLayerRadiance,
     LayerHeader,
