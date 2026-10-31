@@ -303,7 +303,7 @@ namespace Bridge
         u_Depth[pixelPos]         = sceneLength;
         u_MotionVectors[pixelPos] = float4(motionVectors, 0.0);
 #if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
-        // w is an explicit direct rigid surface/camera correspondence flag. Reflected paths remain unvalidated.
+        // w is an explicit direct surface/camera correspondence flag. Reflected paths remain unvalidated.
         u_MotionVectors[pixelPos].w = surfaceData.previousSurfaceValid && path.getVertexIndex() == 1 ? 1.0 : 0.0;
 #endif
 #if PATH_TRACER_MODE != PATH_TRACER_MODE_REFERENCE || defined(__INTELLISENSE__)

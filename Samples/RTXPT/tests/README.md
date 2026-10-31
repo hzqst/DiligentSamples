@@ -14,8 +14,9 @@ row sizes. Binary outputs include current noisy HDR, encoded display, ray distan
 (not ViewZ), primary motion, specular hit distance, average layer radiance, all
 header planes and the actual packed surface buffer. The latter follows
 `PathTracer/DenoisingLayers.hlsli`; inactive records and padding are undefined.
-It is not a set of validated standalone NRD/RR input textures. Dynamic surface
-motion/correspondence remains explicitly unvalidated.
+It is not a set of validated standalone NRD/RR input textures. Direct rigid/skinned
+correspondence has numerical tests below; complete dynamic/path-space validity
+remains explicitly unvalidated.
 
 ```text
 python tests/validate_realtime_capture.py <capture-directory>
@@ -34,7 +35,7 @@ and TLAS is separate. Nested intervals must not be summed with Total/ScenePrepar
 NRD, TAA, SR, RR and Bloom are not active in Raw. Total GPU allocation is unavailable;
 the manifest does not pass readback byte counts off as VRAM residency.
 
-## Prepared rigid surface history
+## Prepared surface history
 
 `SceneRuntimeTest.cpp` exercises the production `RTXPTSceneHistory` with stable
 slot/generation handles, compact-row removal, reset/untracked transitions,
@@ -53,26 +54,55 @@ view's camera correspondence. A view missing preparations must also restart.
 The shader reconstructs the same immutable triangle and barycentrics through the
 previous instance transform. It retains the existing path-space motion transform.
 Primary motion xyz remains current-to-previous render-local pixels with clip-w
-depth change in z. Its w is now one only for a direct rigid surface with valid
+depth change in z. Its w is now one only for a direct rigid or skinned surface with valid
 surface and camera correspondence. It does not establish visibility/disocclusion
-validity. Skinned and reflected paths remain invalid here; the aggregate
+validity. Reflected paths remain invalid here; the aggregate
 `DynamicMotionValidated` capability remains false. Hosts must explicitly use
 Untracked when they cannot promise continuity. Reset is a discontinuity event;
 a subsequent Continuous frame can use the reset frame as its new baseline.
 
-Capture metadata includes scene/view tokens, rigid valid/invalid instance counts,
-light-feedback reset, and allocated previous-transform matrix bytes. Instance
+Capture metadata includes scene/view tokens, rigid/skinned valid and invalid instance counts,
+light-feedback reset, allocated previous-transform matrix bytes, occupied second
+skinned ranges and total skinned arena storage. The previous-surface byte total
+includes matrices and second ranges, excluding unused skinned arena capacity. Instance
 counts are not pixel correspondence counts or total GPU memory. Since the light
 feedback consumer cannot reject individual surfaces, any invalid instance or
 camera correspondence resets that consumer conservatively. Raw radiance never
-uses Reference accumulation. Normal continuous rigid/camera motion need not reset.
+uses Reference accumulation. Normal continuous rigid/skinned/camera motion need not reset.
 
 Host GPU regression uses an independent planar projection oracle for translation,
 combined camera/object translation, rotation and nonuniform scale, with a fixed
 0.25-pixel tolerance for FP16 output. It also checks interrupted views, repeated
 snapshots, explicit resets, failed Prepare/retry, and multiple recorded frames
-without intervening readback waits. These tests do not validate skinned motion,
-moving mirrors, semantic camera identity, teleport detection, or reconstruction.
+without intervening readback waits. Moving mirrors, semantic camera identity,
+teleport detection and reconstruction remain outside these tests.
+
+Skinned instances allocate two ranges in the existing packed vertex arena. On a
+changed pose, `RTXPTSkinnedVertexHistory` selects the range that does not contain
+the last successful scene's vertices. Skin/BLAS cache success and whole-scene
+publication are separate: a failed BLAS or later Prepare stage may dirty only the
+working range. Identical-pose retries reuse successful work when possible, and
+unchanged poses share current/previous positions without an extra skin dispatch.
+Successful absence invalidates history; failed attempts cannot evict a published
+range just by advancing the retention counter. Arena growth copies both ranges.
+
+Closest-hit reads `PreviousVertexOffset` through the existing skinned SRV, uses
+the same primitive/barycentrics, and applies the previous entity transform once.
+It does not skin current vertices again or confuse normal influences with position
+influences. The shared sub-instance layout is 112 bytes, including explicit scalar
+padding after the new offset. Current shading, visibility and emissive consumers
+continue to read `VertexOffset`.
+
+The GPU skin oracle uses two bones, blended position weights and distinct normal
+influences with a fixed entity transform, then combines skinning with entity
+scale/translation. It covers indexed and non-indexed triangles with nonzero first
+vertex, unchanged poses, arena growth during queued frames, interrupted views,
+reset/recovery, and 120 consecutive animated frames without per-frame history reset.
+Commands use normal Flush/FinishFrame and fence-based resource retirement; explicit
+readback waits occur outside the queued sequence. These frame boundaries are
+required to retire dynamic descriptors in a headless test, just as in the host.
+The CPU history test and existing retry harness also verify that a skin write
+followed by BLAS failure, or later scene failure, cannot overwrite published data.
 
 ## Frozen Reference baseline
 

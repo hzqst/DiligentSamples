@@ -197,8 +197,11 @@ struct RTXPTEmbeddedView::Impl
         LastScene                             = Prepared;
         const auto& Stats                     = Scene->Frames.GetStats();
         History.ValidPreviousRigidInstances   = Stats.ValidPreviousRigidInstances;
+        History.ValidPreviousSkinnedInstances = Stats.ValidPreviousSkinnedInstances;
         History.InvalidHistoryInstances       = Stats.InvalidHistoryInstances;
         History.PreviousTransformStorageBytes = Stats.PreviousTransformStorageBytes;
+        History.PreviousSkinnedRangeBytes     = Stats.PreviousSkinnedRangeBytes;
+        History.SkinnedVertexStorageBytes     = Stats.SkinnedVertexStorageBytes;
         History.LightFeedbackHistoryFrames    = LightsBaker.GetFeedbackHistoryFrameCount();
         PreviousCamera                        = Camera;
         PreviousView                          = View;

@@ -1,6 +1,7 @@
 // Copyright 2026 Diligent Graphics LLC. Licensed under Apache-2.0.
 // RTXPTSceneRuntime without a device: asset validation, update transactions, handle generations, revisions and
 // snapshot immutability.
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <iostream>
@@ -10,6 +11,7 @@
 #include <vector>
 #include "../src/RTXPTSceneRuntime.hpp"
 #include "../src/RTXPTSceneHistory.hpp"
+#include "../src/RTXPTSkinnedVertexHistory.hpp"
 using namespace Diligent;
 
 static void Require(bool OK, const std::string& Text)
@@ -463,6 +465,7 @@ static void TestPreparedRigidHistory()
     RTXPTSceneHistory SkinnedHistory;
     SkinnedHistory.Publish(SkinnedSnapshot);
     Require(!SkinnedHistory.FindPreviousRigid(*SkinnedState), "skinned geometry cannot pretend current deformation is previous data");
+    Require(SkinnedHistory.FindPreviousSurface(*SkinnedState), "stable skinned topology can be paired with a published deformed range");
 
     auto OtherGeometry     = *TrackedAgain->Instances[0];
     OtherGeometry.Geometry = std::make_shared<RTXPTGeometryAsset>(*OtherGeometry.Geometry);
@@ -488,6 +491,48 @@ static void TestPreparedRigidHistory()
     Require(NewToken.Epoch != OldEpoch && !Repeated.IsPreviousOf(NewToken), "residency reset creates a different epoch");
 }
 
+static void TestSkinnedVertexHistory()
+{
+    constexpr Uint32          VertexCount    = 3;
+    constexpr Uint32          AllocationBase = 6;
+    RTXPTSkinnedVertexHistory History{AllocationBase, VertexCount};
+    std::vector<float>        Storage(AllocationBase + VertexCount * RTXPTSkinnedVertexHistory::RangeCount);
+    auto                      WritePose = [&](Uint64 Revision, float Position) {
+        Require(History.PreparePose(Revision), "changed pose requests skinning");
+        std::fill_n(Storage.begin() + History.OutputBase, VertexCount, Position);
+    };
+    Require(!History.HasPreviousPose(1), "new skin has no published vertices");
+    WritePose(1, 1);
+    History.PoseRevision = 1; // Skin and BLAS succeeded, but the containing Prepare has not committed yet.
+    Require(!History.HasPreviousPose(1), "successful skin alone cannot publish scene history");
+    History.Publish();
+    const auto FirstBase = History.GetPreviousBase();
+    Require(History.HasPreviousPose(1) && !History.PreparePose(1), "unchanged pose shares published vertices without reskinning");
+    WritePose(2, 2);
+    const auto ScratchBase = History.OutputBase;
+    Require(FirstBase != ScratchBase && 1 == Storage[FirstBase], "new skin cannot overwrite the last successful surface");
+    // Simulate failed BLAS: do not accept PoseRevision. Identical-pose retry must reuse the scratch range.
+    WritePose(2, 2);
+    Require(ScratchBase == History.OutputBase && History.HasPreviousPose(1), "failed BLAS retry preserves published surface");
+    History.PoseRevision = 2;
+    Require(!History.PreparePose(2), "retry after a later Prepare failure can reuse completed skin/BLAS");
+    Require(History.HasPreviousPose(1) && !History.HasPreviousPose(2), "later scene failure cannot publish partial skin results");
+    WritePose(3, 3);
+    Require(ScratchBase == History.OutputBase && 1 == Storage[FirstBase], "different-pose retry still protects successful baseline");
+    History.PoseRevision = 3;
+    History.Publish();
+    Require(History.HasPreviousPose(3) && ScratchBase == History.GetPreviousBase(), "whole Prepare success advances skin baseline");
+    Storage.resize(Storage.size() * 2);
+    Require(3 == Storage[History.GetPreviousBase()], "stable offsets survive storage relocation");
+    WritePose(4, 4);
+    Require(FirstBase == History.OutputBase && 3 == Storage[History.GetPreviousBase()], "next frame reuses only the older range");
+    History.PoseRevision = 4;
+    History.Publish();
+    History.InvalidatePrevious();
+    Require(!History.HasPrevious() && !History.HasPreviousPose(4), "successful absence invalidates published skin history");
+    Require(!History.PreparePose(4), "absence does not discard reusable current pose cache");
+}
+
 int main()
 {
     try
@@ -499,6 +544,7 @@ int main()
         TestInstanceLifecycle();
         TestPosesMaterialsAndLights();
         TestPreparedRigidHistory();
+        TestSkinnedVertexHistory();
     }
     catch (const std::exception& Error)
     {

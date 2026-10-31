@@ -21,7 +21,7 @@ struct RTXPTPreparedSceneToken
     }
 };
 
-// CPU correspondence for immutable rigid geometry. Publish only after all Prepare work succeeds.
+// CPU correspondence for immutable geometry/layout. Publish only after all Prepare work succeeds.
 // A failed attempt invalidates the public token but cannot overwrite the last successful baseline.
 // Geometry ownership prevents pointer/asset reuse; current compact TLAS rows never identify past instances.
 class RTXPTSceneHistory
@@ -49,7 +49,12 @@ public:
     }
     const RTXPTSceneInstanceState* FindPreviousRigid(const RTXPTSceneInstanceState& Current) const
     {
-        if (!m_Previous || !Current.Enabled || !Current.Geometry || Current.Geometry->IsSkinned() ||
+        return Current.Geometry && !Current.Geometry->IsSkinned() ? FindPreviousSurface(Current) : nullptr;
+    }
+    // Skinned correspondence additionally requires the builder's published deformed vertex range.
+    const RTXPTSceneInstanceState* FindPreviousSurface(const RTXPTSceneInstanceState& Current) const
+    {
+        if (!m_Previous || !Current.Enabled || !Current.Geometry ||
             Current.Continuity != RTXPTInstanceContinuity::Continuous)
             return nullptr;
         const auto& Instances = m_Previous->Instances;

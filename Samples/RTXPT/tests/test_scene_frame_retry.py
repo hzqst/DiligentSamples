@@ -27,6 +27,7 @@ MOCKS = r'''
 #include <memory>
 #include <vector>
 #include <cstdio>
+#include "RTXPTSkinnedVertexHistory.hpp"
 using Uint32 = uint32_t;
 using Uint64 = uint64_t;
 constexpr int BIND_RAY_TRACING=1, BUFFER_MODE_UNDEFINED=0, USAGE_IMMUTABLE=1;
@@ -90,13 +91,22 @@ enum class RTXPTErrorCode { Ok, SkinningPassFailed, JointPaletteFailed, Skinning
 #define LOG_ERROR_MESSAGE(...) ((void)0)
 struct RTXPTGeometryAsset { const char* Name="skin"; };
 struct GeometryResidency { Uint32 VertexBase=0,SkinBase=0,NormalSkinBase=0; };
-struct SkinnedInstance { Uint32 OutputBase=0,VertexCount=3; Uint64 PoseRevision=0; RefCntAutoPtr<IBottomLevelAS> BLAS; std::vector<Uint64> AnyHitMask; };
+struct SkinnedInstance { Diligent::RTXPTSkinnedVertexHistory Vertices{0,3}; RefCntAutoPtr<IBottomLevelAS> BLAS; std::vector<Uint64> AnyHitMask; bool NeedsBLASRebuild=false; };
 struct State { std::shared_ptr<RTXPTGeometryAsset> Geometry=std::make_shared<RTXPTGeometryAsset>(); std::shared_ptr<std::vector<float4x4>> Pose=std::make_shared<std::vector<float4x4>>(1); Uint64 PoseRevision=1; Uint32 MeshIndex=0; };
-struct SkinJob { bool Reskin=true,Rebuild=false; State* pState; SkinnedInstance* pInstance; GeometryResidency* pGeometry; Uint32 TLASIndex=0; };
+struct SkinJob { bool Reskin=true; State* pState; SkinnedInstance* pInstance; GeometryResidency* pGeometry; Uint32 TLASIndex=0; };
 struct RTXPTSkinningBindings { IBuffer *pSourceVertices,*pSkinData,*pJointMatrices,*pSkinnedVertices; };
 struct RTXPTSkinningDispatch { Uint32 SourceVertexBase,DestVertexBase,JointBase,VertexCount,SkinBase,NormalSkinBase; };
 struct BufferHolder { IBuffer* Buffer=nullptr; bool Upload(MockDevice*, IDeviceContext*, const std::vector<float4x4>&, bool&) { return true; } };
-struct MockSkinning { bool IsReady() { return true; } bool Initialize(MockDevice*, void*, void*, void*) { return true; } bool Bind(RTXPTSkinningBindings) { return true; } bool Dispatch(IDeviceContext*, RTXPTSkinningDispatch) { return true; } };
+struct MockSkinning {
+    float value=1;
+    std::vector<float> positions=std::vector<float>(6);
+    bool IsReady() { return true; }
+    bool Initialize(MockDevice*, void*, void*, void*) { return true; }
+    bool Bind(RTXPTSkinningBindings) { return true; }
+    bool Dispatch(IDeviceContext*, RTXPTSkinningDispatch range) {
+        std::fill_n(positions.begin()+range.DestVertexBase,range.VertexCount,value); return true;
+    }
+};
 struct Fixture {
     MockDevice* Device;
     RefCntAutoPtr<IBuffer> BLASScratch, PlaceholderVertices, TLASInstanceBuffer, TLASScratch;
@@ -107,7 +117,9 @@ struct Fixture {
     BufferHolder JointMatrices,Vertices,SkinData,SkinnedVertices;
     struct { void *pEngineFactory=nullptr,*pStateCache=nullptr,*pPSOCache=nullptr; } CreateInfo;
     bool failSkinBuild=true;
+    int skinBuilds=0;
     bool BuildMeshBLAS(IDeviceContext*, const RTXPTGeometryAsset&, const GeometryResidency&, Uint32, const std::vector<Uint64>&, IBuffer*, Uint32, RefCntAutoPtr<IBottomLevelAS>& blas) {
+        ++skinBuilds;
         if (!blas) blas.ptr=std::make_shared<IBottomLevelAS>();
         if (failSkinBuild) return false;
         blas->built=true; return true;
@@ -139,14 +151,41 @@ int main() {
         assert(f.BuildPlaceholderBLAS(&context) && context.blasBuilds==1);
     }
     MockDevice device; IDeviceContext context; Fixture f{&device}; State state; SkinnedInstance instance; GeometryResidency geometry;
-    std::vector<SkinJob> jobs{{true,false,&state,&instance,&geometry,0}};
+    std::vector<SkinJob> jobs{{true,&state,&instance,&geometry,0}};
     std::vector<TLASBuildInstanceData> instances(1); bool changed=false;
     assert(f.PrepareSkinnedInstances(&context,jobs,instances,changed)==RTXPTErrorCode::BLASBuildFailed);
-    assert(instance.PoseRevision==0);
-    jobs[0].Reskin=instance.PoseRevision!=state.PoseRevision; f.failSkinBuild=false;
+    assert(instance.Vertices.PoseRevision==0);
+    jobs[0].Reskin=instance.Vertices.PoseRevision!=state.PoseRevision; f.failSkinBuild=false;
     assert(f.PrepareSkinnedInstances(&context,jobs,instances,changed)==RTXPTErrorCode::Ok);
-    assert(instance.PoseRevision==state.PoseRevision && instance.BLAS->built);
-    std::puts("TLAS/placeholder allocation failures and identical-pose retry passed");
+    assert(instance.Vertices.PoseRevision==state.PoseRevision && instance.BLAS->built);
+    instance.Vertices.Publish();
+    const auto published=instance.Vertices.GetPreviousBase();
+    state.PoseRevision=2; f.Skinning.value=2; f.failSkinBuild=true;
+    jobs[0].Reskin=instance.Vertices.PreparePose(state.PoseRevision);
+    assert(f.PrepareSkinnedInstances(&context,jobs,instances,changed)==RTXPTErrorCode::BLASBuildFailed);
+    assert(instance.Vertices.HasPreviousPose(1) && f.Skinning.positions[published]==1);
+    jobs[0].Reskin=instance.Vertices.PreparePose(state.PoseRevision); f.failSkinBuild=false;
+    assert(f.PrepareSkinnedInstances(&context,jobs,instances,changed)==RTXPTErrorCode::Ok);
+    assert(instance.Vertices.HasPreviousPose(1) && f.Skinning.positions[published]==1);
+    // A later scene-table/TLAS failure cannot publish this completed skin. Retry with another pose.
+    state.PoseRevision=3; f.Skinning.value=3;
+    jobs[0].Reskin=instance.Vertices.PreparePose(state.PoseRevision);
+    assert(f.PrepareSkinnedInstances(&context,jobs,instances,changed)==RTXPTErrorCode::Ok);
+    assert(instance.Vertices.HasPreviousPose(1) && f.Skinning.positions[published]==1);
+    instance.Vertices.Publish();
+    assert(instance.Vertices.HasPreviousPose(3) && f.Skinning.positions[instance.Vertices.GetPreviousBase()]==3);
+    // Collection observed a changed coverage mask, then a later instance failed before skin jobs ran.
+    // The transient job is gone on retry; unchanged pose must still rebuild the old opaque BLAS.
+    instance.AnyHitMask={1}; instance.NeedsBLASRebuild=true;
+    jobs[0].Reskin=false;
+    const int beforeRebuild=f.skinBuilds;
+    f.failSkinBuild=true;
+    assert(f.PrepareSkinnedInstances(&context,jobs,instances,changed)==RTXPTErrorCode::BLASBuildFailed);
+    assert(instance.NeedsBLASRebuild);
+    f.failSkinBuild=false;
+    assert(f.PrepareSkinnedInstances(&context,jobs,instances,changed)==RTXPTErrorCode::Ok);
+    assert(f.skinBuilds==beforeRebuild+2 && !instance.NeedsBLASRebuild);
+    std::puts("TLAS/placeholder failures, published skin history and pose/coverage retries passed");
 }
 '''
 
@@ -159,7 +198,9 @@ def main():
         path = Path(directory)
         (path / "test.cpp").write_text(program, encoding="utf-8")
         executable = path / "test.exe"
-        subprocess.run(["clang++", "-std=c++17", str(path / "test.cpp"), "-o", str(executable)], check=True)
+        src = Path(__file__).resolve().parent.parent / "src"
+        primitives = Path(__file__).resolve().parents[4] / "DiligentCore/Primitives/interface"
+        subprocess.run(["clang++", "-std=c++17", "-I", str(src), "-I", str(primitives), str(path / "test.cpp"), "-o", str(executable)], check=True)
         subprocess.run([str(executable)], check=True)
 
 

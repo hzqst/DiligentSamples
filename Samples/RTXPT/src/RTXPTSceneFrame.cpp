@@ -27,6 +27,7 @@
 #include "RTXPTSubInstanceData.hpp"
 #include "RTXPTEmissiveTrianglePass.hpp"
 #include "RTXPTSkinnedGeometry.hpp"
+#include "RTXPTSkinnedVertexHistory.hpp"
 
 namespace Diligent
 {
@@ -263,13 +264,13 @@ struct RTXPTSceneFrameBuilder::Impl
     // The skinned vertices and BLAS of one skinned instance.
     struct SkinnedInstance
     {
-        Uint64                        GeometryId   = 0;
-        Uint32                        OutputBase   = 0;
-        Uint32                        VertexCount  = 0;
-        Uint64                        PoseRevision = 0;
+        Uint64                        GeometryId = 0;
+        RTXPTSkinnedVertexHistory     Vertices;
         std::vector<Uint64>           AnyHitMask;
         RefCntAutoPtr<IBottomLevelAS> BLAS;
-        Uint64                        LastUsed = 0;
+        // Survives a failed Prepare during collection, before any skin job can invalidate the old BLAS.
+        bool   NeedsBLASRebuild = false;
+        Uint64 LastUsed         = 0;
     };
 
     // A skinned instance of the snapshot being prepared, and the work it needs.
@@ -280,7 +281,6 @@ struct RTXPTSceneFrameBuilder::Impl
         const GeometryResidency*       pGeometry = nullptr;
         Uint32                         TLASIndex = 0;
         bool                           Reskin    = false;
-        bool                           Rebuild   = false;
     };
 
     struct MaterialResidency
@@ -784,9 +784,9 @@ struct RTXPTSceneFrameBuilder::Impl
             {
                 RTXPTSkinningDispatch Range;
                 Range.SourceVertexBase = Job.pGeometry->VertexBase;
-                Range.DestVertexBase   = Instance.OutputBase;
+                Range.DestVertexBase   = Instance.Vertices.OutputBase;
                 Range.JointBase        = JointBases[i];
-                Range.VertexCount      = Instance.VertexCount;
+                Range.VertexCount      = Instance.Vertices.VertexCount;
                 Range.SkinBase         = Job.pGeometry->SkinBase;
                 Range.NormalSkinBase   = Job.pGeometry->NormalSkinBase;
                 if (!Skinning.Dispatch(pContext, Range))
@@ -796,16 +796,17 @@ struct RTXPTSceneFrameBuilder::Impl
                 }
                 ++Stats.SkinningDispatchCount;
             }
-            if (Job.Rebuild)
+            if (Instance.NeedsBLASRebuild)
                 Instance.BLAS.Release();
             if ((Job.Reskin || !Instance.BLAS) &&
                 !BuildMeshBLAS(pContext, Geometry, *Job.pGeometry, Job.pState->MeshIndex, Instance.AnyHitMask, SkinnedVertices.Buffer,
-                               Instance.OutputBase, Instance.BLAS))
+                               Instance.Vertices.OutputBase, Instance.BLAS))
             {
                 LOG_ERROR_MESSAGE("RTXPT skinned BLAS build failed for ", Geometry.Name);
                 return RTXPTErrorCode::BLASBuildFailed;
             }
-            Instance.PoseRevision              = Job.pState->PoseRevision;
+            Instance.Vertices.PoseRevision     = Job.pState->PoseRevision;
+            Instance.NeedsBLASRebuild          = false;
             TLASInstances[Job.TLASIndex].pBLAS = Instance.BLAS;
         }
         return RTXPTErrorCode::Ok;
@@ -952,7 +953,8 @@ struct RTXPTSceneFrameBuilder::Impl
         Uint32                             EmissiveTriangles = 0;
         float                              ProxyWeight       = 0.0f;
         std::vector<SkinJob>               SkinJobs;
-        Uint32                             ValidPreviousRigidInstances = 0;
+        Uint32                             ValidPreviousRigidInstances   = 0;
+        Uint32                             ValidPreviousSkinnedInstances = 0;
         TLASInstances.reserve(Snapshot->Instances.size());
         InstanceNames.reserve(Snapshot->Instances.size() + 1u);
 
@@ -998,24 +1000,24 @@ struct RTXPTSceneFrameBuilder::Impl
                 Job.TLASIndex = static_cast<Uint32>(TLASInstances.size());
                 if (Skinned.GeometryId != Geometry.AssetId)
                 {
-                    if (Skinned.GeometryId != 0)
-                        SkinnedVertices.Ranges.Free(Skinned.OutputBase, Skinned.VertexCount);
-                    Skinned            = {};
-                    Skinned.GeometryId = Geometry.AssetId;
-                    if (!SkinnedVertices.Allocate(Device, pContext, Geometry.VertexCount, Skinned.OutputBase, BindingsChanged))
+                    Uint32 AllocationBase = 0;
+                    if (Geometry.VertexCount > std::numeric_limits<Uint32>::max() / RTXPTSkinnedVertexHistory::RangeCount ||
+                        !SkinnedVertices.Allocate(Device, pContext, Geometry.VertexCount * RTXPTSkinnedVertexHistory::RangeCount, AllocationBase, BindingsChanged))
                     {
-                        SkinnedInstances.erase(Handle);
                         LOG_ERROR_MESSAGE("RTXPT skinned vertex arena allocation failed for ", Geometry.Name);
                         return RTXPTErrorCode::ArenaAllocationFailed;
                     }
-                    Skinned.VertexCount = Geometry.VertexCount;
-                    Job.Reskin          = true;
+                    if (Skinned.GeometryId != 0)
+                        SkinnedVertices.Ranges.Free(Skinned.Vertices.AllocationBase, Skinned.Vertices.VertexCount * RTXPTSkinnedVertexHistory::RangeCount);
+                    Skinned            = {};
+                    Skinned.GeometryId = Geometry.AssetId;
+                    Skinned.Vertices   = RTXPTSkinnedVertexHistory{AllocationBase, Geometry.VertexCount};
                 }
-                Job.Reskin = Job.Reskin || Skinned.PoseRevision != pState->PoseRevision;
+                Job.Reskin = Skinned.Vertices.PreparePose(pState->PoseRevision);
                 if (Skinned.AnyHitMask != Key.AnyHitMask)
                 {
-                    Skinned.AnyHitMask = Key.AnyHitMask;
-                    Job.Rebuild        = true;
+                    Skinned.NeedsBLASRebuild = true;
+                    Skinned.AnyHitMask       = Key.AnyHitMask;
                 }
                 Skinned.LastUsed = PrepareIndex;
                 SkinJobs.push_back(Job);
@@ -1034,9 +1036,18 @@ struct RTXPTSceneFrameBuilder::Impl
                 pBLAS          = Entry.BLAS;
             }
 
-            const auto* Previous = History.FindPreviousRigid(*pState);
-            if (Previous)
+            const auto* Previous = History.FindPreviousSurface(*pState);
+            if (Geometry.IsSkinned())
+            {
+                if (Previous && !SkinnedInstances[Handle].Vertices.HasPreviousPose(Previous->PoseRevision))
+                    Previous = nullptr;
+                if (Previous)
+                    ++ValidPreviousSkinnedInstances;
+            }
+            else if (Previous)
+            {
                 ++ValidPreviousRigidInstances;
+            }
             const Uint32 SubInstanceBase = static_cast<Uint32>(SubInstanceRows.size());
             if (Uint64{SubInstanceBase} + PrimitiveCount > kMaxSubInstanceCount)
                 return RTXPTErrorCode::SubInstanceLimitExceeded;
@@ -1047,12 +1058,14 @@ struct RTXPTSceneFrameBuilder::Impl
                 SubInstanceData                   Row;
                 Row.MaterialID = PrimitiveMaterials[i]->Row;
                 // Skinned instances read their own skinned vertices.
-                const Uint32 VertexBase = Geometry.IsSkinned() ? SkinnedInstances[Handle].OutputBase : pGeometry->VertexBase;
+                const Uint32 VertexBase = Geometry.IsSkinned() ? SkinnedInstances[Handle].Vertices.OutputBase : pGeometry->VertexBase;
                 Row.Flags               = Geometry.IsSkinned() ? kSubInstanceFlag_Skinned : 0u;
                 if (Previous)
                 {
-                    Row.Flags |= kSubInstanceFlag_PreviousRigidSurface;
+                    Row.Flags |= Geometry.IsSkinned() ? kSubInstanceFlag_PreviousSkinnedSurface : kSubInstanceFlag_PreviousRigidSurface;
                     Row.PreviousTransform = Previous->Transform;
+                    if (Geometry.IsSkinned())
+                        Row.PreviousVertexOffset = SkinnedInstances[Handle].Vertices.GetPreviousBase() + (Primitive.IndexCount > 0 ? 0u : Primitive.FirstVertex);
                 }
                 Row.VertexOffset = VertexBase + (Primitive.IndexCount > 0 ? 0u : Primitive.FirstVertex);
                 Row.VertexCount  = Primitive.VertexCount;
@@ -1110,12 +1123,13 @@ struct RTXPTSceneFrameBuilder::Impl
             It = PrepareIndex - It->second.LastUsed > kBLASRetainPrepares ? BLASes.erase(It) : std::next(It);
         for (auto It = SkinnedInstances.begin(); It != SkinnedInstances.end();)
         {
-            if (PrepareIndex - It->second.LastUsed <= kBLASRetainPrepares)
+            // Failed attempts must not evict vertices belonging to the last successfully published scene.
+            if (It->second.Vertices.HasPrevious() || PrepareIndex - It->second.LastUsed <= kBLASRetainPrepares)
             {
                 ++It;
                 continue;
             }
-            SkinnedVertices.Ranges.Free(It->second.OutputBase, It->second.VertexCount);
+            SkinnedVertices.Ranges.Free(It->second.Vertices.AllocationBase, It->second.Vertices.VertexCount * RTXPTSkinnedVertexHistory::RangeCount);
             It = SkinnedInstances.erase(It);
         }
         if (!SkinJobs.empty())
@@ -1192,7 +1206,7 @@ struct RTXPTSceneFrameBuilder::Impl
         Frame.pLights                     = &Lights;
         Frame.InstanceCount               = InstanceCount;
         Frame.SubInstanceCount            = static_cast<Uint32>(SubInstanceRows.size());
-        Frame.InvalidHistoryInstances     = InstanceCount - ValidPreviousRigidInstances;
+        Frame.InvalidHistoryInstances     = InstanceCount - ValidPreviousRigidInstances - ValidPreviousSkinnedInstances;
 
         Stats.InstanceCount                 = InstanceCount;
         Stats.SubInstanceCount              = Frame.SubInstanceCount;
@@ -1204,9 +1218,23 @@ struct RTXPTSceneFrameBuilder::Impl
         Stats.TextureCapacity               = Frame.MaterialTextureCount;
         Stats.EmissiveTriangleCount         = EmissiveTriangles;
         Stats.ValidPreviousRigidInstances   = ValidPreviousRigidInstances;
+        Stats.ValidPreviousSkinnedInstances = ValidPreviousSkinnedInstances;
         Stats.InvalidHistoryInstances       = Frame.InvalidHistoryInstances;
         Stats.PreviousTransformStorageBytes = SubInstances.Buffer->GetDesc().Size / sizeof(SubInstanceData) * sizeof(float4x4);
-        HasPrepared                         = true;
+        Stats.SkinnedVertexStorageBytes     = SkinnedVertices.Buffer->GetDesc().Size;
+        Stats.PreviousSkinnedRangeBytes     = 0;
+        // All allocations, skin/BLAS work, scene tables and lighting preparation succeeded. Publish each current
+        // range only now, after SubInstanceRows captured the preceding range. No throwing work follows this point.
+        for (auto& Entry : SkinnedInstances)
+        {
+            auto& Instance = Entry.second;
+            if (Instance.LastUsed == PrepareIndex)
+                Instance.Vertices.Publish();
+            else
+                Instance.Vertices.InvalidatePrevious();
+            Stats.PreviousSkinnedRangeBytes += Uint64{Instance.Vertices.VertexCount} * kGeometryVertexStride;
+        }
+        HasPrepared = true;
         return RTXPTErrorCode::Ok;
     }
 

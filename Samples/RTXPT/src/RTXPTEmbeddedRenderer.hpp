@@ -99,8 +99,11 @@ struct RTXPTViewHistoryInfo
     bool                    LightFeedbackReset            = false;
     Uint32                  LightFeedbackHistoryFrames    = 0;
     Uint32                  ValidPreviousRigidInstances   = 0;
+    Uint32                  ValidPreviousSkinnedInstances = 0;
     Uint32                  InvalidHistoryInstances       = 0;
     Uint64                  PreviousTransformStorageBytes = 0;
+    Uint64                  PreviousSkinnedRangeBytes     = 0;
+    Uint64                  SkinnedVertexStorageBytes     = 0;
 };
 
 //Sizes are local to the view texture; host viewport offsets belong to final composition only.

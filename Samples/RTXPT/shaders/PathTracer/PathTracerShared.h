@@ -2,9 +2,10 @@
 #define __PATH_TRACER_SHARED_H__
 
 // Mirrors Diligent::kSubInstanceFlag_Indexed in RTXPTAccelerationStructures.hpp.
-static const uint kSubInstanceFlagIndexed              = 0x1u;
-static const uint kSubInstanceFlagPreviousRigidSurface = 0x4u;
-static const uint kSubInstanceFlagSkinned              = 0x2u;
+static const uint kSubInstanceFlagIndexed                = 0x1u;
+static const uint kSubInstanceFlagPreviousRigidSurface   = 0x4u;
+static const uint kSubInstanceFlagPreviousSkinnedSurface = 0x8u;
+static const uint kSubInstanceFlagSkinned                = 0x2u;
 
 // Maximum area-light solid-angle pdf (G4). Mirrors RTXPT-fork PolymorphicLight.hlsli:25 MAX_SOLID_ANGLE_PDF;
 // clamps the area->solid-angle conversion for near-grazing / very close emissive-triangle samples.
@@ -227,6 +228,10 @@ struct SubInstanceData
     uint               emissiveTriangleOffset; // First entry in t_EmissiveTriangles for this sub-instance (G4).
     uint               _padding1;
     row_major float4x4 PreviousTransform;
+    uint               PreviousVertexOffset;
+    uint               _padding2;
+    uint               _padding3;
+    uint               _padding4;
 };
 
 // Mirrors Diligent::MaterialPTData in RTXPTMaterials.hpp (must keep order/size in sync; total size 144 bytes).

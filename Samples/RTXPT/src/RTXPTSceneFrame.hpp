@@ -64,8 +64,12 @@ struct RTXPTSceneFrameStats
     Uint32 TextureCapacity               = 0;
     Uint32 EmissiveTriangleCount         = 0;
     Uint32 ValidPreviousRigidInstances   = 0;
+    Uint32 ValidPreviousSkinnedInstances = 0;
     Uint32 InvalidHistoryInstances       = 0;
     Uint64 PreviousTransformStorageBytes = 0;
+    Uint64 SkinnedVertexStorageBytes     = 0;
+    // Allocated second ranges of resident instances, excluding unused arena capacity (not total GPU memory).
+    Uint64 PreviousSkinnedRangeBytes = 0;
 };
 
 // The GPU scene of one prepared snapshot. The objects belong to the builder and stay valid until its next Prepare or
