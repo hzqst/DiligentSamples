@@ -68,6 +68,7 @@ public:
     {
         DenoiseSpecHitT = 0,
         ComputeAvgLayerRadiance,
+        ComputeSpecularMotion,
         DebugViz,
         Count
     };

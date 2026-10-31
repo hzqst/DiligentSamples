@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 #include "../../../../DiligentCore/Graphics/GraphicsEngineD3D12/interface/EngineFactoryD3D12.h"
@@ -123,9 +124,10 @@ try
     std::array<float4, Pixels> Motions{};
     Weights.fill(1.0f);
     Depths.fill(1.0f);
+    Motions.fill(float4{0, 0, 0, 1});
     auto Depth  = Texture(TEX_FORMAT_R32_FLOAT, 4, Depths.data());
     auto Motion = Texture(TEX_FORMAT_RGBA32_FLOAT, 16, Motions.data());
-    for (Uint32 Case = 0; Case < 8; ++Case)
+    for (Uint32 Case = 0; Case < 10; ++Case)
     {
         LightingControlData Control{};
         Control.TotalLightCount         = 8;
@@ -154,7 +156,9 @@ try
         RawCandidates = Texture(TEX_FORMAT_R32_UINT, 4, Candidates.data());
         Depths.fill(Case == 2 ? 4.0f : 1.0f);
         auto CurrentDepth = Texture(TEX_FORMAT_R32_FLOAT, 4, Depths.data());
-        Motions.fill(Case == 3 ? float4{100, 0, 0, 0} : float4{});
+        Motions.fill(Case == 3 ? float4{100, 0, 0, 1} :
+                                 Case == 8 ? float4{} :
+                                             Case == 9 ? float4{std::numeric_limits<float>::quiet_NaN(), 0, 0, 1} : float4{0, 0, 0, 1});
         auto                  CurrentMotion = Texture(TEX_FORMAT_RGBA32_FLOAT, 16, Motions.data());
         std::array<Uint32, 8> Remap{0, 1, 2, 3, 4, 5, 6, Case == 6 ? ~0u : 3u};
         auto                  RemapBuffer = Buffer(sizeof(Remap), 4, Remap.data());
@@ -178,10 +182,10 @@ try
         HistoryPrepare.pCandidates   = RawCandidates;
         HistoryPrepare.pDepth        = CurrentDepth->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
         HistoryPrepare.pMotion       = CurrentMotion->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
-        HistoryPrepare.pHistoryRemap = Case >= 5 ? RemapBuffer.RawPtr() : nullptr;
+        HistoryPrepare.pHistoryRemap = Case >= 5 && Case < 8 ? RemapBuffer.RawPtr() : nullptr;
         Require(Feedback.Prepare(Context, HistoryPrepare), "History prepare");
         const auto   Counts     = Read(Feedback.GetCounts());
-        const Uint32 CountIndex = Case < 5 ? 7u : Case == 5 ? 3u : 8u;
+        const Uint32 CountIndex = Case < 5 || Case >= 8 ? 7u : Case == 5 ? 3u : 8u;
         Require(Counts[CountIndex] == Pixels, "Feedback counts must follow source remapping and reject removed IDs");
         Require(Feedback.Finish(Context, Local), "History finish");
         const Uint32 Expected      = (Case == 0 ? 7u << 9 : Case == 5 ? 3u << 9 : 0u) | 127u;

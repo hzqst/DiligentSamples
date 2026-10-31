@@ -23,6 +23,7 @@ struct DenoisingGuidesBakerConstants
 
 #include "PathTracerHelpers.hlsli"
 #include "DenoisingLayers.hlsli"
+#include "TemporalMotion.hlsli"
 
 #if RTXPT_PREPARE_DLSS_RR
 cbuffer g_Const { SampleConstants g_Frame; };
@@ -47,6 +48,7 @@ ConstantBuffer<DenoisingGuidesBakerConstants> g_DenoisingGuidesBakerConstants;
 
 Texture2D<float>                                  t_Depth;
 Texture2D<float4>                                 t_MotionVectors;
+Texture2D<float4>                                 t_PreviousAvgLayerRadiance;
 VK_IMAGE_FORMAT("r32f") RWTexture2D<float>        u_SpecularHitT;
 VK_IMAGE_FORMAT("r32f") RWTexture2D<float>        u_ScratchFloat1;
 VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4>    u_StableRadiance;
@@ -54,6 +56,17 @@ VK_IMAGE_FORMAT("r32ui") RWTexture2DArray<uint>   u_DenoisingLayersHeader;
 RWStructuredBuffer<DenoisingLayer>                   u_DenoisingLayersBuffer;
 VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4>    u_DenoiserAvgLayerRadianceHalfRes;
 VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4>    u_DebugOutput;
+VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4>    u_SpecularMotion;
+
+[numthreads(DGB_2D_THREADGROUP_SIZE, DGB_2D_THREADGROUP_SIZE, 1)]
+void ComputeSpecularMotion(uint2 pixelPos : SV_DispatchThreadID)
+{
+    if (any(pixelPos >= g_DenoisingGuidesBakerConstants.RenderResolution))
+        return;
+    DenoisingLayersContext layers = DenoisingLayersContext::make(
+        u_DenoisingLayersHeader, u_DenoisingLayersBuffer, u_StableRadiance, g_Const.ptConsts);
+    u_SpecularMotion[pixelPos] = ComputeSpecularPathMotion(pixelPos, layers, g_Const);
+}
 
 static const int RTXPT_DENOISING_GUIDE_DEBUG_DISABLED           = 0;
 static const int RTXPT_DENOISING_GUIDE_DEBUG_DEPTH              = 1;
@@ -142,17 +155,15 @@ void ComputeAvgLayerRadiance(uint2 DispatchThreadID : SV_DispatchThreadID)
 
     const uint2  RenderMax          = max(g_DenoisingGuidesBakerConstants.RenderResolution, uint2(1u, 1u)) - 1u;
     const uint2  BasePixel          = min(HalfResPos * 2u, RenderMax);
-    const float2 ScreenSpaceMotion  = t_MotionVectors[min(BasePixel + (HalfResPos & 1u), RenderMax)].xy;
-    const int2   HistoricPixel      = int2(float2(BasePixel) + ScreenSpaceMotion + 0.5.xx);
+    const float4 Motion            = t_MotionVectors[min(BasePixel + (HalfResPos & 1u), RenderMax)];
+    const bool MotionValid         = Motion.w > 0.0 && all(isfinite(Motion));
+    const int2 HistoricPixel        = MotionValid ? int2(floor(float2(BasePixel) + Motion.xy + 0.5.xx)) : int2(-1, -1);
     const uint2  HistoricHalfResPos = min(uint2(max(HistoricPixel, int2(0, 0))) / 2u, HalfRes - 1u);
 
     const bool CurrentFrameOnly = g_DenoisingGuidesBakerConstants.CurrentFrameOnly != 0;
-    const float ExponentialFalloffK = CurrentFrameOnly ? 1.0 : 0.05;
+    const bool CanReadHistory = !CurrentFrameOnly && g_Const.ptConsts.resetAccumulation == 0 &&
+        MotionValid && all(HistoricPixel >= 0) && all(HistoricPixel < int2(g_DenoisingGuidesBakerConstants.RenderResolution));
     float4 OutVal = 0.0;
-    //Raw must not read uninitialized or reprojected history, even with a zero blend weight.
-    [branch]
-    if (!CurrentFrameOnly)
-        OutVal = clamp(u_DenoiserAvgLayerRadianceHalfRes[HistoricHalfResPos], 0.0, HLF_MAX) * (1.0 - ExponentialFalloffK);
 
     DenoisingLayersContext DenoisingLayers = DenoisingLayersContext::make(u_DenoisingLayersHeader,
                                                                   u_DenoisingLayersBuffer,
@@ -165,6 +176,7 @@ void ComputeAvgLayerRadiance(uint2 DispatchThreadID : SV_DispatchThreadID)
     {
         float Avg   = 0.0;
         float Count = 1e-7;
+        bool HistoryValid = CanReadHistory;
         for (uint X = 0; X < 2; ++X)
         {
             for (uint Y = 0; Y < 2; ++Y)
@@ -172,9 +184,15 @@ void ComputeAvgLayerRadiance(uint2 DispatchThreadID : SV_DispatchThreadID)
                 const uint2 PixelPos = min(BasePixel + uint2(X, Y), RenderMax);
                 const uint  BranchID = DenoisingLayers.GetBranchID(PixelPos, DenoisingLayerIndex);
                 if (BranchID == cDenoisingLayerInvalidBranchID)
+                {
+                    HistoryValid = false;
                     continue;
+                }
 
                 DenoisingLayer SP       = DenoisingLayers.LoadDenoisingLayer(PixelPos, DenoisingLayerIndex);
+                // This average uses primary reprojection. Reflected layers must use current radiance until
+                // their independent reprojection/history storage is integrated with the realtime denoiser.
+                HistoryValid = HistoryValid && SP.HasValidHistory() && (SP.VertexIndexAndRoughness >> 16) == 1;
                 float       Radiance = max(1e-5, Average(SP.GetNoisyRadiance()));
                 Radiance             = min(Radiance, g_Const.ptConsts.preExposedGrayLuminance * 2.0);
                 Avg += log(Radiance + 1.0);
@@ -183,6 +201,10 @@ void ComputeAvgLayerRadiance(uint2 DispatchThreadID : SV_DispatchThreadID)
         }
 
         Avg = exp(Avg / Count) - 1.0;
+        const float ExponentialFalloffK = HistoryValid ? 0.05 : 1.0;
+        [branch]
+        if (HistoryValid)
+            OutVal[DenoisingLayerIndex] = clamp(t_PreviousAvgLayerRadiance[HistoricHalfResPos][DenoisingLayerIndex], 0.0, HLF_MAX) * (1.0 - ExponentialFalloffK);
         OutVal[DenoisingLayerIndex] += Avg * ExponentialFalloffK;
     }
 

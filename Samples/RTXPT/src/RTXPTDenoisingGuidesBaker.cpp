@@ -61,6 +61,7 @@ const char* GetPassName(RTXPTDenoisingGuidesBaker::PassId Pass)
     {
         case RTXPTDenoisingGuidesBaker::PassId::DenoiseSpecHitT: return "RTXPT DenoiseSpecHitT";
         case RTXPTDenoisingGuidesBaker::PassId::ComputeAvgLayerRadiance: return "RTXPT ComputeAvgLayerRadiance";
+        case RTXPTDenoisingGuidesBaker::PassId::ComputeSpecularMotion: return "RTXPT ComputeSpecularMotion";
         case RTXPTDenoisingGuidesBaker::PassId::DebugViz: return "RTXPT DenoisingGuides DebugViz";
         default: return "RTXPT DenoisingGuides unknown pass";
     }
@@ -72,6 +73,7 @@ const char* GetEntryPoint(RTXPTDenoisingGuidesBaker::PassId Pass)
     {
         case RTXPTDenoisingGuidesBaker::PassId::DenoiseSpecHitT: return "DenoiseSpecHitT";
         case RTXPTDenoisingGuidesBaker::PassId::ComputeAvgLayerRadiance: return "ComputeAvgLayerRadiance";
+        case RTXPTDenoisingGuidesBaker::PassId::ComputeSpecularMotion: return "ComputeSpecularMotion";
         case RTXPTDenoisingGuidesBaker::PassId::DebugViz: return "DebugViz";
         default: return "";
     }
@@ -203,7 +205,9 @@ bool RTXPTDenoisingGuidesBaker::CreatePass(IRenderDevice*                   pDev
         .AddVariable(SHADER_TYPE_COMPUTE, "g_DenoisingGuidesBakerConstants", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "t_Depth", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "t_MotionVectors", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
+        .AddVariable(SHADER_TYPE_COMPUTE, "t_PreviousAvgLayerRadiance", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_SpecularHitT", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
+        .AddVariable(SHADER_TYPE_COMPUTE, "u_SpecularMotion", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_ScratchFloat1", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_StableRadiance", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_DenoisingLayersHeader", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
@@ -252,6 +256,10 @@ bool RTXPTDenoisingGuidesBaker::Bake(IDeviceContext*              pContext,
     if (!IsReady() || pContext == nullptr || !RenderTargets.HasRealtimeRenderTargets())
         return false;
 
+    if (!DispatchPass(pContext, RenderTargets, PassId::ComputeSpecularMotion, RTXPTDenoisingGuideDebugView::Disabled, 0u, HistoryMode))
+        return false;
+    InsertUAVBarrier(pContext, RenderTargets.GetSpecularMotionUAV());
+
     if (!DispatchPass(pContext, RenderTargets, PassId::DenoiseSpecHitT, RTXPTDenoisingGuideDebugView::Disabled, 1u, HistoryMode))
         return false;
     InsertUAVBarrier(pContext, RenderTargets.GetScratchFloat1UAV());
@@ -260,6 +268,15 @@ bool RTXPTDenoisingGuidesBaker::Bake(IDeviceContext*              pContext,
         return false;
     InsertUAVBarrier(pContext, RenderTargets.GetSpecularHitTUAV());
 
+    if (HistoryMode == RTXPTGuideHistoryMode::Accumulate)
+    {
+        // Reprojection reads another pixel; reading and writing the same UAV would race other groups.
+        CopyTextureAttribs Copy;
+        Copy.pSrcTexture              = RenderTargets.GetDenoiserAvgLayerRadianceHalfResSRV()->GetTexture();
+        Copy.pDstTexture              = RenderTargets.GetPreviousAvgLayerRadianceSRV()->GetTexture();
+        Copy.SrcTextureTransitionMode = Copy.DstTextureTransitionMode = RESOURCE_STATE_TRANSITION_MODE_TRANSITION;
+        pContext->CopyTexture(Copy);
+    }
     if (!DispatchPass(pContext, RenderTargets, PassId::ComputeAvgLayerRadiance, RTXPTDenoisingGuideDebugView::Disabled, 0u, HistoryMode))
         return false;
     InsertUAVBarrier(pContext, RenderTargets.GetDenoiserAvgLayerRadianceHalfResUAV());
@@ -337,17 +354,20 @@ bool RTXPTDenoisingGuidesBaker::DispatchPass(IDeviceContext*              pConte
     const bool NeedsDenoiseSpecHitT = Pass == PassId::DenoiseSpecHitT;
     const bool NeedsAvgLayer        = Pass == PassId::ComputeAvgLayerRadiance;
     const bool NeedsDebugViz        = Pass == PassId::DebugViz;
+    const bool NeedsSpecularMotion  = Pass == PassId::ComputeSpecularMotion;
 
     const bool Bound =
         SetVariable("t_Depth", RenderTargets.GetDepthSRV(), NeedsDenoiseSpecHitT || NeedsDebugViz) &&
         SetVariable("t_MotionVectors", RenderTargets.GetScreenMotionVectorsSRV(), NeedsAvgLayer || NeedsDebugViz) &&
+        SetVariable("t_PreviousAvgLayerRadiance", RenderTargets.GetPreviousAvgLayerRadianceSRV(), NeedsAvgLayer) &&
         SetVariable("u_SpecularHitT", RenderTargets.GetSpecularHitTUAV(), NeedsDenoiseSpecHitT || NeedsDebugViz) &&
+        SetVariable("u_SpecularMotion", RenderTargets.GetSpecularMotionUAV(), NeedsSpecularMotion) &&
         SetVariable("u_ScratchFloat1", RenderTargets.GetScratchFloat1UAV(), NeedsDenoiseSpecHitT) &&
         // Stable radiance is carried by DenoisingLayersContext, but this baker does not read it.
         // Some shader compilers optimize the UAV out of reflection for these entry points.
         SetVariable("u_StableRadiance", RenderTargets.GetStableRadianceUAV(), false) &&
-        SetVariable("u_DenoisingLayersHeader", RenderTargets.GetDenoisingLayersHeaderUAV(), NeedsAvgLayer) &&
-        SetVariable("u_DenoisingLayersBuffer", RenderTargets.GetDenoisingLayersBufferUAV(), NeedsAvgLayer) &&
+        SetVariable("u_DenoisingLayersHeader", RenderTargets.GetDenoisingLayersHeaderUAV(), NeedsAvgLayer || NeedsSpecularMotion) &&
+        SetVariable("u_DenoisingLayersBuffer", RenderTargets.GetDenoisingLayersBufferUAV(), NeedsAvgLayer || NeedsSpecularMotion) &&
         SetVariable("u_DenoiserAvgLayerRadianceHalfRes", RenderTargets.GetDenoiserAvgLayerRadianceHalfResUAV(), NeedsAvgLayer || NeedsDebugViz) &&
         SetVariable("u_DebugOutput", RenderTargets.GetProcessedOutputColorUAV(), NeedsDebugViz);
     if (!Bound)

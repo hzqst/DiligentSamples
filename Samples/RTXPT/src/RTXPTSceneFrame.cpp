@@ -1063,6 +1063,8 @@ struct RTXPTSceneFrameBuilder::Impl
                 if (Previous)
                 {
                     Row.Flags |= Geometry.IsSkinned() ? kSubInstanceFlag_PreviousSkinnedSurface : kSubInstanceFlag_PreviousRigidSurface;
+                    if (Previous->Materials[Primitive.MaterialSlot] == pState->Materials[Primitive.MaterialSlot])
+                        Row.Flags |= kSubInstanceFlag_PreviousMaterial;
                     Row.PreviousTransform = Previous->Transform;
                     if (Geometry.IsSkinned())
                         Row.PreviousVertexOffset = SkinnedInstances[Handle].Vertices.GetPreviousBase() + (Primitive.IndexCount > 0 ? 0u : Primitive.FirstVertex);

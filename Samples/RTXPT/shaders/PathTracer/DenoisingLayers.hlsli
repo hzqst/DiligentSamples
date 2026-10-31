@@ -38,9 +38,13 @@ struct DenoisingLayer
     uint2  PackedNoisyRadianceAndSpecAvg;
     uint   FlagsAndVertexIndex;
     uint   PackedCounters;
+    // Final layer: xyz is the previous virtual surface, w is path correspondence validity.
+    // Enqueued exploration: stores the extra Build payload containing the previous reflection plane.
+    float4 PreviousVirtualPosition;
 
 #if !defined(__cplusplus)
     bool IsEmpty() { return (VertexIndexAndRoughness >> 16) == 0; }
+    bool HasValidHistory() { return PreviousVirtualPosition.w > 0.0; }
     float3 GetNormal() { return OctToNDirUnorm32(PackedNormal); }
     float GetRoughness() { return f16tof32(VertexIndexAndRoughness & 0xffff); }
     float3 GetNoisyRadiance() { return Fp16ToFp32(PackedNoisyRadianceAndSpecAvg).xyz; }
@@ -64,8 +68,8 @@ struct DenoisingLayer
 #endif
 
 #if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
-    void PackCustomPayload(const uint4 packed[5]);
-    void UnpackCustomPayload(inout uint4 packed[5]);
+    void PackCustomPayload(const uint4 packed[6]);
+    void UnpackCustomPayload(inout uint4 packed[6]);
 #endif
 };
 
@@ -215,7 +219,8 @@ struct DenoisingLayersContext
                           const float3 specBSDFEstimate,
                           bool dominantSP,
                           uint flagsAndVertexIndex,
-                          uint packedCounters)
+                          uint packedCounters,
+                          float4 previousVirtualPosition)
     {
         uint address = PixelToAddress(pixelPos, planeIndex);
         DenoisingLayer sp;
@@ -238,6 +243,7 @@ struct DenoisingLayersContext
         sp.LastRayTCurrent               = rayTCurrent;
         sp.FlagsAndVertexIndex           = flagsAndVertexIndex;
         sp.PackedCounters                = packedCounters;
+        sp.PreviousVirtualPosition        = previousVirtualPosition;
         DenoisingLayersUAV[address]         = sp;
         SetBranchID(pixelPos, planeIndex, stableBranchID);
 
@@ -245,7 +251,7 @@ struct DenoisingLayersContext
             StoreDominantIndex(pixelPos, planeIndex);
     }
 
-    void StoreExplorationStart(uint2 pixelPos, uint planeIndex, const uint4 pathPayload[5])
+    void StoreExplorationStart(uint2 pixelPos, uint planeIndex, const uint4 pathPayload[6])
     {
         uint address = PixelToAddress(pixelPos, planeIndex);
         DenoisingLayer sp;
@@ -254,7 +260,7 @@ struct DenoisingLayersContext
         SetBranchID(pixelPos, planeIndex, cDenoisingLayerEnqueuedBranchID);
     }
 
-    void ExplorationStart(uint2 pixelPos, uint planeIndex, inout uint4 pathPayload[5])
+    void ExplorationStart(uint2 pixelPos, uint planeIndex, inout uint4 pathPayload[6])
     {
         uint address = PixelToAddress(pixelPos, planeIndex);
         DenoisingLayer sp = DenoisingLayersUAV[address];
@@ -385,7 +391,7 @@ inline uint3 DenoisingLayerDebugVizFourWaySplitCoord(const int dbgPlaneIndex, co
 #endif
 
 #if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
-void DenoisingLayer::PackCustomPayload(const uint4 packed[5])
+void DenoisingLayer::PackCustomPayload(const uint4 packed[6])
 {
     RayOrigin                     = asfloat(packed[0].xyz);
     LastRayTCurrent               = asfloat(packed[0].w);
@@ -398,9 +404,10 @@ void DenoisingLayer::PackCustomPayload(const uint4 packed[5])
     PackedNoisyRadianceAndSpecAvg = packed[4].xy;
     FlagsAndVertexIndex           = packed[4].z;
     PackedCounters                = packed[4].w;
+    PreviousVirtualPosition       = asfloat(packed[5]);
 }
 
-void DenoisingLayer::UnpackCustomPayload(inout uint4 packed[5])
+void DenoisingLayer::UnpackCustomPayload(inout uint4 packed[6])
 {
     packed[0].xyz = asuint(RayOrigin);
     packed[0].w   = asuint(LastRayTCurrent);
@@ -413,6 +420,7 @@ void DenoisingLayer::UnpackCustomPayload(inout uint4 packed[5])
     packed[4].xy  = PackedNoisyRadianceAndSpecAvg;
     packed[4].z   = FlagsAndVertexIndex;
     packed[4].w   = PackedCounters;
+    packed[5]     = asuint(PreviousVirtualPosition);
 }
 #endif
 

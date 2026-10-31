@@ -198,11 +198,33 @@ namespace PathTracer
                                                  mtl.isPSDBlockMotionVectorsAtSurface(),
                                                  mtl.getPSDDominantDeltaLobeP1());
 
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
+        // M2.4 supports rigid, flat reflectors. A smooth/normal-mapped or deformed reflector cannot use
+        // one previous geometric plane, although a deformed terminal surface still has correspondence.
+        const float3 localNormal = normalize(cross(V1.position - V0.position, V2.position - V0.position));
+        const float planarNormalThreshold = 0.9999;
+        const bool planar = abs(dot(normalize(V0.normal), localNormal)) > planarNormalThreshold &&
+                            abs(dot(normalize(V1.normal), localNormal)) > planarNormalThreshold &&
+                            abs(dot(normalize(V2.normal), localNormal)) > planarNormalThreshold &&
+                            abs(dot(worldNormal, geometricNormal)) > planarNormalThreshold;
+        float4 previousReflectionPlane = 0.0.xxxx;
+        if (previousSurfaceValid && planar && (subInstance.Flags & kSubInstanceFlagPreviousRigidSurface) != 0u &&
+            (subInstance.Flags & kSubInstanceFlagPreviousMaterial) != 0u)
+        {
+            const float3 previousEdge1 = mul(float4(V1.position - V0.position, 0.0), subInstance.PreviousTransform).xyz;
+            const float3 previousEdge2 = mul(float4(V2.position - V0.position, 0.0), subInstance.PreviousTransform).xyz;
+            const float3 previousNormal = normalize(cross(previousEdge1, previousEdge2));
+            if (all(isfinite(previousNormal)))
+                previousReflectionPlane = float4(previousNormal, -dot(previousNormal, previousWorldPosition));
+        }
+#endif
+
         return SurfaceData::make(shadingData,
                                  bsdf,
 #if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
                                  previousWorldPosition,
                                  previousSurfaceValid,
+                                 previousReflectionPlane,
 #endif
                                  neeTriangleLightIndex,
                                  0xFFFFFFFFu,

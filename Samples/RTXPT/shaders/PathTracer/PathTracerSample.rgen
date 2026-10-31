@@ -192,6 +192,18 @@ void main()
     }
 
     ValidateNaNs(path, workingContext);
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
+    // Light feedback runs immediately after Build. Reject a pixel whose exported primary motion
+    // cannot account for every retained path; a zero vector alone must never imply valid history.
+    for (uint layerIndex = 0; layerIndex < min(workingContext.PtConsts.GetActiveDenoisingLayerCount(), cDenoisingLayerCount); ++layerIndex)
+    {
+        if (workingContext.DenoisingLayers.GetBranchID(pixelPos, layerIndex) == cDenoisingLayerInvalidBranchID)
+            continue;
+        DenoisingLayer layer = workingContext.DenoisingLayers.LoadDenoisingLayer(pixelPos, layerIndex);
+        if (!layer.HasValidHistory())
+            u_MotionVectors[pixelPos].w = 0.0;
+    }
+#endif
 #if !RTXPT_SHARC_TRAIN
     PathTracer::CommitPixel(path, workingContext);
 #endif

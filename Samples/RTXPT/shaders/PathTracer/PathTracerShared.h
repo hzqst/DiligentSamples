@@ -6,6 +6,7 @@ static const uint kSubInstanceFlagIndexed                = 0x1u;
 static const uint kSubInstanceFlagPreviousRigidSurface   = 0x4u;
 static const uint kSubInstanceFlagPreviousSkinnedSurface = 0x8u;
 static const uint kSubInstanceFlagSkinned                = 0x2u;
+static const uint kSubInstanceFlagPreviousMaterial       = 0x10u;
 
 // Maximum area-light solid-angle pdf (G4). Mirrors RTXPT-fork PolymorphicLight.hlsli:25 MAX_SOLID_ANGLE_PDF;
 // clamps the area->solid-angle conversion for near-grazing / very close emissive-triangle samples.

@@ -88,8 +88,12 @@ uint SampleGlobal(inout MicroRng rng)
 }
 bool Reproject(int2 pixel, out int2 previous)
 {
-    previous = int2(float2(pixel) + t_Motion[pixel].xy + 0.5);
-    bool valid = ResetHistory == 0u && all(previous >= 0) && all(previous < int2(FeedbackSize));
+    const float4 motion = t_Motion[pixel];
+    const bool motionValid = motion.w > 0.0 && all(isfinite(motion));
+    previous = pixel;
+    if (motionValid)
+        previous = int2(floor(float2(pixel) + motion.xy + 0.5));
+    bool valid = ResetHistory == 0u && motionValid && all(previous >= 0) && all(previous < int2(FeedbackSize));
     if (valid)
     {
         const float historic = u_HistoryDepth[previous];

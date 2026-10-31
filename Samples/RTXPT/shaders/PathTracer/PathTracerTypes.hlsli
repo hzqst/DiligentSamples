@@ -131,6 +131,8 @@ namespace PathTracer
 #if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
         float3 prevPosW;
         bool previousSurfaceValid;
+        // Zero normal means the reflector has no supported previous plane.
+        float4 previousReflectionPlane;
 #endif
         uint    neeTriangleLightIndex;
         uint    neeAnalyticLightIndex;
@@ -141,6 +143,7 @@ namespace PathTracer
 #if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
                                 float3 prevPosW,
                                 bool previousSurfaceValid,
+                                float4 previousReflectionPlane,
 #endif
                                 uint neeTriangleLightIndex,
                                 uint neeAnalyticLightIndex,
@@ -152,6 +155,7 @@ namespace PathTracer
 #if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
             ret.prevPosW              = prevPosW;
             ret.previousSurfaceValid = previousSurfaceValid;
+            ret.previousReflectionPlane = previousReflectionPlane;
 #endif
             ret.neeTriangleLightIndex = neeTriangleLightIndex;
             ret.neeAnalyticLightIndex = neeAnalyticLightIndex;
