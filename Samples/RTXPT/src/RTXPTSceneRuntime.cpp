@@ -212,6 +212,7 @@ const char* GetRTXPTErrorCodeString(RTXPTErrorCode Code)
         case RTXPTErrorCode::TraceFailed: return "the light sampling or path tracing dispatch failed";
         case RTXPTErrorCode::AccumulationFailed: return "the accumulation failed";
         case RTXPTErrorCode::ToneMappingFailed: return "the tone mapping failed";
+        case RTXPTErrorCode::UnsupportedViewConfiguration: return "reference requires equal render/display sizes and an sRGB RGBA8 output RTV";
     }
     return "unknown error";
 }

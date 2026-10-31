@@ -40,16 +40,50 @@ struct RTXPTEmbeddedSceneCreateInfo
     IPipelineStateCache*             PSOCache  = nullptr;
 };
 
-//The scene and size of an RTXPTEmbeddedView and how it compiles shaders. Scene, Shaders, Cache and a nonempty size are
-//required; PSOCache is optional.
+struct RTXPTViewSize
+{
+    Uint32 Width  = 0;
+    Uint32 Height = 0;
+};
+
+enum class RTXPTViewOutput
+{
+    Display,
+    NoisyRadiance,
+    AccumulatedRadiance,
+};
+
+enum class RTXPTOutputEncoding
+{
+    Linear,
+    SRGB,
+};
+
+//A borrowed result of the latest Render. Texture is null unless that Render succeeded. It remains usable until the
+//next Render or Initialize, or destruction of the view. Deferred consumers must hold their own resource references.
+//FrameIndex is a one-based successful render count, not a scene frame ID. No depth/motion guides are exposed yet.
+struct RTXPTViewOutputInfo
+{
+    ITexture*           Texture = nullptr;
+    RTXPTViewSize       Size;
+    TEXTURE_FORMAT      ResourceFormat = TEX_FORMAT_UNKNOWN;
+    TEXTURE_FORMAT      SRVFormat      = TEX_FORMAT_UNKNOWN;
+    RTXPTOutputEncoding Encoding       = RTXPTOutputEncoding::Linear;
+    Uint32              FrameIndex     = 0;
+    bool                Valid          = false;
+};
+
+//Sizes are local to the view texture; host viewport offsets belong to final composition only.
+//Reference currently requires equal nonempty render/display sizes and an sRGB RGBA8 output RTV.
 struct RTXPTEmbeddedViewCreateInfo
 {
     const RTXPTEmbeddedScene*        Scene    = nullptr;
     IShaderSourceInputStreamFactory* Shaders  = nullptr;
     IRenderStateCache*               Cache    = nullptr;
     IPipelineStateCache*             PSOCache = nullptr;
-    Uint32                           Width    = 0;
-    Uint32                           Height   = 0;
+    RTXPTViewSize                    RenderSize;
+    RTXPTViewSize                    DisplaySize;
+    TEXTURE_FORMAT                   DisplayRTVFormat = TEX_FORMAT_RGBA8_UNORM_SRGB;
 };
 
 //The runtime scene of RTXPTScene and RTXPTMaterials and its prepared GPU frame. It keeps the GPU objects of both that
@@ -93,12 +127,15 @@ public:
     ~RTXPTEmbeddedView();
     RTXPTEmbeddedView(const RTXPTEmbeddedView&) = delete;
     RTXPTEmbeddedView& operator=(const RTXPTEmbeddedView&) = delete;
-    //Creates the view of CreateInfo.Scene at CreateInfo.Width x CreateInfo.Height and waits for the GPU.
+    //Creates new targets and history and waits for the GPU. Reinitialization invalidates previous outputs even on failure.
     RTXPTErrorCode Initialize(IRenderDevice* Device, IDeviceContext* Context, const RTXPTEmbeddedViewCreateInfo& CreateInfo);
     RTXPTErrorCode Render(const PathTracerCameraData& Camera, const PathTracerViewData& View, double Time, bool ResetHistory);
     ITexture*      GetOutput() const;
-    Uint32         GetTraceCount() const;
-    Uint32         GetAccumulationCount() const;
+    //GetOutput returns the allocated display target even before Render, for recording host commands. Contents are
+    //current only after Render succeeds. Its UNORM SRV copies sRGB-encoded bytes without a second decode/encode cycle.
+    RTXPTViewOutputInfo GetOutputInfo(RTXPTViewOutput Output) const;
+    Uint32              GetTraceCount() const;
+    Uint32              GetAccumulationCount() const;
 
 private:
     struct Impl;

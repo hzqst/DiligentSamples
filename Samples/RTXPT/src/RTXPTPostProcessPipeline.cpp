@@ -60,16 +60,17 @@ void RTXPTPostProcessPipeline::Reset()
     m_BloomPass.Reset();
     m_ToneMappingPass.Reset();
     m_Device.Release();
-    m_Stats = {};
+    m_Stats                = {};
+    m_ToneMappingRTVFormat = TEX_FORMAT_UNKNOWN;
 }
 
 bool RTXPTPostProcessPipeline::Initialize(IRenderDevice* pDevice, const RTXPTPostProcessPipelineCreateInfo& CreateInfo)
 {
     Reset();
 
-    if (pDevice == nullptr || CreateInfo.pEngineFactory == nullptr || CreateInfo.pSwapChain == nullptr || CreateInfo.pFrameConstants == nullptr)
+    if (pDevice == nullptr || CreateInfo.pEngineFactory == nullptr || CreateInfo.ToneMappingRTVFormat == TEX_FORMAT_UNKNOWN || CreateInfo.pFrameConstants == nullptr)
     {
-        DEV_ERROR("RTXPT post-process pipeline requires a device, engine factory, swap chain, and frame constants buffer");
+        DEV_ERROR("RTXPT post-process pipeline requires a device, engine factory, output RTV format, and frame constants buffer");
         return false;
     }
 
@@ -79,7 +80,8 @@ bool RTXPTPostProcessPipeline::Initialize(IRenderDevice* pDevice, const RTXPTPos
         return false;
     }
 
-    m_Device = pDevice;
+    m_Device               = pDevice;
+    m_ToneMappingRTVFormat = CreateInfo.ToneMappingRTVFormat;
     m_RayReconstructionPass.Initialize(pDevice);
 
     PostFXContext::CreateInfo RealtimeCopyCI;
@@ -121,7 +123,7 @@ bool RTXPTPostProcessPipeline::Initialize(IRenderDevice* pDevice, const RTXPTPos
     }
 
     m_Stats.ToneMappingStageReady =
-        m_ToneMappingPass.Initialize(pDevice, CreateInfo.pEngineFactory, CreateInfo.pStateCache, CreateInfo.pPSOCache, TEX_FORMAT_RGBA8_UNORM, CreateInfo.ComputeSupported);
+        m_ToneMappingPass.Initialize(pDevice, CreateInfo.pEngineFactory, CreateInfo.pStateCache, CreateInfo.pPSOCache, CreateInfo.ToneMappingRTVFormat, CreateInfo.ComputeSupported);
     if (!m_Stats.ToneMappingStageReady)
     {
         DEV_ERROR("RTXPT tone mapping pass failed to initialize");
@@ -440,6 +442,12 @@ bool RTXPTPostProcessPipeline::RunToneMapping(IDeviceContext*                   
                                               const RTXPTToneMappingParameters& Params,
                                               bool                              Enabled)
 {
+    const auto* Target = RenderTargets.GetLdrColorRTV();
+    if (!Target || Target->GetDesc().Format != m_ToneMappingRTVFormat)
+    {
+        DEV_ERROR("RTXPT tone mapping target does not match the initialized RTV format");
+        return false;
+    }
     if (!m_ToneMappingPass.ResizeResources(m_Device, RenderTargets.GetDisplayWidth(), RenderTargets.GetDisplayHeight(), RenderTargets.GetProcessedOutputColorFormat()))
     {
         m_Stats.ToneMappingStageReady = m_ToneMappingPass.IsReady();

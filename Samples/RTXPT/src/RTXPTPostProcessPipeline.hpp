@@ -41,7 +41,6 @@
 #include "RTXPTRayReconstructionPass.hpp"
 #include "RTXPTTemporalAAPass.hpp"
 #include "RTXPTToneMappingPass.hpp"
-#include "SwapChain.h"
 
 namespace Diligent
 {
@@ -70,12 +69,13 @@ struct RTXPTPostProcessPipelineStats
 
 struct RTXPTPostProcessPipelineCreateInfo
 {
-    IEngineFactory*      pEngineFactory   = nullptr;
-    IRenderStateCache*   pStateCache      = nullptr;
-    IPipelineStateCache* pPSOCache        = nullptr;
-    ISwapChain*          pSwapChain       = nullptr;
-    IBuffer*             pFrameConstants  = nullptr;
-    bool                 ComputeSupported = false;
+    IEngineFactory*      pEngineFactory = nullptr;
+    IRenderStateCache*   pStateCache    = nullptr;
+    IPipelineStateCache* pPSOCache      = nullptr;
+    //Format of the actual tone mapping target, independent of host presentation.
+    TEXTURE_FORMAT ToneMappingRTVFormat = TEX_FORMAT_UNKNOWN;
+    IBuffer*       pFrameConstants      = nullptr;
+    bool           ComputeSupported     = false;
 };
 
 class RTXPTPostProcessPipeline
@@ -167,6 +167,7 @@ private:
     RTXPTTemporalAAPass            m_TemporalAAPass;
     RTXPTBloomPass                 m_BloomPass;
     RTXPTToneMappingPass           m_ToneMappingPass;
+    TEXTURE_FORMAT                 m_ToneMappingRTVFormat = TEX_FORMAT_UNKNOWN;
 };
 
 } // namespace Diligent
