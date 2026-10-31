@@ -10,7 +10,7 @@ struct DenoisingGuidesBakerConstants
 
     int  DebugView;
     uint Ping;
-    uint _padding1;
+    uint CurrentFrameOnly;
     uint _padding2;
 
     uint4 _padding3;
@@ -146,9 +146,13 @@ void ComputeAvgLayerRadiance(uint2 DispatchThreadID : SV_DispatchThreadID)
     const int2   HistoricPixel      = int2(float2(BasePixel) + ScreenSpaceMotion + 0.5.xx);
     const uint2  HistoricHalfResPos = min(uint2(max(HistoricPixel, int2(0, 0))) / 2u, HalfRes - 1u);
 
-    const float ExponentialFalloffK = saturate(0.05);
-    float4      OutVal              = clamp(u_DenoiserAvgLayerRadianceHalfRes[HistoricHalfResPos], 0.0, HLF_MAX) *
-        (1.0 - ExponentialFalloffK);
+    const bool CurrentFrameOnly = g_DenoisingGuidesBakerConstants.CurrentFrameOnly != 0;
+    const float ExponentialFalloffK = CurrentFrameOnly ? 1.0 : 0.05;
+    float4 OutVal = 0.0;
+    //Raw must not read uninitialized or reprojected history, even with a zero blend weight.
+    [branch]
+    if (!CurrentFrameOnly)
+        OutVal = clamp(u_DenoiserAvgLayerRadianceHalfRes[HistoricHalfResPos], 0.0, HLF_MAX) * (1.0 - ExponentialFalloffK);
 
     DenoisingLayersContext DenoisingLayers = DenoisingLayersContext::make(u_DenoisingLayersHeader,
                                                                   u_DenoisingLayersBuffer,

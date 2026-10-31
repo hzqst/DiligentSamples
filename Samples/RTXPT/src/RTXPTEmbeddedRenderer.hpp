@@ -16,6 +16,13 @@ struct RTXPTImportedScene;
 struct RTXPTSceneFrameStats;
 struct IRenderStateCache;
 struct IPipelineStateCache;
+struct RTXPTRealtimeRawStats;
+
+enum class RTXPTViewMode
+{
+    Reference,
+    RealtimeRaw,
+};
 
 //The embedded renderer serves hosts with their own window, device, camera and presentation. All scene loading remains
 //with RTXPTScene/RTXPTMaterials. It has two layers, so the views of one scene share what depends on the scene alone:
@@ -51,6 +58,12 @@ enum class RTXPTViewOutput
     Display,
     NoisyRadiance,
     AccumulatedRadiance,
+    //Raw debug inputs: ray distance is NOT view-space Z; motion remains unvalidated for dynamic surfaces until M2.
+    RayDistance,
+    PrimaryMotion,
+    SpecularHitDistance,
+    AverageLayerRadiance,
+    LayerHeader,
 };
 
 enum class RTXPTOutputEncoding
@@ -61,7 +74,8 @@ enum class RTXPTOutputEncoding
 
 //A borrowed result of the latest Render. Texture is null unless that Render succeeded. It remains usable until the
 //next Render or Initialize, or destruction of the view. Deferred consumers must hold their own resource references.
-//FrameIndex is a one-based successful render count, not a scene frame ID. No depth/motion guides are exposed yet.
+//FrameIndex is a one-based successful render count, not a scene frame ID. Raw guides are debug inputs; their dynamic
+//motion correctness is reported separately from output validity.
 struct RTXPTViewOutputInfo
 {
     ITexture*           Texture = nullptr;
@@ -74,7 +88,7 @@ struct RTXPTViewOutputInfo
 };
 
 //Sizes are local to the view texture; host viewport offsets belong to final composition only.
-//Reference currently requires equal nonempty render/display sizes and an sRGB RGBA8 output RTV.
+//Both modes currently require equal nonempty render/display sizes and an sRGB RGBA8 output RTV.
 struct RTXPTEmbeddedViewCreateInfo
 {
     const RTXPTEmbeddedScene*        Scene    = nullptr;
@@ -84,6 +98,7 @@ struct RTXPTEmbeddedViewCreateInfo
     RTXPTViewSize                    RenderSize;
     RTXPTViewSize                    DisplaySize;
     TEXTURE_FORMAT                   DisplayRTVFormat = TEX_FORMAT_RGBA8_UNORM_SRGB;
+    RTXPTViewMode                    Mode             = RTXPTViewMode::Reference;
 };
 
 //The runtime scene of RTXPTScene and RTXPTMaterials and its prepared GPU frame. It keeps the GPU objects of both that
@@ -118,8 +133,8 @@ private:
     std::unique_ptr<Impl> m_Impl;
 };
 
-//Reference path tracing of one camera of a ready RTXPTEmbeddedScene. One instance owns one camera's accumulation
-//history; the views of a scene accumulate independently.
+//Reference or current-frame Raw path tracing of one camera of a ready RTXPTEmbeddedScene. Each view owns its targets;
+//only Reference accumulates across frames. Raw uses the shared provider-free pipeline and publishes debug guides.
 class RTXPTEmbeddedView
 {
 public:
@@ -133,9 +148,11 @@ public:
     ITexture*      GetOutput() const;
     //GetOutput returns the allocated display target even before Render, for recording host commands. Contents are
     //current only after Render succeeds. Its UNORM SRV copies sRGB-encoded bytes without a second decode/encode cycle.
-    RTXPTViewOutputInfo GetOutputInfo(RTXPTViewOutput Output) const;
-    Uint32              GetTraceCount() const;
-    Uint32              GetAccumulationCount() const;
+    RTXPTViewOutputInfo          GetOutputInfo(RTXPTViewOutput Output) const;
+    const RTXPTRealtimeRawStats& GetRealtimeRawStats() const;
+    IBuffer*                     GetRealtimeLayerBuffer() const;
+    Uint32                       GetTraceCount() const;
+    Uint32                       GetAccumulationCount() const;
 
 private:
     struct Impl;

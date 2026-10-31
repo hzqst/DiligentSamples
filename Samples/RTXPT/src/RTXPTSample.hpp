@@ -37,6 +37,7 @@
 #include "RefCntAutoPtr.hpp"
 #include "RTXPTBlitPass.hpp"
 #include "RTXPTEmbeddedRenderer.hpp"
+#include "RTXPTRealtimeRawPipeline.hpp"
 #include "RTXPTEnvMapBaker.hpp"
 #include "RTXPTFrameConstants.hpp"
 #include "RTXPTGpuProfiler.hpp"
@@ -134,6 +135,10 @@ protected:
     virtual void UpdateUI() override final;
 
 private:
+    bool                                      RunRealtimeRaw();
+    bool                                      m_RealtimeRawEnabled = false;
+    std::unique_ptr<RTXPTRealtimeRawPipeline> m_RealtimeRaw;
+
     bool                                RunEmbeddedReference();
     bool                                m_UseEmbeddedReference = false;
     std::unique_ptr<RTXPTEmbeddedScene> m_EmbeddedScene; // Outlives resizes, which recreate only the view.

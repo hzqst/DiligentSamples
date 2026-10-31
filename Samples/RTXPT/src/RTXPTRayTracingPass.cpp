@@ -91,6 +91,7 @@ void RTXPTRayTracingPass::Reset()
         State.Stats = {};
     }
     m_MiniConstantsCB.Release();
+    m_FrameConstants.Release();
     m_IndexBufferView.Release();
     m_IndexBuffer.Release();
     m_Bound       = {};
@@ -146,6 +147,7 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice* pDevice, IDeviceContext* pCo
         DEV_ERROR("RTXPT reference path tracer requires frame constants");
         return false;
     }
+    m_FrameConstants = CreateInfo.pFrameConstants;
 
     if (CreateInfo.IndexValueType != VT_UINT16 && CreateInfo.IndexValueType != VT_UINT32)
     {
@@ -274,6 +276,18 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice* pDevice, IDeviceContext* pCo
         ShaderCI.EntryPoint      = "main";
         CreateInfo.pStateCache->CreateShader(ShaderCI, &pClosestHit);
 
+        RefCntAutoPtr<IShader> pVisibilityClosestHit;
+        if (!UseInlineVisibility)
+        {
+            // Visibility rays skip closest-hit, but Diligent requires a non-null shader in each triangle group.
+            // A distinct no-op also avoids duplicate serialization of the primary shader by the state cache.
+            ShaderCI.Desc.Name = "RTXPT visibility closest hit";
+            ShaderCI.FilePath  = "PathTracer/PathTracerVisibilityClosestHit.rchit";
+            CreateInfo.pStateCache->CreateShader(ShaderCI, &pVisibilityClosestHit);
+            if (!pVisibilityClosestHit)
+                return false;
+        }
+
         RefCntAutoPtr<IShader> pAnyHit;
         RefCntAutoPtr<IShader> pVisibilityAnyHit;
         if (UseAnyHit)
@@ -313,7 +327,7 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice* pDevice, IDeviceContext* pCo
         if (!UseInlineVisibility)
         {
             PSOCreateInfo.AddGeneralShader("VisibilityMiss", pVisibilityMiss);
-            PSOCreateInfo.AddTriangleHitShader("VisibilityHit", pClosestHit, pVisibilityAnyHit);
+            PSOCreateInfo.AddTriangleHitShader("VisibilityHit", pVisibilityClosestHit, pVisibilityAnyHit);
         }
         if (UseAnyHit && !UseHitObject)
             PSOCreateInfo.AddTriangleHitShader("PrimaryHit", pClosestHit, pAnyHit);
@@ -350,8 +364,8 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice* pDevice, IDeviceContext* pCo
         // Scene, lighting and environment resources are mutable: Bind creates new resource bindings when they change.
         // None of their buffers is USAGE_DYNAMIC, so they need no dynamic offsets, whose Vulkan descriptors are limited.
         ResourceLayout
-            .AddVariable(ConstStages, "g_Const", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
-            .AddVariable(ConstStages, "g_MiniConst", SHADER_RESOURCE_VARIABLE_TYPE_STATIC);
+            .AddVariable(ConstStages, "g_Const", SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE)
+            .AddVariable(ConstStages, "g_MiniConst", SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE);
         for (const char* Name : {"t_PTMaterialData", "t_SubInstanceData", "t_VertexBuffer", "t_SkinnedVertexBuffer", "t_Lights", "t_LightsEx",
                                  "t_LightingControl", "t_LightProxyCounters", "t_LightSamplingProxies", "t_LocalSamplingBuffer"})
             ResourceLayout.AddVariable(ConstStages, Name, SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE, SHADER_VARIABLE_FLAG_NO_DYNAMIC_BUFFERS);
@@ -375,34 +389,6 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice* pDevice, IDeviceContext* pCo
             DEV_ERROR("Failed to create RTXPT path trace RT PSO for variant: ", GetVariantName(Variant));
             return false;
         }
-
-        auto SetStatic = [&](const char* Name, IDeviceObject* pObject, bool Required) {
-            bool FoundAny = false;
-            for (SHADER_TYPE Stage : {SHADER_TYPE_RAY_GEN, SHADER_TYPE_RAY_MISS, SHADER_TYPE_RAY_CLOSEST_HIT, SHADER_TYPE_RAY_ANY_HIT})
-            {
-                // Stages outside ConstStages are inactive in some variants and would warn on lookup.
-                if ((ConstStages & Stage) == 0)
-                    continue;
-                if (IShaderResourceVariable* pVar = State.PSO->GetStaticVariableByName(Stage, Name))
-                {
-                    pVar->Set(pObject, SET_SHADER_RESOURCE_FLAG_ALLOW_OVERWRITE);
-                    FoundAny = true;
-                }
-            }
-            if (!FoundAny && Required)
-            {
-                UNEXPECTED("RTXPT static shader variable is missing: ", Name, " for variant: ", GetVariantName(Variant));
-                return false;
-            }
-            return true;
-        };
-
-        // BUILD always reads the current sub-sample from g_MiniConst. FILL may reflect it through
-        // hit shaders, but some Fill PSO resource tables omit it, so bind opportunistically there.
-        const bool MiniConstantsRequired = Variant == RTXPTPathTraceVariant::BuildDenoisingLayers;
-        if (!SetStatic("g_Const", CreateInfo.pFrameConstants, true) ||
-            !SetStatic("g_MiniConst", m_MiniConstantsCB, MiniConstantsRequired))
-            return false;
 
         ShaderBindingTableDesc SBTDesc;
         SBTDesc.Name = "RTXPT path trace SBT";
@@ -541,6 +527,10 @@ bool RTXPTRayTracingPass::CreateBindings(const RTXPTRayTracingBindings& Bindings
         bool           Required;
     };
     const Resource Resources[] = {
+        //Cached PSOs are shared by views. Recreated SRBs must bind this view's constants, not inherit the last
+        //view that initialized the PSO's static variables. FILL may optimize the mini constants out.
+        {"g_Const", m_FrameConstants, true},
+        {"g_MiniConst", m_MiniConstantsCB, false},
         {"t_SceneBVH", Bindings.pTLAS, true},
         {"t_PTMaterialData", BufferSRV(Bindings.pMaterialBuffer), true},
         {"t_SubInstanceData", BufferSRV(Bindings.pSubInstanceBuffer), true},

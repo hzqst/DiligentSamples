@@ -38,6 +38,17 @@ constexpr Uint32 kRTXPTDenoisingLayerMaxVertexIndex = 15;
 constexpr Uint32 kRTXPTGenericTSTileSize            = 8;
 constexpr Uint32 kRTXPTRealtimeSamplesPerPixelMax   = 64;
 
+inline Uint64 ComputeRTXPTLayerLineStride(Uint32 Width)
+{
+    const Uint64 Tiles = (Uint64{std::max(Width, 1u)} + kRTXPTGenericTSTileSize - 1u) / kRTXPTGenericTSTileSize;
+    return Tiles * kRTXPTGenericTSTileSize;
+}
+
+inline Uint64 ComputeRTXPTLayerPlaneStride(Uint32 Width, Uint32 Height)
+{
+    return ComputeRTXPTLayerLineStride(Width) * ComputeRTXPTLayerLineStride(Height);
+}
+
 enum class RTXPTRealtimeAAMode : Uint32
 {
     Disabled        = 0,

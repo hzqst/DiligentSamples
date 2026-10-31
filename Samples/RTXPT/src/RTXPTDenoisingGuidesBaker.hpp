@@ -43,6 +43,12 @@ namespace Diligent
 
 struct IRenderStateCache;
 
+enum class RTXPTGuideHistoryMode
+{
+    Accumulate,
+    CurrentFrame,
+};
+
 struct RTXPTDenoisingGuidesBakerStats
 {
     bool   Ready                         = false;
@@ -76,7 +82,8 @@ public:
 
     bool Bake(IDeviceContext*              pContext,
               const RTXPTRenderTargets&    RenderTargets,
-              RTXPTDenoisingGuideDebugView DebugView);
+              RTXPTDenoisingGuideDebugView DebugView,
+              RTXPTGuideHistoryMode        HistoryMode = RTXPTGuideHistoryMode::Accumulate);
 
     bool                                  IsReady() const { return m_Stats.Ready; }
     const RTXPTDenoisingGuidesBakerStats& GetStats() const { return m_Stats; }
@@ -96,7 +103,8 @@ private:
                       const RTXPTRenderTargets&    RenderTargets,
                       PassId                       Pass,
                       RTXPTDenoisingGuideDebugView DebugView,
-                      Uint32                       Ping);
+                      Uint32                       Ping,
+                      RTXPTGuideHistoryMode        HistoryMode);
 
     std::array<PassState, static_cast<size_t>(PassId::Count)> m_Passes;
     RefCntAutoPtr<IBuffer>                                    m_FrameConstants;

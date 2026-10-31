@@ -4,14 +4,11 @@ project(RTXPT CXX)
 
 set(SOURCE
     src/RTXPTSample.cpp
-    src/RTXPTRenderTargets.cpp
     src/RTXPTPostProcessPipeline.cpp
-    src/RTXPTPostProcessPass.cpp
     src/RTXPTNrdConfig.cpp
     src/RTXPTNrdIntegration.cpp
     src/SharcIntegration.cpp
     src/AdaptiveSampling.cpp
-    src/RTXPTDenoisingGuidesBaker.cpp
     src/RTXPTBloomPass.cpp
     src/RTXPTSuperResolutionPass.cpp
     src/RTXPTRayReconstructionPass.cpp
@@ -458,6 +455,13 @@ PRIVATE
     RTXPT_NRD_SHADER_CONFIG_DIR="${RTXPT_NRD_SHADER_CONFIG_DIR}"
     RTXPT_NRD_MATHLIB_INCLUDE_DIR="${RTXPT_NRD_MATHLIB_INCLUDE_DIR}"
 )
+
+# The shared post-process implementation also serves the Sample's existing NRD branch.
+target_compile_definitions(RTXPT-Runtime PRIVATE
+    RTXPT_HAS_NRD=$<BOOL:${RTXPT_HAS_NRD}>
+    RTXPT_NRD_SHADER_INCLUDE_DIR="${RTXPT_NRD_SHADER_INCLUDE_DIR}"
+    RTXPT_NRD_SHADER_CONFIG_DIR="${RTXPT_NRD_SHADER_CONFIG_DIR}"
+    RTXPT_NRD_MATHLIB_INCLUDE_DIR="${RTXPT_NRD_MATHLIB_INCLUDE_DIR}")
 
 if(RTXPT_HAS_NRD)
     target_link_libraries(RTXPT PRIVATE NRD)

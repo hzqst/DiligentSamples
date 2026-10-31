@@ -25,6 +25,7 @@
  */
 
 #include "RTXPTPostProcessPass.hpp"
+#include "RTXPTShaderSource.hpp"
 
 #include "DebugUtilities.hpp"
 #include "GraphicsTypesX.hpp"
@@ -35,6 +36,10 @@
 #include <string>
 
 #include "AsyncPrefix.hpp"
+
+#ifndef RTXPT_HAS_NRD
+#    define RTXPT_HAS_NRD 0
+#endif
 
 namespace Diligent
 {
@@ -226,7 +231,7 @@ void RTXPTPostProcessPass::Reset()
     m_Stats = {};
 }
 
-bool RTXPTPostProcessPass::Initialize(IRenderDevice* pDevice, IEngineFactory* pEngineFactory, IRenderStateCache* pStateCache, IBuffer* pFrameConstants, bool ComputeSupported)
+bool RTXPTPostProcessPass::Initialize(IRenderDevice* pDevice, IEngineFactory* pEngineFactory, IRenderStateCache* pStateCache, IBuffer* pFrameConstants, bool ComputeSupported, RTXPTPostProcessPassSet PassSet)
 {
     Reset();
 
@@ -272,7 +277,7 @@ bool RTXPTPostProcessPass::Initialize(IRenderDevice* pDevice, IEngineFactory* pE
 #endif
 
     RefCntAutoPtr<IShaderSourceInputStreamFactory> pShaderSourceFactory;
-    pEngineFactory->CreateDefaultShaderSourceStreamFactory(ShaderSearchPaths.c_str(), &pShaderSourceFactory);
+    CreateRTXPTShaderSourceFactory(pEngineFactory, ShaderSearchPaths.c_str(), &pShaderSourceFactory);
     if (!pShaderSourceFactory)
     {
         DEV_ERROR("Failed to create RTXPT post-process shader source factory");
@@ -304,6 +309,8 @@ bool RTXPTPostProcessPass::Initialize(IRenderDevice* pDevice, IEngineFactory* pE
     for (Uint32 PassIndex = 0; PassIndex < static_cast<Uint32>(RTXPTPostProcessPassId::Count); ++PassIndex)
     {
         const auto Pass = static_cast<RTXPTPostProcessPassId>(PassIndex);
+        if (PassSet == RTXPTPostProcessPassSet::RealtimeRaw && Pass != RTXPTPostProcessPassId::NoDenoiserFinalMerge)
+            continue;
         if (!CreatePostProcessPSO(pDevice, pStateCache, ShaderCI, Pass))
         {
             DEV_ERROR("Failed to create RTXPT post-process pipeline: ", GetPassName(Pass));
@@ -331,7 +338,7 @@ bool RTXPTPostProcessPass::CreatePostProcessPSO(IRenderDevice*          pDevice,
 
     ShaderMacroHelper Macros;
     Macros.Add("RTXPT_POST_PROCESS_MODE", GetModeMacro(Pass));
-    Macros.Add("RTXPT_HAS_NRD_HEADERS", RTXPT_HAS_NRD ? 1 : 0);
+    Macros.Add("RTXPT_HAS_NRD_HEADERS", RTXPT_HAS_NRD && Pass != RTXPTPostProcessPassId::NoDenoiserFinalMerge ? 1 : 0);
 #if RTXPT_HAS_NRD
     Macros.Add("NRD_NORMAL_ENCODING", 2);
     Macros.Add("NRD_ROUGHNESS_ENCODING", 1);

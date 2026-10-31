@@ -25,6 +25,7 @@
  */
 
 #include "RTXPTDenoisingGuidesBaker.hpp"
+#include "RTXPTShaderSource.hpp"
 
 #include "DebugUtilities.hpp"
 #include "GraphicsTypesX.hpp"
@@ -45,7 +46,7 @@ struct DenoisingGuidesBakerConstants
     uint2  DisplayResolution = uint2{0, 0};
     Int32  DebugView         = 0;
     Uint32 Ping              = 0;
-    Uint32 _Padding1         = 0;
+    Uint32 CurrentFrameOnly  = 0;
     Uint32 _Padding2         = 0;
     uint4  _Padding3         = {};
     uint4  _Padding4         = {};
@@ -148,7 +149,7 @@ bool RTXPTDenoisingGuidesBaker::Initialize(IRenderDevice*     pDevice,
         return false;
 
     RefCntAutoPtr<IShaderSourceInputStreamFactory> pShaderSourceFactory;
-    pEngineFactory->CreateDefaultShaderSourceStreamFactory("shaders;shaders\\PathTracer", &pShaderSourceFactory);
+    CreateRTXPTShaderSourceFactory(pEngineFactory, "shaders;shaders\\PathTracer", &pShaderSourceFactory);
     if (!pShaderSourceFactory)
         return false;
 
@@ -240,7 +241,8 @@ bool RTXPTDenoisingGuidesBaker::CreatePass(IRenderDevice*                   pDev
 
 bool RTXPTDenoisingGuidesBaker::Bake(IDeviceContext*              pContext,
                                      const RTXPTRenderTargets&    RenderTargets,
-                                     RTXPTDenoisingGuideDebugView DebugView)
+                                     RTXPTDenoisingGuideDebugView DebugView,
+                                     RTXPTGuideHistoryMode        HistoryMode)
 {
     m_Stats.LastBakeExecuted             = false;
     m_Stats.LastDenoiseSpecHitTExecuted  = false;
@@ -250,15 +252,15 @@ bool RTXPTDenoisingGuidesBaker::Bake(IDeviceContext*              pContext,
     if (!IsReady() || pContext == nullptr || !RenderTargets.HasRealtimeRenderTargets())
         return false;
 
-    if (!DispatchPass(pContext, RenderTargets, PassId::DenoiseSpecHitT, RTXPTDenoisingGuideDebugView::Disabled, 1u))
+    if (!DispatchPass(pContext, RenderTargets, PassId::DenoiseSpecHitT, RTXPTDenoisingGuideDebugView::Disabled, 1u, HistoryMode))
         return false;
     InsertUAVBarrier(pContext, RenderTargets.GetScratchFloat1UAV());
 
-    if (!DispatchPass(pContext, RenderTargets, PassId::DenoiseSpecHitT, RTXPTDenoisingGuideDebugView::Disabled, 0u))
+    if (!DispatchPass(pContext, RenderTargets, PassId::DenoiseSpecHitT, RTXPTDenoisingGuideDebugView::Disabled, 0u, HistoryMode))
         return false;
     InsertUAVBarrier(pContext, RenderTargets.GetSpecularHitTUAV());
 
-    if (!DispatchPass(pContext, RenderTargets, PassId::ComputeAvgLayerRadiance, RTXPTDenoisingGuideDebugView::Disabled, 0u))
+    if (!DispatchPass(pContext, RenderTargets, PassId::ComputeAvgLayerRadiance, RTXPTDenoisingGuideDebugView::Disabled, 0u, HistoryMode))
         return false;
     InsertUAVBarrier(pContext, RenderTargets.GetDenoiserAvgLayerRadianceHalfResUAV());
 
@@ -269,7 +271,7 @@ bool RTXPTDenoisingGuidesBaker::Bake(IDeviceContext*              pContext,
 
     if (DebugView != RTXPTDenoisingGuideDebugView::Disabled)
     {
-        if (!DispatchPass(pContext, RenderTargets, PassId::DebugViz, DebugView, 0u))
+        if (!DispatchPass(pContext, RenderTargets, PassId::DebugViz, DebugView, 0u, HistoryMode))
             return false;
         InsertUAVBarrier(pContext, RenderTargets.GetProcessedOutputColorUAV());
         m_Stats.LastDebugVizExecuted = true;
@@ -284,7 +286,8 @@ bool RTXPTDenoisingGuidesBaker::DispatchPass(IDeviceContext*              pConte
                                              const RTXPTRenderTargets&    RenderTargets,
                                              PassId                       Pass,
                                              RTXPTDenoisingGuideDebugView DebugView,
-                                             Uint32                       Ping)
+                                             Uint32                       Ping,
+                                             RTXPTGuideHistoryMode        HistoryMode)
 {
     PassState& State = m_Passes[static_cast<size_t>(Pass)];
     if (!State.PSO || !State.SRB || pContext == nullptr)
@@ -300,6 +303,7 @@ bool RTXPTDenoisingGuidesBaker::DispatchPass(IDeviceContext*              pConte
     Constants.DisplayResolution = uint2{RenderTargets.GetDisplayWidth(), RenderTargets.GetDisplayHeight()};
     Constants.DebugView         = static_cast<Int32>(DebugView);
     Constants.Ping              = Ping;
+    Constants.CurrentFrameOnly  = HistoryMode == RTXPTGuideHistoryMode::CurrentFrame ? 1u : 0u;
 
     {
         MapHelper<DenoisingGuidesBakerConstants> Mapped{pContext, m_Constants, MAP_WRITE, MAP_FLAG_DISCARD};
