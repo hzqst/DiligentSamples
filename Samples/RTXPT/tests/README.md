@@ -1,5 +1,39 @@
 # RR input and resource contract GPU regression
 
+## Embedded RealtimeRaw evidence
+
+`RTXPTDebugCapture::Capture` exports the latest successful Embedded Raw view to a
+new directory. Enable `EnableProfiling` on the scene/view create info to collect
+asynchronous GPU timestamps. Ordinary rendering never waits for query results;
+an occupied query ring drops a measurement. The explicit capture waits for GPU
+readback and must not be used as a throughput benchmark.
+
+The completed `manifest.json` identifies the successful view frame, seed/sample
+index, local sizes, resource formats, byte order, array slices and tightly packed
+row sizes. Binary outputs include current noisy HDR, encoded display, ray distance
+(not ViewZ), primary motion, specular hit distance, average layer radiance, all
+header planes and the actual packed surface buffer. The latter follows
+`PathTracer/DenoisingLayers.hlsli`; inactive records and padding are undefined.
+It is not a set of validated standalone NRD/RR input textures. Dynamic surface
+motion/correspondence remains explicitly unvalidated.
+
+```text
+python tests/validate_realtime_capture.py <capture-directory>
+```
+
+The validator checks byte counts, finite texture signals and timing frame identity,
+writes SHA-256 hashes to `validation.json`, and converts noisy RGB to a scene-linear
+PFM. HDR is not exposure-scaled. PFM rows are bottom-up; raw binary rows are top-down.
+A failed capture has no completed manifest; an existing directory is never reused.
+
+`gpu_timing.source_frame` is local to the profiler owner, not a global scene ID.
+Embedded view timing uses the successful view index; scene timing uses PrepareCount.
+Null timings mean unmeasured/unavailable. ScenePrepare includes resource uploads
+and rigid BLAS work. SkinAndBLAS is the combined interleaved skin/skinned-BLAS work,
+and TLAS is separate. Nested intervals must not be summed with Total/ScenePrepare.
+NRD, TAA, SR, RR and Bloom are not active in Raw. Total GPU allocation is unavailable;
+the manifest does not pass readback byte counts off as VRAM residency.
+
 ## Frozen Reference baseline
 
 `capture_reference_baseline.py` runs the Sample reference path at a fixed scene

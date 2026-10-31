@@ -5,6 +5,7 @@
  */
 
 #include "RTXPTSceneFrame.hpp"
+#include "RTXPTGpuProfiler.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -931,7 +932,7 @@ struct RTXPTSceneFrameBuilder::Impl
         return true;
     }
 
-    RTXPTErrorCode Prepare(IDeviceContext* pContext, const RTXPTSceneSnapshotPtr& Snapshot)
+    RTXPTErrorCode Prepare(IDeviceContext* pContext, const RTXPTSceneSnapshotPtr& Snapshot, RTXPTGpuProfiler* Profiler)
     {
         const Uint64 PrepareIndex    = ++Stats.PrepareCount;
         bool         BindingsChanged = !HasPrepared;
@@ -1109,16 +1110,21 @@ struct RTXPTSceneFrameBuilder::Impl
         }
         if (!SkinJobs.empty())
         {
-            const RTXPTErrorCode Code = PrepareSkinnedInstances(pContext, SkinJobs, TLASInstances, BindingsChanged);
+            RTXPTGpuProfiler::Scope Timing{Profiler, pContext, RTXPTGpuProfiler::Stage::SkinAndBLAS};
+            const RTXPTErrorCode    Code = PrepareSkinnedInstances(pContext, SkinJobs, TLASInstances, BindingsChanged);
             if (Code != RTXPTErrorCode::Ok)
                 return Code;
         }
 
         if (!ReserveTextureTable(1u, BindingsChanged) || !UploadMaterials(pContext, BindingsChanged) ||
             !SubInstances.Upload(Device, pContext, SubInstanceRows, BindingsChanged) ||
-            !SubInstanceTransforms.Upload(Device, pContext, SubInstanceMatrices, BindingsChanged) ||
-            !BuildTLAS(pContext, TLASInstances, BindingsChanged))
+            !SubInstanceTransforms.Upload(Device, pContext, SubInstanceMatrices, BindingsChanged))
             return RTXPTErrorCode::SceneTablesFailed;
+        {
+            RTXPTGpuProfiler::Scope Timing{Profiler, pContext, RTXPTGpuProfiler::Stage::TLAS};
+            if (!BuildTLAS(pContext, TLASInstances, BindingsChanged))
+                return RTXPTErrorCode::SceneTablesFailed;
+        }
 
         bool LightingChanged = false;
         if (!LightsUploaded || Snapshot->LightRevision != LightRevision)
@@ -1331,7 +1337,7 @@ bool RTXPTSceneFrameBuilder::IsInitialized() const
     return m_Impl->Initialized;
 }
 
-RTXPTErrorCode RTXPTSceneFrameBuilder::Prepare(IDeviceContext* pContext, const RTXPTSceneSnapshotPtr& Snapshot)
+RTXPTErrorCode RTXPTSceneFrameBuilder::Prepare(IDeviceContext* pContext, const RTXPTSceneSnapshotPtr& Snapshot, RTXPTGpuProfiler* Profiler)
 {
     Impl& I = *m_Impl;
     if (!I.Initialized)
@@ -1341,7 +1347,7 @@ RTXPTErrorCode RTXPTSceneFrameBuilder::Prepare(IDeviceContext* pContext, const R
     RTXPTErrorCode Code = RTXPTErrorCode::OutOfMemory;
     try
     {
-        Code = I.Prepare(pContext, Snapshot);
+        Code = I.Prepare(pContext, Snapshot, Profiler);
         if (Code == RTXPTErrorCode::Ok)
             return Code;
     }

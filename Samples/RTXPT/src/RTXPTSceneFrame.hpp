@@ -28,6 +28,7 @@ namespace Diligent
 
 struct IRenderStateCache;
 struct IPipelineStateCache;
+class RTXPTGpuProfiler;
 
 struct RTXPTSceneFrameBuilderCreateInfo
 {
@@ -112,7 +113,7 @@ public:
     // Makes Snapshot resident and records its frame on pContext: uploads new assets, builds missing BLASes, rebuilds
     // the TLAS and the sub-instance tables, and the emissive triangles when they changed. On failure the previous
     // frame is no longer valid.
-    RTXPTErrorCode Prepare(IDeviceContext* pContext, const RTXPTSceneSnapshotPtr& Snapshot);
+    RTXPTErrorCode Prepare(IDeviceContext* pContext, const RTXPTSceneSnapshotPtr& Snapshot, RTXPTGpuProfiler* Profiler = nullptr);
 
     const RTXPTSceneFrame&      GetFrame() const;
     const RTXPTSceneFrameStats& GetStats() const;

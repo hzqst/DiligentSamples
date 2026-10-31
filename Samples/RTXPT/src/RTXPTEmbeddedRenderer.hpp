@@ -17,6 +17,7 @@ struct RTXPTSceneFrameStats;
 struct IRenderStateCache;
 struct IPipelineStateCache;
 struct RTXPTRealtimeRawStats;
+class RTXPTGpuProfiler;
 
 enum class RTXPTViewMode
 {
@@ -40,11 +41,12 @@ class RTXPTEmbeddedScene;
 //PSOCache is optional.
 struct RTXPTEmbeddedSceneCreateInfo
 {
-    RTXPTScene*                      Scene     = nullptr;
-    RTXPTMaterials*                  Materials = nullptr;
-    IShaderSourceInputStreamFactory* Shaders   = nullptr;
-    IRenderStateCache*               Cache     = nullptr;
-    IPipelineStateCache*             PSOCache  = nullptr;
+    RTXPTScene*                      Scene           = nullptr;
+    RTXPTMaterials*                  Materials       = nullptr;
+    IShaderSourceInputStreamFactory* Shaders         = nullptr;
+    IRenderStateCache*               Cache           = nullptr;
+    IPipelineStateCache*             PSOCache        = nullptr;
+    bool                             EnableProfiling = false;
 };
 
 struct RTXPTViewSize
@@ -99,6 +101,7 @@ struct RTXPTEmbeddedViewCreateInfo
     RTXPTViewSize                    DisplaySize;
     TEXTURE_FORMAT                   DisplayRTVFormat = TEX_FORMAT_RGBA8_UNORM_SRGB;
     RTXPTViewMode                    Mode             = RTXPTViewMode::Reference;
+    bool                             EnableProfiling  = false;
 };
 
 //The runtime scene of RTXPTScene and RTXPTMaterials and its prepared GPU frame. It keeps the GPU objects of both that
@@ -126,6 +129,7 @@ public:
     //The work counters of the frames prepared for the scene since Initialize, its first frame included: each Prepare
     //prepares one frame and builds its TLAS once.
     const RTXPTSceneFrameStats& GetFrameStats() const;
+    RTXPTGpuProfiler&           GetProfiler();
 
 private:
     friend class RTXPTEmbeddedView;
@@ -154,6 +158,7 @@ public:
     IBuffer*                     GetRealtimeLayerBuffer() const;
     Uint32                       GetTraceCount() const;
     Uint32                       GetAccumulationCount() const;
+    RTXPTGpuProfiler&            GetProfiler();
 
 private:
     struct Impl;

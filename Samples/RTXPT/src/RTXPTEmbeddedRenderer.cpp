@@ -45,11 +45,15 @@ struct RTXPTEmbeddedScene::Impl
     RTXPTEnvMapBaker       Environment;
     RTXPTEnvMapSettings    EnvironmentSettings;
     bool                   Ready{};
+    bool                   EnableProfiling{};
+    RTXPTGpuProfiler       Profiler;
 
     RTXPTErrorCode Prepare(IDeviceContext* Context, const RTXPTSceneSnapshotPtr& Snapshot)
     {
-        RTXPTShaderSourceScope ShaderScope{Shaders};
-        return Frames.Prepare(Context, Snapshot);
+        RTXPTShaderSourceScope  ShaderScope{Shaders};
+        auto                    Timing = Profiler.BeginFrame(Device, Context, EnableProfiling, {}, Frames.GetStats().PrepareCount + 1);
+        RTXPTGpuProfiler::Scope PrepareTiming{&Profiler, Context, RTXPTGpuProfiler::Stage::ScenePrepare};
+        return Frames.Prepare(Context, Snapshot, &Profiler);
     }
 };
 
@@ -59,7 +63,8 @@ RTXPTEmbeddedScene::~RTXPTEmbeddedScene() = default;
 
 RTXPTErrorCode RTXPTEmbeddedScene::Initialize(IRenderDevice* Device, IDeviceContext* Context, const RTXPTEmbeddedSceneCreateInfo& CreateInfo)
 {
-    auto& S = *m_Impl;
+    auto& S           = *m_Impl;
+    S.EnableProfiling = CreateInfo.EnableProfiling;
     if (!Device || !Context || !CreateInfo.Scene || !CreateInfo.Materials || !CreateInfo.Shaders || !CreateInfo.Cache)
         return RTXPTErrorCode::InvalidArgument;
     auto&       Scene     = *CreateInfo.Scene;
@@ -152,6 +157,7 @@ RTXPTSceneRuntime& RTXPTEmbeddedScene::GetRuntime() { return m_Impl->Runtime; }
 const RTXPTImportedScene& RTXPTEmbeddedScene::GetImportedScene() const { return m_Impl->Imported; }
 
 const RTXPTSceneFrameStats& RTXPTEmbeddedScene::GetFrameStats() const { return m_Impl->Frames.GetStats(); }
+RTXPTGpuProfiler&           RTXPTEmbeddedScene::GetProfiler() { return m_Impl->Profiler; }
 
 struct RTXPTEmbeddedView::Impl
 {
@@ -176,10 +182,12 @@ struct RTXPTEmbeddedView::Impl
     PathTracerViewData                 PreviousView{};
     Uint32                             Width{}, Height{}, FrameIndex{}, Samples{};
     //The scene frame revisions this view's light sampling and history last followed.
-    Uint64 LightingRevision{}, EmissiveRevision{}, ContentRevision{};
-    bool   LightsBakerReady{};
-    bool   Ready{};
-    bool   OutputValid{};
+    Uint64           LightingRevision{}, EmissiveRevision{}, ContentRevision{};
+    bool             LightsBakerReady{};
+    bool             Ready{};
+    bool             OutputValid{};
+    bool             EnableProfiling{};
+    RTXPTGpuProfiler Profiler;
 
     void AcceptFrame(const PathTracerCameraData& Camera, const PathTracerViewData& View, Uint32 SampleCount, Uint64 Revision)
     {
@@ -282,7 +290,8 @@ RTXPTEmbeddedView::~RTXPTEmbeddedView() = default;
 RTXPTErrorCode RTXPTEmbeddedView::Initialize(IRenderDevice* Device, IDeviceContext* Context, const RTXPTEmbeddedViewCreateInfo& CreateInfo)
 {
     m_Impl             = std::make_unique<Impl>();
-    auto&        R     = *m_Impl;
+    auto& R            = *m_Impl;
+    R.EnableProfiling  = CreateInfo.EnableProfiling;
     const Uint32 Width = CreateInfo.RenderSize.Width, Height = CreateInfo.RenderSize.Height;
     if (!Device || !Context || !CreateInfo.Shaders || !CreateInfo.Cache || !CreateInfo.Scene || !CreateInfo.Scene->IsReady() ||
         !Width || !Height || !CreateInfo.DisplaySize.Width || !CreateInfo.DisplaySize.Height)
@@ -417,7 +426,8 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
     if (R.Mode == RTXPTViewMode::RealtimeRaw)
     {
         PT.sampleBaseIndex = PT.sampleIndex = R.FrameIndex;
-        const auto Code                     = R.Raw.Render(R.Context, R.Rays, R.LightsBaker, Constants, ToneParameters, R.DisplayRTV);
+        auto       Timing                   = R.Profiler.BeginFrame(R.Device, R.Context, R.EnableProfiling, {}, R.FrameIndex + 1);
+        const auto Code                     = R.Raw.Render(R.Context, R.Rays, R.LightsBaker, Constants, ToneParameters, R.DisplayRTV, &R.Profiler);
         if (Code != RTXPTErrorCode::Ok)
             return Code;
         R.AcceptFrame(Camera, View, 0, Frame.Snapshot->ContentRevision);
@@ -497,6 +507,7 @@ RTXPTViewOutputInfo RTXPTEmbeddedView::GetOutputInfo(RTXPTViewOutput Output) con
     Info.FrameIndex     = Info.Valid ? R.FrameIndex : 0;
     return Info;
 }
+RTXPTGpuProfiler&            RTXPTEmbeddedView::GetProfiler() { return m_Impl->Profiler; }
 Uint32                       RTXPTEmbeddedView::GetTraceCount() const { return m_Impl->Rays.GetStats().TraceCount; }
 Uint32                       RTXPTEmbeddedView::GetAccumulationCount() const { return m_Impl->Samples; }
 const RTXPTRealtimeRawStats& RTXPTEmbeddedView::GetRealtimeRawStats() const { return m_Impl->Raw.GetStats(); }
