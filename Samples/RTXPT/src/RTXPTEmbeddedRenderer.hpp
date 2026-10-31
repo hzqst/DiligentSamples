@@ -170,9 +170,12 @@ public:
     RTXPTErrorCode Initialize(IRenderDevice* Device, IDeviceContext* Context, const RTXPTEmbeddedViewCreateInfo& CreateInfo);
     //Exposure is a linear display multiplier in [2^-32, 2^32]; it never rescales accumulated/noisy HDR.
     RTXPTErrorCode Render(const PathTracerCameraData& Camera, const PathTracerViewData& View, double Time, bool ResetHistory, float Exposure = 1.0f);
-    ITexture*      GetOutput() const;
+    // Revokes submitted output and temporal history after the host observes an execution failure.
+    // Does not wait for the GPU or release resources that submitted commands may still reference.
+    void InvalidateOutput();
     //GetOutput returns the allocated display target even before Render, for recording host commands. Contents are
     //current only after Render succeeds. Its UNORM SRV copies sRGB-encoded bytes without a second decode/encode cycle.
+    ITexture*                    GetOutput() const;
     RTXPTViewOutputInfo          GetOutputInfo(RTXPTViewOutput Output) const;
     const RTXPTRealtimeRawStats& GetRealtimeRawStats() const;
     IBuffer*                     GetRealtimeLayerBuffer() const;

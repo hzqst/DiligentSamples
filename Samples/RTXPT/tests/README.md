@@ -104,6 +104,17 @@ required to retire dynamic descriptors in a headless test, just as in the host.
 The CPU history test and existing retry harness also verify that a skin write
 followed by BLAS failure, or later scene failure, cannot overwrite published data.
 
+## Host failure notification
+
+`RTXPTEmbeddedView::InvalidateOutput()` lets an embedding host revoke output after observing a
+post-submit failure. It clears output/guide validity, consumed-scene history and Reference samples,
+without waiting for the GPU or releasing submitted resources. The next successful render starts a
+fresh temporal baseline; later valid executions can establish continuity. This cannot undo an image
+already presented, and a device-lost host must follow its own session/device recreation contract.
+Host GPU tests inject this notification on a healthy device and check all affected output provenance
+and feedback reset. CPU tests also pair a replaced/recovered instance with an unchanged instance to
+verify that invalid correspondence does not discard unrelated valid surface history.
+
 ## Frozen Reference baseline
 
 `capture_reference_baseline.py` runs the Sample reference path at a fixed scene

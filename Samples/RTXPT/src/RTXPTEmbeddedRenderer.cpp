@@ -494,6 +494,16 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
     return RTXPTErrorCode::Ok;
 }
 
+void RTXPTEmbeddedView::InvalidateOutput()
+{
+    auto& R       = *m_Impl;
+    R.OutputValid = false;
+    R.History     = {};
+    R.LastScene   = {};
+    R.Samples     = 0;
+    R.Raw.InvalidateOutput();
+}
+
 ITexture*           RTXPTEmbeddedView::GetOutput() const { return m_Impl->Output; }
 RTXPTViewOutputInfo RTXPTEmbeddedView::GetOutputInfo(RTXPTViewOutput Output) const
 {
