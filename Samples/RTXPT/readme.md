@@ -26,6 +26,8 @@ Noisy radiance is current-frame linear RGBA16F; reference accumulation is linear
 
 ## Shared RealtimeRaw pipeline
 
+`RTXPTEmbeddedView::Render` accepts an optional linear display exposure multiplier (default 1, range [2^-32, 2^32]). It changes the existing tone mapper's exposure compensation without rescaling HDR or resetting reference accumulation. Invalid exposure invalidates the frame output and returns `InvalidArgument`.
+
 Set `RTXPTEmbeddedViewCreateInfo::Mode = RTXPTViewMode::RealtimeRaw` to use the same `RTXPTRealtimeRawPipeline` as the Sample's `--realtime_raw true` validation preset. Both use one sample per pixel, equal render/display sizes, an ordered graphics context, and manual exposure. Raw does not allocate progressive radiance history or run NRD, TAA, SR, RR, SHARC, Bloom, or auto exposure. The core library remains independent of NRD/NGX providers.
 
 The pipeline runs BuildDenoisingLayers, current light-buffer/feedback preparation, FillDenoisingLayers, current-frame guide baking, no-denoiser final merge, then the existing tone mapper. Layer radiance guides explicitly skip history reads. The view host owns scene preparation, ray bindings and light sampling, and supplies its frame constants; the common pipeline uploads those constants and owns layer/guide/merge targets. Raw hosts configure Uniform or Power+ sampling, so NEE-AT history is not consumed. Per-view frame/mini constants are bound to SRBs rather than shared cached PSO static variables.

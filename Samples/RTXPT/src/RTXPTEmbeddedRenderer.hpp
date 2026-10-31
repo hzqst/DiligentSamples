@@ -144,7 +144,8 @@ public:
     RTXPTEmbeddedView& operator=(const RTXPTEmbeddedView&) = delete;
     //Creates new targets and history and waits for the GPU. Reinitialization invalidates previous outputs even on failure.
     RTXPTErrorCode Initialize(IRenderDevice* Device, IDeviceContext* Context, const RTXPTEmbeddedViewCreateInfo& CreateInfo);
-    RTXPTErrorCode Render(const PathTracerCameraData& Camera, const PathTracerViewData& View, double Time, bool ResetHistory);
+    //Exposure is a linear display multiplier in [2^-32, 2^32]; it never rescales accumulated/noisy HDR.
+    RTXPTErrorCode Render(const PathTracerCameraData& Camera, const PathTracerViewData& View, double Time, bool ResetHistory, float Exposure = 1.0f);
     ITexture*      GetOutput() const;
     //GetOutput returns the allocated display target even before Render, for recording host commands. Contents are
     //current only after Render succeeds. Its UNORM SRV copies sRGB-encoded bytes without a second decode/encode cycle.
