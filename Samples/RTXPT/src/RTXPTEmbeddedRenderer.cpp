@@ -366,7 +366,7 @@ RTXPTErrorCode RTXPTEmbeddedView::Initialize(IRenderDevice* Device, IDeviceConte
     return RTXPTErrorCode::Ok;
 }
 
-RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, const PathTracerViewData& View, double Time, bool ResetHistory)
+RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, const PathTracerViewData& View, double Time, bool ResetHistory, float Exposure)
 {
     auto& R       = *m_Impl;
     ResetHistory  = ResetHistory || !R.OutputValid;
@@ -374,6 +374,11 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
     R.Raw.InvalidateOutput();
     if (!R.Ready)
         return RTXPTErrorCode::NotInitialized;
+    constexpr float MaxExposure = 4294967296.0f;
+    if (!std::isfinite(Exposure) || Exposure < 1.0f / MaxExposure || Exposure > MaxExposure)
+        return RTXPTErrorCode::InvalidArgument;
+    auto ToneParameters                 = R.ToneParameters;
+    ToneParameters.ExposureCompensation = std::log2(Exposure);
     if (Camera.ViewportWidth != R.Width || Camera.ViewportHeight != R.Height ||
         View.ViewportSize.x != float(R.Width) || View.ViewportSize.y != float(R.Height))
         return RTXPTErrorCode::InvalidArgument;
@@ -412,7 +417,7 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
     if (R.Mode == RTXPTViewMode::RealtimeRaw)
     {
         PT.sampleBaseIndex = PT.sampleIndex = R.FrameIndex;
-        const auto Code                     = R.Raw.Render(R.Context, R.Rays, R.LightsBaker, Constants, R.ToneParameters, R.DisplayRTV);
+        const auto Code                     = R.Raw.Render(R.Context, R.Rays, R.LightsBaker, Constants, ToneParameters, R.DisplayRTV);
         if (Code != RTXPTErrorCode::Ok)
             return Code;
         R.AcceptFrame(Camera, View, 0, Frame.Snapshot->ContentRevision);
@@ -449,7 +454,7 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
     Tone.pLdrRTV    = R.DisplayRTV;
     Tone.Width      = R.Width;
     Tone.Height     = R.Height;
-    Tone.pParams    = &R.ToneParameters;
+    Tone.pParams    = &ToneParameters;
     if (!R.ToneMapping.Render(R.Context, Tone))
         return RTXPTErrorCode::ToneMappingFailed;
     R.AcceptFrame(Camera, View, Samples, Frame.Snapshot->ContentRevision);
