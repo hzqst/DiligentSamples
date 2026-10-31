@@ -142,4 +142,4 @@ jobs:
         name: GoldenImages-${{ matrix.name }}-${{ matrix.toolset }}-${{ matrix.build_type }}
         path: |
           ${{github.workspace}}/DiligentTestData/GoldenImages
-        retention-days: 90
+        retention-days: 1
