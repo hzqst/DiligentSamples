@@ -48,6 +48,7 @@
 #include "AdaptiveSampling.hpp"
 #include "AsyncPrefix.hpp"
 #include "../tests/HDRValidationCapture.hpp"
+#include "../tests/ReferenceValidationCapture.hpp"
 #include "RTXPTDenoisingGuidesBaker.hpp"
 #include "RTXPTNrdIntegration.hpp"
 #include "RTXPTRenderTargets.hpp"
@@ -232,6 +233,7 @@ private:
     SharcSettings                                              m_SharcSettings;
     bool                                                       m_SharcActive = false;
     HDRValidationCapture                                       m_HDRCapture;
+    ReferenceValidationCapture                                 m_ReferenceCapture;
     bool                                                       m_RequestSceneAnimations = false;
     Uint32                                                     m_ExitAfterFrames        = 0;
     RTXPTDenoisingGuidesBaker                                  m_DenoisingGuidesBaker;

@@ -683,6 +683,10 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
     Args.Parse("hdr_capture_count", m_HDRCapture.FrameCount);
     Args.Parse("hdr_capture_processed", m_HDRCapture.Processed);
     Args.Parse("hdr_capture_sequence", m_HDRCapture.Sequence);
+    Args.Parse("reference_capture_prefix", m_ReferenceCapture.Prefix);
+    Args.Parse("reference_capture_samples", m_ReferenceCapture.Samples);
+    Args.Parse("reference_time", m_ReferenceCapture.Time);
+    Args.Parse("reference_seed_offset", m_ReferenceCapture.SeedOffset);
     Args.Parse("subsampling_validation", m_ValidateSubSampling);
     Args.Parse("exit_after_frames", m_ExitAfterFrames);
     Args.Parse("bounces", m_MaxBounces);
@@ -708,6 +712,17 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
                                                {{"native", RAY_RECONSTRUCTION_QUALITY_NATIVE}, {"quality", RAY_RECONSTRUCTION_QUALITY_QUALITY}, {"balanced", RAY_RECONSTRUCTION_QUALITY_BALANCED}, {"performance", RAY_RECONSTRUCTION_QUALITY_PERFORMANCE}, {"ultra_performance", RAY_RECONSTRUCTION_QUALITY_ULTRA_PERFORMANCE}}, m_RayReconstructionSettings.Quality);
     Args.ParseEnum<RAY_RECONSTRUCTION_DLSS_PRESET>("rr_preset", 0,
                                                    {{"F", RAY_RECONSTRUCTION_DLSS_PRESET_F}, {"E", RAY_RECONSTRUCTION_DLSS_PRESET_E}}, m_RayReconstructionSettings.Preset);
+    if (m_ReferenceCapture.Enabled())
+    {
+        if (m_RealtimeUI.RealtimeMode || m_UseEmbeddedReference || m_ReferenceCapture.Samples == 0 ||
+            !std::isfinite(m_ReferenceCapture.Time) || m_ReferenceCapture.Time < 0.0)
+        {
+            LOG_ERROR_MESSAGE("Reference capture needs --realtime false, the Sample reference path, positive samples and finite nonnegative time");
+            return CommandLineStatus::Error;
+        }
+        m_EnableAsyncPrefix = false;
+        m_CreateAsyncQueue  = false;
+    }
     return CommandLineStatus::OK;
 }
 
@@ -943,6 +958,10 @@ bool RTXPTSample::SetCurrentScene(const std::string& SceneName, bool ForceReload
     const bool SceneLoaded = m_Scene.LoadScene(m_pDevice, m_pImmediateContext, m_AssetsRoot, SceneName);
     if (SceneLoaded)
     {
+        // Scene::Update advances animation by elapsed time, not its CurrTime argument.
+        // Advance the newly loaded pose once, before importing it, then keep it frozen.
+        if (m_ReferenceCapture.Enabled())
+            m_Scene.Update(0.0, m_ReferenceCapture.Time);
         const RTXPTSceneSettings& SceneSettings = m_Scene.GetSceneGraphData().Settings;
         if (SceneSettings.EnableAnimations.has_value())
             m_EnableSceneAnimations = m_RequestSceneAnimations || (SceneSettings.EnableAnimations.value() && !kReferencePathTraceMode);
@@ -1274,7 +1293,7 @@ void RTXPTSample::UpdateFrameConstants(double CurrTime)
 
     const Uint32 ReferenceSampleIndex = m_AccumulationFrame;
     const Uint32 PathTraceSampleIndex = RealtimeMode ? (m_FrameIndex % kRTXPTRealtimeNoisePeriod) : ReferenceSampleIndex;
-    const Uint32 SampleBaseIndex      = PathTraceSampleIndex * ActualSPP;
+    const Uint32 SampleBaseIndex      = PathTraceSampleIndex * ActualSPP + (m_ReferenceCapture.Enabled() ? m_ReferenceCapture.SeedOffset : 0u);
     m_RealtimeSampleIndex             = RealtimeMode ? PathTraceSampleIndex : 0u;
     m_LastSampleBaseIndex             = SampleBaseIndex;
 
@@ -1880,6 +1899,8 @@ bool RTXPTSample::RunReferencePathTraceAndPostProcess()
         return false;
     }
 
+    m_ReferenceCapture.CaptureHDR(m_pDevice, m_pImmediateContext, m_RenderTargets, m_LastFrameConstants);
+
     RTXPTBloomParameters BloomParams;
     BloomParams.Enabled   = m_ReferenceUI.EnableBloom;
     BloomParams.Radius    = BloomRadius;
@@ -1913,6 +1934,8 @@ bool RTXPTSample::RunReferencePathTraceAndPostProcess()
         return false;
     }
 
+    m_ReferenceCapture.CaptureDisplay(m_pDevice, m_pImmediateContext, m_RenderTargets, m_LastFrameConstants,
+                                      m_ReferenceUI.ToneMapping, m_CurrentSceneName);
     return true;
 }
 
@@ -2432,13 +2455,22 @@ void RTXPTSample::Render()
 
 void RTXPTSample::Update(double CurrTime, double ElapsedTime, bool DoUpdateUI)
 {
+    if (m_ReferenceCapture.Enabled())
+    {
+        CurrTime                               = m_ReferenceCapture.Time;
+        ElapsedTime                            = 0.0;
+        DoUpdateUI                             = false;
+        m_EnableSceneAnimations                = false;
+        m_ReferenceUI.ToneMapping.AutoExposure = false;
+    }
     RunRayReconstructionValidation(CurrTime);
     RunSubSamplingValidation();
     RunAsyncPrefixValidation();
     SampleBase::Update(CurrTime, ElapsedTime, DoUpdateUI);
     if (!CanUseAsyncPrefix()) DrainAsyncPrefix();
 
-    m_Camera.Update(m_InputController, static_cast<float>(ElapsedTime));
+    if (!m_ReferenceCapture.Enabled())
+        m_Camera.Update(m_InputController, static_cast<float>(ElapsedTime));
     if (m_HasLastCameraMatrices &&
         (m_Camera.GetViewMatrix() != m_LastCameraView ||
          m_Camera.GetProjMatrix() != m_LastCameraProj))

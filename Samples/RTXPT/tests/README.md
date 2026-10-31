@@ -1,5 +1,51 @@
 # RR input and resource contract GPU regression
 
+## Frozen Reference baseline
+
+`capture_reference_baseline.py` runs the Sample reference path at a fixed scene
+camera and animation time. It captures the current dispatch, the GPU progressive
+mean and the pre-blit display texture from the same sample. The opt-in readback
+stalls are validation-only; normal rendering does not use them.
+
+```text
+python tests/capture_reference_baseline.py --exe <absolute RTXPT.exe> --output <new absolute evidence directory>
+python tests/capture_reference_baseline.py --exe <absolute RTXPT.exe> --output <another new directory> --scene ../tests/sharc-dynamic.scene.json --time 0 --second-time 0.5
+python tests/test_reference_baseline.py
+```
+
+Use `--api vk` for Vulkan. Defaults are 320x240, 256 accumulated 1-spp reference
+dispatches, Uniform NEE, fixed manual exposure from the scene camera, sample seed
+offset zero, single queue and no SHARC. The script first checks that accumulation
+at sample 1 equals noisy input, then compares two independently launched runs at
+the requested sample count. The default repeat tolerance is exactly zero for this
+controlled baseline; `--repeat-tolerance` must be selected before a run, not relaxed
+to hide input drift. `--nee-type 2` selects the normal adaptive sampling policy;
+fixed ray sample indices alone do not guarantee bitwise-identical adaptive light
+sampling tables. Use its measurements as a separate statistical baseline.
+
+The Windows host enforces a minimum outer window size of 320x240. A request such
+as 320x180 may therefore produce a different client size; the runner intentionally
+rejects a size mismatch. Choose a sufficiently large client size.
+
+Files are `<label>.noisy.pfm` (RGBA16F source, linear RGB),
+`<label>.accumulated.pfm` (RGBA32F progressive mean, linear RGB), and
+`<label>.display.pfm` (stored RGBA8 UNORM RGB after bloom/tone mapping, before blit).
+The latter is not an HDR image or a swap-chain screenshot. PFM files contain RGB
+float32, little endian, bottom row first. `<label>.json` identifies the executed
+camera, projection, time, frame/sample indices and exposure. `manifest.json`
+records commands, executable/runtime and asset hashes, modified source hashes,
+numerical differences and success/failure. The strict JSON scene fixtures used
+here must have their existing glTF/environment assets installed. Evidence is
+local output, not a new set of committed generated assets.
+
+The underlying Sample options are `--reference_capture_prefix`,
+`--reference_capture_samples`, `--reference_time`, and `--reference_seed_offset`.
+They require `--realtime false` and the Sample path, freeze animation once after
+scene load, disable camera/UI updates and auto exposure, and never average the
+already accumulated texture again. They do not yet expose Embedded HDR or prove
+dynamic motion/denoising correctness. The runner also requests existing GPU CSV
+profiling; uninstrumented stages remain unavailable, not zero-cost measurements.
+
 ## Async prefix validation (issue #27, in progress)
 
 Build `tests/build_async_prefix_test.bat` in a VS 2022 x64 Native Tools prompt.
