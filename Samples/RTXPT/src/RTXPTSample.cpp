@@ -1446,12 +1446,12 @@ void RTXPTSample::CreateSceneIndependentPasses()
 {
     m_BlitPass.Initialize(m_pDevice, m_pEngineFactory, m_pStateCache, m_pSwapChain);
     RTXPTPostProcessPipelineCreateInfo PostProcessCI;
-    PostProcessCI.pEngineFactory   = m_pEngineFactory;
-    PostProcessCI.pStateCache      = m_pStateCache;
-    PostProcessCI.pPSOCache        = m_pPSOCache;
-    PostProcessCI.pSwapChain       = m_pSwapChain;
-    PostProcessCI.pFrameConstants  = m_FrameConstantsCB;
-    PostProcessCI.ComputeSupported = m_FeatureCaps.ComputeShaders;
+    PostProcessCI.pEngineFactory       = m_pEngineFactory;
+    PostProcessCI.pStateCache          = m_pStateCache;
+    PostProcessCI.pPSOCache            = m_pPSOCache;
+    PostProcessCI.ToneMappingRTVFormat = TEX_FORMAT_RGBA8_UNORM;
+    PostProcessCI.pFrameConstants      = m_FrameConstantsCB;
+    PostProcessCI.ComputeSupported     = m_FeatureCaps.ComputeShaders;
     m_PostProcessPipeline.Initialize(m_pDevice, PostProcessCI);
     m_DenoisingGuidesBaker.Initialize(m_pDevice,
                                       m_pEngineFactory,
@@ -2363,12 +2363,11 @@ bool RTXPTSample::RunEmbeddedReference()
             m_EmbeddedScene = std::move(Scene);
         }
         RTXPTEmbeddedViewCreateInfo ViewCI;
-        ViewCI.Scene    = m_EmbeddedScene.get();
-        ViewCI.Shaders  = Shaders;
-        ViewCI.Cache    = m_pEmbeddedStateCache;
-        ViewCI.PSOCache = m_pPSOCache;
-        ViewCI.Width    = Desc.Width;
-        ViewCI.Height   = Desc.Height;
+        ViewCI.Scene      = m_EmbeddedScene.get();
+        ViewCI.Shaders    = Shaders;
+        ViewCI.Cache      = m_pEmbeddedStateCache;
+        ViewCI.PSOCache   = m_pPSOCache;
+        ViewCI.RenderSize = ViewCI.DisplaySize = {Desc.Width, Desc.Height};
 
         auto                 Renderer = std::make_unique<RTXPTEmbeddedView>();
         const RTXPTErrorCode ViewCode = Renderer->Initialize(m_pDevice, m_pImmediateContext, ViewCI);

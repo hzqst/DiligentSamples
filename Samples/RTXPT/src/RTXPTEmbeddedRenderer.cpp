@@ -176,6 +176,7 @@ struct RTXPTEmbeddedView::Impl
     Uint64 LightingRevision{}, EmissiveRevision{}, ContentRevision{};
     bool   LightsBakerReady{};
     bool   Ready{};
+    bool   OutputValid{};
 
     //The path tracer is compiled for the size of the scene's bindless table, which grows with the scene.
     bool InitializeRays(Uint32 MaterialTextureCount)
@@ -267,11 +268,15 @@ RTXPTEmbeddedView::~RTXPTEmbeddedView() = default;
 
 RTXPTErrorCode RTXPTEmbeddedView::Initialize(IRenderDevice* Device, IDeviceContext* Context, const RTXPTEmbeddedViewCreateInfo& CreateInfo)
 {
+    m_Impl             = std::make_unique<Impl>();
     auto&        R     = *m_Impl;
-    const Uint32 Width = CreateInfo.Width, Height = CreateInfo.Height;
+    const Uint32 Width = CreateInfo.RenderSize.Width, Height = CreateInfo.RenderSize.Height;
     if (!Device || !Context || !CreateInfo.Shaders || !CreateInfo.Cache || !CreateInfo.Scene || !CreateInfo.Scene->IsReady() ||
-        !Width || !Height)
+        !Width || !Height || !CreateInfo.DisplaySize.Width || !CreateInfo.DisplaySize.Height)
         return RTXPTErrorCode::InvalidArgument;
+    if (Width != CreateInfo.DisplaySize.Width || Height != CreateInfo.DisplaySize.Height ||
+        CreateInfo.DisplayRTVFormat != TEX_FORMAT_RGBA8_UNORM_SRGB)
+        return RTXPTErrorCode::UnsupportedViewConfiguration;
     const auto& S = *CreateInfo.Scene->m_Impl;
     R.Cache       = CreateInfo.Cache;
     R.PSOCache    = CreateInfo.PSOCache;
@@ -300,7 +305,7 @@ RTXPTErrorCode RTXPTEmbeddedView::Initialize(IRenderDevice* Device, IDeviceConte
     //Encode once on the RTV. The UNORM SRV lets the host copy encoded display bytes without decoding them again.
     TextureViewDesc DisplayView;
     DisplayView.ViewType = TEXTURE_VIEW_RENDER_TARGET;
-    DisplayView.Format   = TEX_FORMAT_RGBA8_UNORM_SRGB;
+    DisplayView.Format   = CreateInfo.DisplayRTVFormat;
     R.Output->CreateView(DisplayView, &R.DisplayRTV);
     if (!R.DisplayRTV)
         return RTXPTErrorCode::FrameTargetsFailed;
@@ -326,7 +331,7 @@ RTXPTErrorCode RTXPTEmbeddedView::Initialize(IRenderDevice* Device, IDeviceConte
     if (!Frame.pTLAS || !R.InitializeRays(Frame.MaterialTextureCount) || !R.BindFrame(Frame))
         return RTXPTErrorCode::RayTracingSetupFailed;
     if (!R.Accumulation.Initialize(Device, Factory, R.Cache, R.PSOCache, true) ||
-        !R.ToneMapping.Initialize(Device, Factory, R.Cache, R.PSOCache, TEX_FORMAT_RGBA8_UNORM_SRGB, true) ||
+        !R.ToneMapping.Initialize(Device, Factory, R.Cache, R.PSOCache, CreateInfo.DisplayRTVFormat, true) ||
         !R.ToneMapping.ResizeResources(Device, Width, Height, TEX_FORMAT_RGBA32_FLOAT))
         return RTXPTErrorCode::PostProcessSetupFailed;
     R.ToneParameters.ToneMapOperator = RTXPTToneMapperOperator::Reinhard;
@@ -338,9 +343,14 @@ RTXPTErrorCode RTXPTEmbeddedView::Initialize(IRenderDevice* Device, IDeviceConte
 
 RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, const PathTracerViewData& View, double Time, bool ResetHistory)
 {
-    auto& R = *m_Impl;
+    auto& R       = *m_Impl;
+    ResetHistory  = ResetHistory || !R.OutputValid;
+    R.OutputValid = false;
     if (!R.Ready)
         return RTXPTErrorCode::NotInitialized;
+    if (Camera.ViewportWidth != R.Width || Camera.ViewportHeight != R.Height ||
+        View.ViewportSize.x != float(R.Width) || View.ViewportSize.y != float(R.Height))
+        return RTXPTErrorCode::InvalidArgument;
     const auto&            S     = *R.Scene;
     const RTXPTSceneFrame& Frame = S.Frames.GetFrame();
     if (!Frame.pTLAS)
@@ -411,12 +421,39 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
     R.Samples         = Samples;
     R.ContentRevision = Frame.Snapshot->ContentRevision;
     ++R.FrameIndex;
+    R.OutputValid = true;
     return RTXPTErrorCode::Ok;
 }
 
-ITexture* RTXPTEmbeddedView::GetOutput() const { return m_Impl->Output; }
-Uint32    RTXPTEmbeddedView::GetTraceCount() const { return m_Impl->Rays.GetStats().TraceCount; }
-Uint32    RTXPTEmbeddedView::GetAccumulationCount() const { return m_Impl->Samples; }
+ITexture*           RTXPTEmbeddedView::GetOutput() const { return m_Impl->Output; }
+RTXPTViewOutputInfo RTXPTEmbeddedView::GetOutputInfo(RTXPTViewOutput Output) const
+{
+    const auto&         R = *m_Impl;
+    RTXPTViewOutputInfo Info;
+    ITexture*           Texture = nullptr;
+    switch (Output)
+    {
+        case RTXPTViewOutput::Display:
+            Texture       = R.Output;
+            Info.Encoding = RTXPTOutputEncoding::SRGB;
+            break;
+        case RTXPTViewOutput::NoisyRadiance: Texture = R.Radiance; break;
+        case RTXPTViewOutput::AccumulatedRadiance: Texture = R.Accumulated; break;
+        default: return Info;
+    }
+    if (!Texture)
+        return Info;
+    const auto& Desc    = Texture->GetDesc();
+    Info.Size           = {Desc.Width, Desc.Height};
+    Info.ResourceFormat = Desc.Format;
+    Info.SRVFormat      = Texture->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE)->GetDesc().Format;
+    Info.Valid          = R.OutputValid;
+    Info.Texture        = Info.Valid ? Texture : nullptr;
+    Info.FrameIndex     = Info.Valid ? R.FrameIndex : 0;
+    return Info;
+}
+Uint32 RTXPTEmbeddedView::GetTraceCount() const { return m_Impl->Rays.GetStats().TraceCount; }
+Uint32 RTXPTEmbeddedView::GetAccumulationCount() const { return m_Impl->Samples; }
 
 void CreateRTXPTEmbeddedStateCache(IRenderDevice* Device, IRenderStateCache** Cache)
 {

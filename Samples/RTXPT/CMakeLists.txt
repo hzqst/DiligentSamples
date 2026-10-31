@@ -4,38 +4,18 @@ project(RTXPT CXX)
 
 set(SOURCE
     src/RTXPTSample.cpp
-    src/RTXPTEmbeddedRenderer.cpp
-    src/RTXPTScene.cpp
-    src/RTXPTSceneJson.cpp
-    src/RTXPTSceneGraph.cpp
-    src/RTXPTMaterials.cpp
-    src/RTXPTLights.cpp
-    src/RTXPTLightsBaker.cpp
-    src/RTXPTLightsBakerPass.cpp
-    src/RTXPTLightProxyBuildPass.cpp
-    src/RTXPTEnvMapBaker.cpp
-    src/RTXPTEnvMapBakerPass.cpp
-    src/RTXPTSkinnedGeometry.cpp
-    src/RTXPTSceneRuntime.cpp
-    src/RTXPTSceneFrame.cpp
-    src/RTXPTSceneImporter.cpp
     src/RTXPTRenderTargets.cpp
     src/RTXPTPostProcessPipeline.cpp
     src/RTXPTPostProcessPass.cpp
     src/RTXPTNrdConfig.cpp
     src/RTXPTNrdIntegration.cpp
-    src/RTXPTRayTracingPass.cpp
     src/SharcIntegration.cpp
     src/AdaptiveSampling.cpp
     src/RTXPTDenoisingGuidesBaker.cpp
-    src/RTXPTEmissiveTrianglePass.cpp
-    src/RTXPTComputePass.cpp
-    src/RTXPTAccumulationPass.cpp
     src/RTXPTBloomPass.cpp
     src/RTXPTSuperResolutionPass.cpp
     src/RTXPTRayReconstructionPass.cpp
     src/RTXPTTemporalAAPass.cpp
-    src/RTXPTToneMappingPass.cpp
     src/RTXPTBlitPass.cpp
 )
 
@@ -398,6 +378,12 @@ if(RTXPT_NRD_ROOT_NORMALIZED)
     endif()
 endif()
 
+include(cmake/RTXPTLibrary.cmake)
+add_rtxpt_library(RTXPT-Runtime
+    SHARC_SHADER_DIR "${RTXPT_SHARC_ROOT}/include"
+    DEPENDENCIES Diligent-AssetLoader Diligent-JSON Diligent-GraphicsTools
+                 Diligent-Archiver-static DiligentFX Diligent-Imgui)
+
 add_sample_app(RTXPT
     IDE_FOLDER
         DiligentSamples/Samples
@@ -431,16 +417,12 @@ if(PLATFORM_WIN32 OR PLATFORM_LINUX)
             "${RTXPT_SHARC_ROOT}/include" "$<TARGET_FILE_DIR:RTXPT>/shaders/SHARC"
         VERBATIM)
     add_dependencies(RTXPT RTXPT-SharcShaders)
-    add_custom_command(TARGET RTXPT POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_CURRENT_SOURCE_DIR}/shaders"
-            "\"$<TARGET_FILE_DIR:RTXPT>/shaders\"")
+    rtxpt_stage_shaders(RTXPT "$<TARGET_FILE_DIR:RTXPT>/shaders")
 endif()
 
 if(DILIGENT_INSTALL_SAMPLES AND (PLATFORM_LINUX OR PLATFORM_WIN32))
     file(RELATIVE_PATH RTXPT_REL_PATH "${CMAKE_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
-    install(DIRECTORY   "${CMAKE_CURRENT_SOURCE_DIR}/shaders/"
-            DESTINATION "${CMAKE_INSTALL_BINDIR}/${RTXPT_REL_PATH}/$<CONFIG>/shaders")
+    rtxpt_install_shaders("${CMAKE_INSTALL_BINDIR}/${RTXPT_REL_PATH}/$<CONFIG>/shaders")
     install(DIRECTORY "${RTXPT_SHARC_ROOT}/include/"
             DESTINATION "${CMAKE_INSTALL_BINDIR}/${RTXPT_REL_PATH}/$<CONFIG>/shaders/SHARC")
 endif()
@@ -453,6 +435,7 @@ endif()
 
 target_link_libraries(RTXPT
 PRIVATE
+    RTXPT-Runtime
     Diligent-AssetLoader
     Diligent-JSON
     Diligent-SuperResolution-static
@@ -491,25 +474,21 @@ if (PLATFORM_WIN32 AND D3D12_SUPPORTED AND CMAKE_SIZEOF_VOID_P EQUAL 8)
     include(cmake/HitObjectRuntime.cmake)
 endif()
 
-if (DILIGENT_DLSS_SUPPORTED)
-    copy_dlss_dlls(RTXPT)
-endif()
-
 # Share Core's NGX runtime and pinned DLSS SDK with the SR module.
 option(RTXPT_RAY_RECONSTRUCTION_SHARED "Use the shared ray reconstruction module" OFF)
 if(RAY_RECONSTRUCTION_SUPPORTED)
     target_compile_definitions(RTXPT PRIVATE RTXPT_HAS_RAY_RECONSTRUCTION=1)
     if(RTXPT_RAY_RECONSTRUCTION_SHARED)
         target_link_libraries(RTXPT PRIVATE Diligent-RayReconstruction-shared)
-        add_custom_command(TARGET RTXPT POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "$<TARGET_FILE:Diligent-RayReconstruction-shared>" "$<TARGET_FILE_DIR:RTXPT>"
-            VERBATIM)
     else()
         target_link_libraries(RTXPT PRIVATE Diligent-RayReconstruction-static)
     endif()
-    copy_diligent_ngx_runtime(RTXPT)
-    copy_dlssd_dlls(RTXPT)
 else()
     target_compile_definitions(RTXPT PRIVATE RTXPT_HAS_RAY_RECONSTRUCTION=0)
+endif()
+
+if(RTXPT_RAY_RECONSTRUCTION_SHARED)
+    rtxpt_deploy_reconstruction_runtimes(RTXPT RAY_RECONSTRUCTION_SHARED)
+else()
+    rtxpt_deploy_reconstruction_runtimes(RTXPT)
 endif()

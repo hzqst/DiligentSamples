@@ -121,6 +121,7 @@ enum class RTXPTErrorCode : Uint32
     TraceFailed,
     AccumulationFailed,
     ToneMappingFailed,
+    UnsupportedViewConfiguration,
 };
 
 const char* GetRTXPTErrorCodeString(RTXPTErrorCode Code);
