@@ -16,7 +16,7 @@
 #    include "../../../../DiligentCore/Platforms/Win32/interface/WinHPreface.h"
 #    include <d3d12.h>
 #    include "../../../../DiligentCore/Platforms/Win32/interface/WinHPostface.h"
-#    include "../../../../DiligentCore/Graphics/GraphicsEngineD3D12/interface/CommandQueueD3D12.h"
+#    include "CommandQueueD3D12.h"
 #endif
 
 namespace Diligent
@@ -41,6 +41,12 @@ public:
         RRPrepare,
         RR,
         PostProcess,
+        Merge,
+        ToneMapping,
+        ScenePrepare,
+        SkinAndBLAS,
+        TLAS,
+        HostComposite,
         Count
     };
 
@@ -67,14 +73,35 @@ public:
         Stage             m_Stage;
     };
 
-    Scope BeginFrame(IRenderDevice* Device, IDeviceContext* Context, bool Enabled, const std::string& CSVPath)
+    static constexpr size_t StageCount = static_cast<size_t>(Stage::Count);
+    struct Result
+    {
+        Uint64 FrameNumber = 0;
+        Uint64 SourceFrame = 0;
+        //Negative means the stage was not measured, never a zero-cost stage.
+        std::array<double, StageCount> Milliseconds;
+        Result() { Milliseconds.fill(-1); }
+    };
+    const Result&      GetLatest() const { return m_Latest; }
+    bool               IsAvailable() const { return m_Available; }
+    Uint64             GetDroppedCount() const { return m_Dropped; }
+    static const char* GetStageName(size_t Index) { return kNames.at(Index); }
+    void               Poll() { Collect(); }
+
+    Scope BeginFrame(IRenderDevice* Device, IDeviceContext* Context, bool Enabled, const std::string& CSVPath, Uint64 SourceFrame = 0)
+    {
+        return Scope{StartFrame(Device, Enabled, CSVPath, SourceFrame) ? this : nullptr, Context, Stage::Total};
+    }
+
+    //For hosts whose begin/end timestamps are separate commands. Pair a successful StartFrame with Begin/End(Total).
+    bool StartFrame(IRenderDevice* Device, bool Enabled, const std::string& CSVPath, Uint64 SourceFrame = 0)
     {
         if (!Enabled)
-            return Scope{nullptr, Context, Stage::Total};
+            return false;
         if (!m_Initialized)
             Initialize(Device, CSVPath);
         if (!m_Available)
-            return Scope{nullptr, Context, Stage::Total};
+            return false;
         Collect();
         ++m_FrameNumber;
         for (Uint32 I = 0; I < kBufferedFrames; ++I)
@@ -82,14 +109,15 @@ public:
             Frame& Sample = m_Frames[I];
             if (!Sample.Pending)
             {
-                m_Current     = static_cast<int>(I);
-                Sample.Number = m_FrameNumber;
+                m_Current          = static_cast<int>(I);
+                Sample.Number      = m_FrameNumber;
+                Sample.SourceFrame = SourceFrame;
                 Sample.Ended.fill(false);
-                return Scope{this, Context, Stage::Total};
+                return true;
             }
         }
         ++m_Dropped;
-        return Scope{nullptr, Context, Stage::Total};
+        return false;
     }
 
     void Begin(IDeviceContext* Context, Stage Pass)
@@ -140,15 +168,16 @@ private:
     static constexpr Uint32                               kBufferedFrames = 8;
     static constexpr Uint32                               kReportFrames   = 120;
     static constexpr std::array<const char*, kStageCount> kNames          = {
-        "Total", "PrefixEarly", "BUILD", "LightsBaker", "SHaRCUpdate", "SHaRCResolve", "SubSampling", "FILL", "Guides", "RRPrepare", "RR", "PostProcess"};
+        "Total", "PrefixEarly", "BUILD", "LightsBaker", "SHaRCUpdate", "SHaRCResolve", "SubSampling", "FILL", "Guides", "RRPrepare", "RR", "PostProcess", "Merge", "ToneMapping", "ScenePrepare", "SkinAndBLAS", "TLAS", "HostComposite"};
     struct Frame
     {
         std::array<RefCntAutoPtr<IQuery>, kStageCount * 2> Queries;
         std::array<bool, kStageCount>                      Ended{};
         std::array<Uint32, kStageCount>                    ContextIds{};
         std::array<double, kStageCount>                    ClockOffsets{};
-        Uint64                                             Number  = 0;
-        bool                                               Pending = false;
+        Uint64                                             Number      = 0;
+        Uint64                                             SourceFrame = 0;
+        bool                                               Pending     = false;
     };
 
     void Initialize(IRenderDevice* Device, const std::string& CSVPath)
@@ -204,6 +233,9 @@ private:
             if (m_CSV)
                 m_CSV << Sample.Number;
             std::array<double, kStageCount> Starts{}, Stops{};
+            Result                          Completed;
+            Completed.FrameNumber = Sample.Number;
+            Completed.SourceFrame = Sample.SourceFrame;
             Starts.fill(-1);
             Stops.fill(-1);
             for (size_t I = 0; I < kStageCount; ++I)
@@ -226,6 +258,7 @@ private:
                 }
                 if (m_CSV)
                     m_CSV << ',' << Milliseconds;
+                Completed.Milliseconds[I] = Milliseconds;
                 if (Milliseconds >= 0)
                 {
                     m_Sum[I] += Milliseconds;
@@ -239,6 +272,9 @@ private:
                 m_CSV << '\n';
             }
             Sample.Pending = false;
+            //Ring slots may complete out of order. Never replace a newer result with an older frame.
+            if (Completed.FrameNumber > m_Latest.FrameNumber)
+                m_Latest = Completed;
             if (++m_Collected % kReportFrames == 0)
             {
                 std::cout << "RTXPT GPU ms (" << kReportFrames << " frames):";
@@ -265,6 +301,7 @@ private:
     bool                               m_Initialized = false;
     bool                               m_Available   = false;
     bool                               m_D3D12       = false;
+    Result                             m_Latest;
 };
 
 } // namespace Diligent

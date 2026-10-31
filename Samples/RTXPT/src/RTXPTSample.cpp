@@ -2325,7 +2325,7 @@ bool RTXPTSample::RunRealtimeRaw()
         m_RealtimeRaw = std::move(Raw);
     }
     const auto Code                 = m_RealtimeRaw->Render(m_pImmediateContext, m_RayTracingPass, m_LightsBaker,
-                                            m_LastFrameConstants, m_ReferenceUI.ToneMapping, m_RenderTargets.GetLdrColorRTV());
+                                            m_LastFrameConstants, m_ReferenceUI.ToneMapping, m_RenderTargets.GetLdrColorRTV(), &m_GpuProfiler);
     m_LastRealtimePathTraceExecuted = Code == RTXPTErrorCode::Ok;
     m_LastRealtimeFinalMergeReady   = m_LastRealtimePathTraceExecuted;
     if (Code != RTXPTErrorCode::Ok)

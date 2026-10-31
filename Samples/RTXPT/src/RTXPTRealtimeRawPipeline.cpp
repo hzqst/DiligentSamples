@@ -45,7 +45,7 @@ RTXPTErrorCode RTXPTRealtimeRawPipeline::Initialize(IRenderDevice* Device, IRend
  * Fill produces one current sample per layer; guides are spatial/current-frame only. Merge produces linear HDR,
  * and ToneMapping writes the host's explicit RTV. Only completion of the entire chain publishes valid output.
  */
-RTXPTErrorCode RTXPTRealtimeRawPipeline::Render(IDeviceContext* Context, RTXPTRayTracingPass& Rays, RTXPTLightsBaker& Lights, const SampleConstants& Input, const RTXPTToneMappingParameters& ToneParameters, ITextureView* DisplayRTV)
+RTXPTErrorCode RTXPTRealtimeRawPipeline::Render(IDeviceContext* Context, RTXPTRayTracingPass& Rays, RTXPTLightsBaker& Lights, const SampleConstants& Input, const RTXPTToneMappingParameters& ToneParameters, ITextureView* DisplayRTV, RTXPTGpuProfiler* Profiler)
 {
     m_Stats.OutputValid = false;
     if (!m_Ready)
@@ -93,30 +93,45 @@ RTXPTErrorCode RTXPTRealtimeRawPipeline::Render(IDeviceContext* Context, RTXPTRa
     Dispatch.pStableRadianceUAV        = m_Targets.GetStableRadianceUAV();
     Dispatch.pDenoisingLayersHeaderUAV = m_Targets.GetDenoisingLayersHeaderUAV();
     Dispatch.pDenoisingLayersBufferUAV = m_Targets.GetDenoisingLayersBufferUAV();
-    if (!Lights.PrepareLightBuffers(Context) || !Rays.Dispatch(Context, RTXPTPathTraceVariant::BuildDenoisingLayers, Dispatch))
-        return RTXPTErrorCode::TraceFailed;
+    {
+        RTXPTGpuProfiler::Scope Timing{Profiler, Context, RTXPTGpuProfiler::Stage::Build};
+        if (!Lights.PrepareLightBuffers(Context) || !Rays.Dispatch(Context, RTXPTPathTraceVariant::BuildDenoisingLayers, Dispatch))
+            return RTXPTErrorCode::TraceFailed;
+    }
     ++m_Stats.BuildDispatches;
     RTXPTRayTracingPass::InsertUAVBarrier(Context, m_Targets.GetDenoisingLayersBuffer());
     for (auto* View : {Dispatch.pDenoisingLayersHeaderUAV, Dispatch.pStableRadianceUAV, Dispatch.pDepthUAV,
                        Dispatch.pMotionVectorsUAV, Dispatch.pThroughputUAV})
         RTXPTRayTracingPass::InsertUAVBarrier(Context, View);
     Lights.UpdateFrame(Input.view.MatWorldToClip, Input.camera.PosW);
-    if (!Lights.UpdateEnd(Context, m_Targets.GetDepthSRV(), m_Targets.GetScreenMotionVectorsSRV()))
-        return RTXPTErrorCode::LightSamplingSetupFailed;
+    {
+        RTXPTGpuProfiler::Scope Timing{Profiler, Context, RTXPTGpuProfiler::Stage::LightsBaker};
+        if (!Lights.UpdateEnd(Context, m_Targets.GetDepthSRV(), m_Targets.GetScreenMotionVectorsSRV()))
+            return RTXPTErrorCode::LightSamplingSetupFailed;
+    }
     RTXPTRayTracingPass::InsertUAVBarrier(Context, Dispatch.pSpecularHitTUAV);
-    if (!Rays.Dispatch(Context, RTXPTPathTraceVariant::FillDenoisingLayers, Dispatch))
-        return RTXPTErrorCode::TraceFailed;
+    {
+        RTXPTGpuProfiler::Scope Timing{Profiler, Context, RTXPTGpuProfiler::Stage::Fill};
+        if (!Rays.Dispatch(Context, RTXPTPathTraceVariant::FillDenoisingLayers, Dispatch))
+            return RTXPTErrorCode::TraceFailed;
+    }
     ++m_Stats.FillDispatches;
     RTXPTRayTracingPass::InsertUAVBarrier(Context, m_Targets.GetDenoisingLayersBuffer());
     RTXPTRayTracingPass::InsertUAVBarrier(Context, Dispatch.pSpecularHitTUAV);
-    if (!m_Guides.Bake(Context, m_Targets, RTXPTDenoisingGuideDebugView::Disabled, RTXPTGuideHistoryMode::CurrentFrame))
-        return RTXPTErrorCode::GuidesFailed;
+    {
+        RTXPTGpuProfiler::Scope Timing{Profiler, Context, RTXPTGpuProfiler::Stage::Guides};
+        if (!m_Guides.Bake(Context, m_Targets, RTXPTDenoisingGuideDebugView::Disabled, RTXPTGuideHistoryMode::CurrentFrame))
+            return RTXPTErrorCode::GuidesFailed;
+    }
     ++m_Stats.GuideBakes;
     RTXPTDenoiserPostProcessAttribs Merge;
     Merge.pRenderTargets  = &m_Targets;
     Merge.pMergeOutputUAV = m_Targets.GetOutputColorUAV();
-    if (!m_Merge.RunNoDenoiserFinalMerge(Context, Merge))
-        return RTXPTErrorCode::RealtimeMergeFailed;
+    {
+        RTXPTGpuProfiler::Scope Timing{Profiler, Context, RTXPTGpuProfiler::Stage::Merge};
+        if (!m_Merge.RunNoDenoiserFinalMerge(Context, Merge))
+            return RTXPTErrorCode::RealtimeMergeFailed;
+    }
     ++m_Stats.MergeDispatches;
     RTXPTRayTracingPass::InsertUAVBarrier(Context, Dispatch.pOutputColorUAV);
     RTXPTToneMappingRenderAttribs Tone;
@@ -125,8 +140,11 @@ RTXPTErrorCode RTXPTRealtimeRawPipeline::Render(IDeviceContext* Context, RTXPTRa
     Tone.Width      = Width;
     Tone.Height     = Height;
     Tone.pParams    = &ToneParameters;
-    if (!m_ToneMapping.Render(Context, Tone))
-        return RTXPTErrorCode::ToneMappingFailed;
+    {
+        RTXPTGpuProfiler::Scope Timing{Profiler, Context, RTXPTGpuProfiler::Stage::ToneMapping};
+        if (!m_ToneMapping.Render(Context, Tone))
+            return RTXPTErrorCode::ToneMappingFailed;
+    }
     ++m_Stats.CompletedFrames;
     m_Stats.OutputValid = true;
     return RTXPTErrorCode::Ok;

@@ -7,6 +7,7 @@
 #include "RTXPTRayTracingPass.hpp"
 #include "RTXPTSceneRuntime.hpp"
 #include "RTXPTToneMappingPass.hpp"
+#include "RTXPTGpuProfiler.hpp"
 
 namespace Diligent
 {
@@ -29,7 +30,7 @@ class RTXPTRealtimeRawPipeline
 {
 public:
     RTXPTErrorCode               Initialize(IRenderDevice* Device, IRenderStateCache* Cache, IPipelineStateCache* PSOCache, IBuffer* Constants, Uint32 Width, Uint32 Height, TEXTURE_FORMAT DisplayFormat);
-    RTXPTErrorCode               Render(IDeviceContext* Context, RTXPTRayTracingPass& Rays, RTXPTLightsBaker& Lights, const SampleConstants& Constants, const RTXPTToneMappingParameters& ToneParameters, ITextureView* DisplayRTV);
+    RTXPTErrorCode               Render(IDeviceContext* Context, RTXPTRayTracingPass& Rays, RTXPTLightsBaker& Lights, const SampleConstants& Constants, const RTXPTToneMappingParameters& ToneParameters, ITextureView* DisplayRTV, RTXPTGpuProfiler* Profiler = nullptr);
     void                         InvalidateOutput() { m_Stats.OutputValid = false; }
     const RTXPTRealtimeRawStats& GetStats() const { return m_Stats; }
     //Borrowed resources; only the current successful Render may be consumed. No accumulated radiance is allocated.
