@@ -17,13 +17,15 @@ struct RTXPTImportedScene;
 struct RTXPTSceneFrameStats;
 struct IRenderStateCache;
 struct IPipelineStateCache;
-struct RTXPTRealtimeRawStats;
+struct RTXPTRealtimeStats;
 class RTXPTGpuProfiler;
 
 enum class RTXPTViewMode
 {
     Reference,
     RealtimeRaw,
+    //Current-frame layers denoised by RELAX with per-view, per-layer history; needs NRD (RTXPTIsNrdAvailable).
+    RealtimeNative,
 };
 
 //The embedded renderer serves hosts with their own window, device, camera and presentation. All scene loading remains
@@ -59,9 +61,12 @@ struct RTXPTViewSize
 enum class RTXPTViewOutput
 {
     Display,
+    //Current-frame linear HDR of Reference and Raw. Native never publishes its denoised result as noisy radiance.
     NoisyRadiance,
     AccumulatedRadiance,
-    //Raw guides: ray distance is NOT view-space Z; RTXPTRealtimeRawStats::DynamicMotionValidated states the motion scope.
+    //Native only: the merged linear HDR of the denoised layers, before tone mapping.
+    DenoisedRadiance,
+    //Realtime guides: ray distance is NOT view-space Z; RTXPTRealtimeStats::DynamicMotionValidated states the motion scope.
     RayDistance,
     PrimaryMotion,
     // Current-to-previous render-local pixel motion for one supported reflected path; w is validity.
@@ -69,6 +74,9 @@ enum class RTXPTViewOutput
     SpecularHitDistance,
     AverageLayerRadiance,
     LayerHeader,
+    //Native only, per denoising layer (R8 UNORM): the history confidence NRD received, 0 where the layer's path has no
+    //valid previous correspondence.
+    LayerHistoryConfidence,
 };
 
 enum class RTXPTOutputEncoding
@@ -79,8 +87,8 @@ enum class RTXPTOutputEncoding
 
 //A borrowed result of the latest Render. Texture is null unless that Render succeeded. It remains usable until the
 //next Render or Initialize, or destruction of the view. Deferred consumers must hold their own resource references.
-//FrameIndex is a one-based successful render count, not a scene frame ID. Raw guides are debug inputs; their dynamic
-//motion correctness is reported separately from output validity.
+//FrameIndex is a one-based successful render count, not a scene frame ID. Realtime guides are debug inputs; their
+//dynamic motion correctness is reported separately from output validity.
 struct RTXPTViewOutputInfo
 {
     ITexture*           Texture = nullptr;
@@ -109,7 +117,7 @@ struct RTXPTViewHistoryInfo
 };
 
 //Sizes are local to the view texture; host viewport offsets belong to final composition only.
-//Both modes currently require equal nonempty render/display sizes and an sRGB RGBA8 output RTV.
+//Every mode currently requires equal nonempty render/display sizes and an sRGB RGBA8 output RTV.
 struct RTXPTEmbeddedViewCreateInfo
 {
     const RTXPTEmbeddedScene*        Scene    = nullptr;
@@ -121,6 +129,8 @@ struct RTXPTEmbeddedViewCreateInfo
     TEXTURE_FORMAT                   DisplayRTVFormat = TEX_FORMAT_RGBA8_UNORM_SRGB;
     RTXPTViewMode                    Mode             = RTXPTViewMode::Reference;
     bool                             EnableProfiling  = false;
+    //Native validation control only: false makes NRD ignore the per-pixel history validity of the layers.
+    bool NativeHistoryConfidence = true;
 };
 
 //The runtime scene of RTXPTScene and RTXPTMaterials and its prepared GPU frame. It keeps the GPU objects of both that
@@ -157,8 +167,10 @@ private:
     std::unique_ptr<Impl> m_Impl;
 };
 
-//Reference or current-frame Raw path tracing of one camera of a ready RTXPTEmbeddedScene. Each view owns its targets;
-//only Reference accumulates across frames. Raw uses the shared provider-free pipeline and publishes debug guides.
+//Reference or current-frame realtime path tracing of one camera of a ready RTXPTEmbeddedScene. Each view owns its
+//targets; only Reference accumulates radiance across frames. Raw and Native use the shared realtime pipeline and
+//publish debug guides; Native keeps one NRD history per layer and restarts it whenever the camera correspondence of
+//the frame is lost (first frame, cut, missing or failed frame, InvalidateOutput).
 class RTXPTEmbeddedView
 {
 public:
@@ -175,14 +187,16 @@ public:
     void InvalidateOutput();
     //GetOutput returns the allocated display target even before Render, for recording host commands. Contents are
     //current only after Render succeeds. Its UNORM SRV copies sRGB-encoded bytes without a second decode/encode cycle.
-    ITexture*                    GetOutput() const;
-    RTXPTViewOutputInfo          GetOutputInfo(RTXPTViewOutput Output) const;
-    const RTXPTRealtimeRawStats& GetRealtimeRawStats() const;
-    IBuffer*                     GetRealtimeLayerBuffer() const;
-    const RTXPTViewHistoryInfo&  GetHistoryInfo() const;
-    Uint32                       GetTraceCount() const;
-    Uint32                       GetAccumulationCount() const;
-    RTXPTGpuProfiler&            GetProfiler();
+    ITexture* GetOutput() const;
+    //Layer selects the denoising layer of per-layer outputs and must be 0 for the others.
+    RTXPTViewOutputInfo         GetOutputInfo(RTXPTViewOutput Output, Uint32 Layer = 0) const;
+    RTXPTViewMode               GetMode() const;
+    const RTXPTRealtimeStats&   GetRealtimeStats() const;
+    IBuffer*                    GetRealtimeLayerBuffer() const;
+    const RTXPTViewHistoryInfo& GetHistoryInfo() const;
+    Uint32                      GetTraceCount() const;
+    Uint32                      GetAccumulationCount() const;
+    RTXPTGpuProfiler&           GetProfiler();
 
 private:
     struct Impl;

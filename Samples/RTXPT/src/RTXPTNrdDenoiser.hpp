@@ -48,6 +48,8 @@ struct RTXPTNrdDenoiserFrameAttribs
     Uint32                          FrameIndex       = 0;
     float                           TimeDeltaSeconds = -1.0f;
     bool                            ResetHistory     = false;
+    // Lets NRD reject the history of pixels whose layer path has no valid previous correspondence.
+    bool HistoryConfidence = false;
 };
 
 // Per-layer standalone NRD shared by the Sample and embedded realtime views: one NRD instance per
@@ -63,7 +65,9 @@ public:
 
     bool Denoise(IDeviceContext* pContext, RTXPTPostProcessPass& PostProcess, const RTXPTNrdDenoiserFrameAttribs& Attribs);
 
-    bool                       IsReady() const;
+    bool IsReady() const;
+    // The permanent and transient NRD pool textures of all layers.
+    Uint64                     GetPoolTextureBytes() const;
     const RTXPTNrdIntegration& GetLayer(Uint32 LayerIndex) const { return m_Layers[LayerIndex]; }
     const char*                GetLastFailureReason() const { return m_LastFailureReason.c_str(); }
 

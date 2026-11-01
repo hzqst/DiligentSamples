@@ -1,13 +1,15 @@
-# Reusable scene and embedded Reference/RealtimeRaw renderer. This entry point does not
+# Reusable scene and embedded Reference/RealtimeRaw/RealtimeNative renderer. This entry point does not
 # fetch assets or optional denoising/reconstruction SDKs. Hosts supply Diligent
 # dependencies, either source targets or an interface target for an installed SDK,
-# and optionally an NRD target (NRD_TARGET) for the standalone denoiser.
+# and optionally an NRD target (NRD_TARGET, see rtxpt_add_nrd) for the standalone denoiser.
+# D3D_SHADER_REFLECTION states that the dependencies provide ShaderD3D.h when they are not
+# Diligent source targets; NRD needs it to bind its resources by register on D3D.
 include_guard(GLOBAL)
 get_filename_component(RTXPT_LIBRARY_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 set_property(GLOBAL PROPERTY RTXPT_LIBRARY_ROOT "${RTXPT_LIBRARY_ROOT}")
 
 function(add_rtxpt_library target)
-    cmake_parse_arguments(RTXPT "NO_UI;PATH_TRACING_ONLY" "SHARC_SHADER_DIR;NRD_TARGET" "DEPENDENCIES" ${ARGN})
+    cmake_parse_arguments(RTXPT "NO_UI;PATH_TRACING_ONLY;D3D_SHADER_REFLECTION" "SHARC_SHADER_DIR;NRD_TARGET" "DEPENDENCIES" ${ARGN})
     get_property(root GLOBAL PROPERTY RTXPT_LIBRARY_ROOT)
     set(sources
         RTXPTScene RTXPTSceneGraph RTXPTSceneJson RTXPTMaterials
@@ -16,7 +18,7 @@ function(add_rtxpt_library target)
         RTXPTEmissiveTrianglePass RTXPTRayTracingPass RTXPTSkinnedGeometry
         RTXPTSceneRuntime RTXPTSceneFrame RTXPTSceneImporter RTXPTComputePass
         RTXPTAccumulationPass RTXPTToneMappingPass RTXPTRenderTargets
-        RTXPTDenoisingGuidesBaker RTXPTPostProcessPass RTXPTRealtimeRawPipeline
+        RTXPTDenoisingGuidesBaker RTXPTPostProcessPass RTXPTRealtimePipeline
         RTXPTNrdConfig RTXPTNrdIntegration RTXPTNrdDenoiser)
     set(source_files)
     foreach(source IN LISTS sources)
@@ -41,6 +43,8 @@ function(add_rtxpt_library target)
         if(TARGET Diligent-GraphicsEngineD3DBaseInterface)
             target_link_libraries(${target} PRIVATE Diligent-GraphicsEngineD3DBaseInterface)
             target_compile_definitions(${target} PRIVATE RTXPT_HAS_D3D_SHADER_REFLECTION=1)
+        elseif(RTXPT_D3D_SHADER_REFLECTION)
+            target_compile_definitions(${target} PRIVATE RTXPT_HAS_D3D_SHADER_REFLECTION=1)
         endif()
     else()
         target_compile_definitions(${target} PUBLIC RTXPT_HAS_NRD=0)
@@ -50,6 +54,30 @@ function(add_rtxpt_library target)
         target_compile_definitions(${target} PUBLIC RTXPT_PATH_TRACING_ONLY=1)
     endif()
     set_target_properties(${target} PROPERTIES POSITION_INDEPENDENT_CODE ON)
+endfunction()
+
+# Builds NRD as the static target NRD from a DiligentSamples ThirdParty directory (NRD, MathLib
+# and ShaderMake checkouts), configured as the sample configures it: RTXPT compiles NRD's HLSL at
+# run time through Diligent, so NRD embeds no shader binaries and nothing is downloaded. Sets
+# RTXPT_NRD_SHADER_DIRS and RTXPT_NRD_MATHLIB_DIR in the caller's scope for rtxpt_stage_shaders,
+# rtxpt_install_shaders and a host shader source.
+function(rtxpt_add_nrd thirdparty_dir binary_dir)
+    foreach(dependency NRD MathLib ShaderMake)
+        if(NOT EXISTS "${thirdparty_dir}/${dependency}/CMakeLists.txt")
+            message(FATAL_ERROR "rtxpt_add_nrd needs the ${dependency} checkout in ${thirdparty_dir}")
+        endif()
+    endforeach()
+    set(FETCHCONTENT_SOURCE_DIR_MATHLIB "${thirdparty_dir}/MathLib" CACHE PATH "MathLib checkout for NRD")
+    set(FETCHCONTENT_SOURCE_DIR_SHADERMAKE "${thirdparty_dir}/ShaderMake" CACHE PATH "ShaderMake checkout for NRD")
+    set(NRD_STATIC_LIBRARY ON CACHE BOOL "Build NRD as a static library" FORCE)
+    set(NRD_NRI OFF CACHE BOOL "RTXPT does not use NRI" FORCE)
+    set(NRD_EMBEDS_DXIL_SHADERS OFF CACHE BOOL "RTXPT compiles NRD HLSL through Diligent DXC" FORCE)
+    set(NRD_EMBEDS_DXBC_SHADERS OFF CACHE BOOL "RTXPT compiles NRD HLSL through Diligent DXC" FORCE)
+    set(NRD_EMBEDS_SPIRV_SHADERS OFF CACHE BOOL "RTXPT compiles NRD HLSL through Diligent DXC" FORCE)
+    set(SHADERMAKE_FIND_DXC OFF CACHE BOOL "Use locally available DXC for ShaderMake" FORCE)
+    add_subdirectory("${thirdparty_dir}/NRD" "${binary_dir}" EXCLUDE_FROM_ALL)
+    set(RTXPT_NRD_SHADER_DIRS "${thirdparty_dir}/NRD/Shaders" PARENT_SCOPE)
+    set(RTXPT_NRD_MATHLIB_DIR "${thirdparty_dir}/MathLib" PARENT_SCOPE)
 endfunction()
 
 # NRD compiles its shaders at run time, so a host that links NRD deploys NRD's shader sources and

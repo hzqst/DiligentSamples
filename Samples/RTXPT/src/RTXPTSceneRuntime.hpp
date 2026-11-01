@@ -124,6 +124,12 @@ enum class RTXPTErrorCode : Uint32
     UnsupportedViewConfiguration,
     GuidesFailed,
     RealtimeMergeFailed,
+
+    // RealtimeNative denoiser
+    DenoiserUnavailable,
+    DenoiserUnsupportedDevice,
+    DenoiserSetupFailed,
+    DenoiseFailed,
 };
 
 const char* GetRTXPTErrorCodeString(RTXPTErrorCode Code);

@@ -36,7 +36,7 @@ namespace Diligent
 namespace
 {
 
-void InsertDenoiserPrepareOutputBarriers(IDeviceContext* pContext, const RTXPTRenderTargets& RenderTargets, ITextureView* pMergeOutputUAV)
+void InsertDenoiserPrepareOutputBarriers(IDeviceContext* pContext, const RTXPTRenderTargets& RenderTargets, ITextureView* pMergeOutputUAV, Uint32 LayerIndex)
 {
     RTXPTRayTracingPass::InsertUAVBarrier(pContext, pMergeOutputUAV);
     RTXPTRayTracingPass::InsertUAVBarrier(pContext, RenderTargets.GetCombinedHistoryClampRelaxUAV());
@@ -46,6 +46,7 @@ void InsertDenoiserPrepareOutputBarriers(IDeviceContext* pContext, const RTXPTRe
     RTXPTRayTracingPass::InsertUAVBarrier(pContext, RenderTargets.GetDenoiserDiffRadianceHitDistUAV());
     RTXPTRayTracingPass::InsertUAVBarrier(pContext, RenderTargets.GetDenoiserSpecRadianceHitDistUAV());
     RTXPTRayTracingPass::InsertUAVBarrier(pContext, RenderTargets.GetDenoiserDisocclusionThresholdMixUAV());
+    RTXPTRayTracingPass::InsertUAVBarrier(pContext, RenderTargets.GetDenoiserHistoryConfidenceUAV(LayerIndex));
 }
 
 } // namespace
@@ -72,6 +73,14 @@ bool RTXPTNrdDenoiser::IsReady() const
             return false;
     }
     return true;
+}
+
+Uint64 RTXPTNrdDenoiser::GetPoolTextureBytes() const
+{
+    Uint64 Bytes = 0;
+    for (const RTXPTNrdIntegration& Layer : m_Layers)
+        Bytes += Layer.GetStats().PoolTextureBytes;
+    return Bytes;
 }
 
 bool RTXPTNrdDenoiser::Prepare(IRenderDevice* pDevice, const RTXPTNrdIntegrationCreateInfo& CreateInfo)
@@ -134,17 +143,18 @@ bool RTXPTNrdDenoiser::Denoise(IDeviceContext* pContext, RTXPTPostProcessPass& P
             return Fail("Denoiser prepare dispatch failed");
 
         bInitOutput = false;
-        InsertDenoiserPrepareOutputBarriers(pContext, *pRenderTargets, Attribs.PostProcess.pMergeOutputUAV);
+        InsertDenoiserPrepareOutputBarriers(pContext, *pRenderTargets, Attribs.PostProcess.pMergeOutputUAV, LayerIndex);
 
         RTXPTNrdFrameAttribs NrdAttribs;
-        NrdAttribs.pRenderTargets   = pRenderTargets;
-        NrdAttribs.pFrameConstants  = Attribs.pFrameConstants;
-        NrdAttribs.pRealtime        = Attribs.pRealtime;
-        NrdAttribs.PlaneIndex       = LayerIndex;
-        NrdAttribs.FrameIndex       = Attribs.FrameIndex;
-        NrdAttribs.TimeDeltaSeconds = Attribs.TimeDeltaSeconds;
-        NrdAttribs.ResetHistory     = Attribs.ResetHistory;
-        NrdAttribs.EnableValidation = bEnableValidation;
+        NrdAttribs.pRenderTargets    = pRenderTargets;
+        NrdAttribs.pFrameConstants   = Attribs.pFrameConstants;
+        NrdAttribs.pRealtime         = Attribs.pRealtime;
+        NrdAttribs.PlaneIndex        = LayerIndex;
+        NrdAttribs.FrameIndex        = Attribs.FrameIndex;
+        NrdAttribs.TimeDeltaSeconds  = Attribs.TimeDeltaSeconds;
+        NrdAttribs.ResetHistory      = Attribs.ResetHistory;
+        NrdAttribs.EnableValidation  = bEnableValidation;
+        NrdAttribs.HistoryConfidence = Attribs.HistoryConfidence;
         if (!m_Layers[LayerIndex].Dispatch(pContext, NrdAttribs))
         {
             // The layer already reported the failure.

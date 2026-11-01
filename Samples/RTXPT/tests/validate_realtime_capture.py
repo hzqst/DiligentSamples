@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Validate a Raw readback, hash all resources and convert its noisy RGB to PFM.
+"""Validate a Raw or Native readback, hash all resources and convert its color to PFM.
+
+Raw exports its noisy current-frame HDR, Native its denoised HDR and each layer's history confidence.
 
 This checks storage/finite values and frame provenance, not temporal correctness.
 Packed surface records remain shader-version-specific; inactive records are undefined.
@@ -12,16 +14,33 @@ from pathlib import Path
 import struct
 
 
+# Per mode: HDR color resource, required GPU timing stages and denoiser.
+MODES = {
+    "RealtimeRaw": ("noisy_radiance", ("BUILD", "FILL", "Guides", "Merge", "ToneMapping"), None),
+    "RealtimeNative": ("denoised_radiance", ("BUILD", "FILL", "Guides", "NRD", "ToneMapping"), "NRD_RELAX"),
+}
+NATIVE_LAYER_COUNT = 3
+
+
 def validate(directory: Path, require_host=False):
     manifest = json.loads((directory / "manifest.json").read_text())
-    if manifest["schema"] != 1 or manifest["mode"] != "RealtimeRaw":
+    if manifest["schema"] != 1 or manifest["mode"] not in MODES:
         raise ValueError("Unsupported capture schema/mode")
+    mode = manifest["mode"]
+    color_name, timing_stages, denoiser = MODES[mode]
     if not isinstance(manifest["dynamic_motion_validated"], bool):
-        raise ValueError("Raw capture must state whether its producer validated dynamic motion")
+        raise ValueError("Realtime capture must state whether its producer validated dynamic motion")
     if manifest["spp"] != 1:
-        raise ValueError("Raw capture must not claim accumulation")
+        raise ValueError("Realtime capture must not claim accumulation")
+    if manifest.get("denoiser") != denoiser:
+        raise ValueError(f"{mode} capture must state denoiser {denoiser}")
+    names = {resource["name"] for resource in manifest["resources"]}
+    if denoiser:
+        confidence = {f"history_confidence_layer{layer}" for layer in range(NATIVE_LAYER_COUNT)}
+        if not confidence <= names or "noisy_radiance" in names:
+            raise ValueError("Native capture must contain every layer's history confidence and no noisy HDR")
     files = {}
-    noisy = None
+    color = None
     for resource in manifest["resources"] + [manifest["layers"]]:
         path = directory / resource["file"]
         if path.resolve().parent != directory.resolve():
@@ -40,30 +59,30 @@ def validate(directory: Path, require_host=False):
             if not all(math.isfinite(v) for v in values):
                 raise ValueError(f"Nonfinite current-frame signal: {path.name}")
             files[path.name].update(min=min(values), max=max(values))
-            if resource["name"] == "noisy_radiance":
-                noisy = (resource, values)
-    if noisy is None:
-        raise ValueError("Missing noisy HDR")
+            if resource["name"] == color_name:
+                color = (resource, values)
+    if color is None:
+        raise ValueError(f"Missing {color_name} HDR")
     timing = manifest["gpu_timing"]
     if timing["available"]:
         if timing["source_frame"] != manifest["frame_index"]:
             raise ValueError("GPU timings refer to another view frame")
-        for stage in ("BUILD", "FILL", "Guides", "Merge", "ToneMapping"):
+        for stage in timing_stages:
             if timing["milliseconds"][stage] is None or timing["milliseconds"][stage] < 0:
-                raise ValueError(f"Missing Raw timing: {stage}")
+                raise ValueError(f"Missing {mode} timing: {stage}")
     if require_host:
         host = json.loads((directory / "host.json").read_text())
-        if host["effective"] != "RealtimeRaw" or host["last_result"] != "ok" or host["reference_samples"] != 0:
-            raise ValueError("Host did not execute Raw successfully")
+        if host["effective"] != mode or host["last_result"] != "ok" or host["reference_samples"] != 0:
+            raise ValueError(f"Host did not execute {mode} successfully")
         if host["scene_execution_frame"] != host["executed_frame"]:
             raise ValueError("Host view and scene are from different frames")
         for key, expected in (("scene_gpu_timing", host["scene_prepare_index"]),
                               ("composite_gpu_timing", host["executed_frame"])):
             if host[key]["available"] and host[key]["source_frame"] != expected:
                 raise ValueError(f"Wrong source frame: {key}")
-    resource, values = noisy
+    resource, values = color
     width, height = resource["width"], resource["height"]
-    with (directory / "noisy_radiance.pfm").open("wb") as output:
+    with (directory / f"{color_name}.pfm").open("wb") as output:
         output.write(f"PF\n{width} {height}\n-1.0\n".encode("ascii"))
         for y in reversed(range(height)):
             for x in range(width):

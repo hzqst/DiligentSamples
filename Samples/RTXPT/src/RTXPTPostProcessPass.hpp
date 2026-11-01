@@ -51,7 +51,10 @@ struct IRenderStateCache;
 enum class RTXPTPostProcessPassSet
 {
     All,
+    // The current-frame merge of RealtimeRaw.
     RealtimeRaw,
+    // The RELAX prepare and merge passes of RealtimeNative.
+    RealtimeNative,
 };
 
 enum class RTXPTPostProcessPassId : Uint32

@@ -76,6 +76,7 @@ struct RTXPTRenderTargetFormats
     TEXTURE_FORMAT DenoiserOutDiffRadianceHitDist   = TEX_FORMAT_RGBA16_FLOAT;
     TEXTURE_FORMAT DenoiserOutSpecRadianceHitDist   = TEX_FORMAT_RGBA16_FLOAT;
     TEXTURE_FORMAT DenoiserOutValidation            = TEX_FORMAT_RGBA8_UNORM;
+    TEXTURE_FORMAT DenoiserHistoryConfidence        = TEX_FORMAT_R8_UNORM;
     TEXTURE_FORMAT DenoiserAvgLayerRadianceHalfRes  = TEX_FORMAT_RGBA16_FLOAT;
 };
 
@@ -251,6 +252,9 @@ public:
     ITextureView* GetDenoiserOutSpecRadianceHitDistSRV(Uint32 PlaneIndex) const;
     ITextureView* GetDenoiserOutValidationUAV() const;
     ITextureView* GetDenoiserOutValidationSRV() const;
+    // NRD's IN_DIFF_CONFIDENCE/IN_SPEC_CONFIDENCE of each layer, written by the denoiser prepare pass.
+    ITextureView* GetDenoiserHistoryConfidenceUAV(Uint32 PlaneIndex) const;
+    ITextureView* GetDenoiserHistoryConfidenceSRV(Uint32 PlaneIndex) const;
     ITextureView* GetDenoiserAvgLayerRadianceHalfResUAV() const;
     ITextureView* GetDenoiserAvgLayerRadianceHalfResSRV() const;
 
@@ -314,6 +318,7 @@ private:
     std::array<RefCntAutoPtr<ITexture>, kRTXPTDenoisingLayerCount> m_DenoiserOutDiffRadianceHitDist;
     std::array<RefCntAutoPtr<ITexture>, kRTXPTDenoisingLayerCount> m_DenoiserOutSpecRadianceHitDist;
     RefCntAutoPtr<ITexture>                                        m_DenoiserOutValidation;
+    std::array<RefCntAutoPtr<ITexture>, kRTXPTDenoisingLayerCount> m_DenoiserHistoryConfidence;
     RefCntAutoPtr<ITexture>                                        m_DenoiserAvgLayerRadianceHalfRes;
     // Fixed RR formats match the prepare shader, independently of NRD encoding.
     RefCntAutoPtr<ITexture>     m_RRDiffuseAlbedo;

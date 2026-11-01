@@ -37,7 +37,7 @@
 #include "RefCntAutoPtr.hpp"
 #include "RTXPTBlitPass.hpp"
 #include "RTXPTEmbeddedRenderer.hpp"
-#include "RTXPTRealtimeRawPipeline.hpp"
+#include "RTXPTRealtimePipeline.hpp"
 #include "RTXPTEnvMapBaker.hpp"
 #include "RTXPTFrameConstants.hpp"
 #include "RTXPTGpuProfiler.hpp"
@@ -135,9 +135,12 @@ protected:
     virtual void UpdateUI() override final;
 
 private:
-    bool                                      RunRealtimeRaw();
-    bool                                      m_RealtimeRawEnabled = false;
-    std::unique_ptr<RTXPTRealtimeRawPipeline> m_RealtimeRaw;
+    //--realtime_raw and --realtime_native render through the shared pipeline of embedded views.
+    bool                                   RunSharedRealtime();
+    bool                                   IsSharedRealtimeEnabled() const { return m_RealtimeRawEnabled || m_RealtimeNativeEnabled; }
+    bool                                   m_RealtimeRawEnabled    = false;
+    bool                                   m_RealtimeNativeEnabled = false;
+    std::unique_ptr<RTXPTRealtimePipeline> m_SharedRealtime;
 
     bool                                RunEmbeddedReference();
     bool                                m_UseEmbeddedReference = false;

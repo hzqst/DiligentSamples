@@ -59,6 +59,7 @@ VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4>      u_DenoiserDiffRadianceHitDis
 VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4>      u_DenoiserSpecRadianceHitDist;
 VK_IMAGE_FORMAT("r8")      RWTexture2D<float>       u_DenoiserDisocclusionThresholdMix;
 VK_IMAGE_FORMAT("r8")      RWTexture2D<float>       u_CombinedHistoryClampRelax;
+VK_IMAGE_FORMAT("r8")      RWTexture2D<float>       u_DenoiserHistoryConfidence;
 
 #if RTXPT_POST_PROCESS_MODE == RTXPT_POST_PROCESS_DLSS_RR_PREPARE_INPUTS
 #include "../PathTracer/DenoisingGuidesRR.hlsli"
@@ -139,6 +140,11 @@ void main(uint3 DispatchThreadID : SV_DispatchThreadID)
         u_CombinedHistoryClampRelax[PixelPos] = 0.0;
     }
 
+    // NRD history confidence of this layer: 0 rejects the history of a surface whose path has no valid previous
+    // correspondence (new, reset or untracked instance, unsupported reflection path). The layer record carries the
+    // same validity the tracer exports as primary/specular motion w. Without a surface there is no history to keep.
+    u_DenoiserHistoryConfidence[PixelPos] = 1.0;
+
     bool HasSurface = false;
     uint BranchID   = DenoisingLayers.GetBranchID(PixelPos, DenoisingLayerIndex);
     if (BranchID != cDenoisingLayerInvalidBranchID)
@@ -172,6 +178,7 @@ void main(uint3 DispatchThreadID : SV_DispatchThreadID)
 
             u_DenoiserViewspaceZ[PixelPos]               = VirtualViewZ;
             u_DenoiserMotionVectors[PixelPos]            = float4(MotionVectors, 0.0);
+            u_DenoiserHistoryConfidence[PixelPos]        = SP.HasValidHistory() ? 1.0 : 0.0;
             u_DenoiserDisocclusionThresholdMix[PixelPos] = DisocclusionRelax;
             u_CombinedHistoryClampRelax[PixelPos]        = saturate(u_CombinedHistoryClampRelax[PixelPos] + DisocclusionRelax * saturate(RTXPTLuminance(Throughput)));
 

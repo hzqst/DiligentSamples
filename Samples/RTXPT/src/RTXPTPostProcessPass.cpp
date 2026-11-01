@@ -90,6 +90,20 @@ bool IsDenoiserFinalMergePass(RTXPTPostProcessPassId Pass)
         Pass == RTXPTPostProcessPassId::ReblurDenoiserFinalMerge;
 }
 
+bool IsPassInSet(RTXPTPostProcessPassId Pass, RTXPTPostProcessPassSet PassSet)
+{
+    switch (PassSet)
+    {
+        case RTXPTPostProcessPassSet::RealtimeRaw:
+            return Pass == RTXPTPostProcessPassId::NoDenoiserFinalMerge;
+        case RTXPTPostProcessPassSet::RealtimeNative:
+            return Pass == RTXPTPostProcessPassId::RelaxDenoiserPrepareInputs ||
+                Pass == RTXPTPostProcessPassId::RelaxDenoiserFinalMerge;
+        default:
+            return true;
+    }
+}
+
 bool SetStaticVariable(IPipelineState*        pPSO,
                        SHADER_TYPE            ShaderType,
                        const char*            Name,
@@ -211,7 +225,8 @@ bool BindDispatchResources(IShaderResourceBinding*                pSRB,
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_DenoiserDiffRadianceHitDist", RenderTargets.GetDenoiserDiffRadianceHitDistUAV(), PreparePass, Pass, "denoiser diffuse radiance hit distance UAV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_DenoiserSpecRadianceHitDist", RenderTargets.GetDenoiserSpecRadianceHitDistUAV(), PreparePass, Pass, "denoiser specular radiance hit distance UAV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_DenoiserDisocclusionThresholdMix", RenderTargets.GetDenoiserDisocclusionThresholdMixUAV(), PreparePass, Pass, "denoiser disocclusion threshold mix UAV") &&
-        SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_CombinedHistoryClampRelax", RenderTargets.GetCombinedHistoryClampRelaxUAV(), PreparePass, Pass, "combined history clamp relax UAV");
+        SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_CombinedHistoryClampRelax", RenderTargets.GetCombinedHistoryClampRelaxUAV(), PreparePass, Pass, "combined history clamp relax UAV") &&
+        SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_DenoiserHistoryConfidence", RenderTargets.GetDenoiserHistoryConfidenceUAV(Attribs.PlaneIndex), PreparePass, Pass, "denoiser history confidence UAV");
 }
 
 } // namespace
@@ -296,7 +311,7 @@ bool RTXPTPostProcessPass::Initialize(IRenderDevice* pDevice, IEngineFactory* pE
     for (Uint32 PassIndex = 0; PassIndex < static_cast<Uint32>(RTXPTPostProcessPassId::Count); ++PassIndex)
     {
         const auto Pass = static_cast<RTXPTPostProcessPassId>(PassIndex);
-        if (PassSet == RTXPTPostProcessPassSet::RealtimeRaw && Pass != RTXPTPostProcessPassId::NoDenoiserFinalMerge)
+        if (!IsPassInSet(Pass, PassSet))
             continue;
         if (!CreatePostProcessPSO(pDevice, pStateCache, ShaderCI, Pass))
         {
@@ -385,7 +400,8 @@ bool RTXPTPostProcessPass::CreatePostProcessPSO(IRenderDevice*          pDevice,
         .AddVariable(SHADER_TYPE_COMPUTE, "u_DenoiserDiffRadianceHitDist", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_DenoiserSpecRadianceHitDist", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_DenoiserDisocclusionThresholdMix", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
-        .AddVariable(SHADER_TYPE_COMPUTE, "u_CombinedHistoryClampRelax", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC);
+        .AddVariable(SHADER_TYPE_COMPUTE, "u_CombinedHistoryClampRelax", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
+        .AddVariable(SHADER_TYPE_COMPUTE, "u_DenoiserHistoryConfidence", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC);
     PSOCreateInfo.PSODesc.ResourceLayout = ResourceLayout;
 
     if (pStateCache != nullptr)

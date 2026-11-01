@@ -39,6 +39,7 @@ enum class PathFlags
     exportSpecHitTQueued            = (1 << 19),
     denoisingLayerOnDominantBranch     = (1 << 20),
     unsupportedMotionPath             = (1 << 10),
+    changedMotionPath                 = (1 << 21),
 };
 
 enum class PackedCounters

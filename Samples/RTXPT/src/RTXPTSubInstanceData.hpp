@@ -46,5 +46,7 @@ constexpr Uint32 kSubInstanceFlag_PreviousRigidSurface   = 0x4u;
 constexpr Uint32 kSubInstanceFlag_PreviousSkinnedSurface = 0x8u;
 // Geometric correspondence does not imply that the previous reflector used the same material/normal map.
 constexpr Uint32 kSubInstanceFlag_PreviousMaterial = 0x10u;
+// The previous surface has the current transform and pose: the surface did not move since the previous frame.
+constexpr Uint32 kSubInstanceFlag_UnchangedSurface = 0x20u;
 
 } // namespace Diligent

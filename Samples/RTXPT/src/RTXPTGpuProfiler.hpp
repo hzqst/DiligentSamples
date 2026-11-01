@@ -47,6 +47,8 @@ public:
         SkinAndBLAS,
         TLAS,
         HostComposite,
+        //RealtimeNative: every layer's NRD prepare, dispatch and merge.
+        Denoise,
         Count
     };
 
@@ -168,7 +170,7 @@ private:
     static constexpr Uint32                               kBufferedFrames = 8;
     static constexpr Uint32                               kReportFrames   = 120;
     static constexpr std::array<const char*, kStageCount> kNames          = {
-        "Total", "PrefixEarly", "BUILD", "LightsBaker", "SHaRCUpdate", "SHaRCResolve", "SubSampling", "FILL", "Guides", "RRPrepare", "RR", "PostProcess", "Merge", "ToneMapping", "ScenePrepare", "SkinAndBLAS", "TLAS", "HostComposite"};
+        "Total", "PrefixEarly", "BUILD", "LightsBaker", "SHaRCUpdate", "SHaRCResolve", "SubSampling", "FILL", "Guides", "RRPrepare", "RR", "PostProcess", "Merge", "ToneMapping", "ScenePrepare", "SkinAndBLAS", "TLAS", "HostComposite", "NRD"};
     struct Frame
     {
         std::array<RefCntAutoPtr<IQuery>, kStageCount * 2> Queries;

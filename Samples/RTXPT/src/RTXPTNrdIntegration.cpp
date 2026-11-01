@@ -29,6 +29,7 @@
 #include "DebugUtilities.hpp"
 
 #if RTXPT_HAS_NRD
+#    include "GraphicsAccessories.hpp"
 #    include "GraphicsTypesX.hpp"
 #    include "MapHelper.hpp"
 #    include "RenderStateCache.h"
@@ -66,6 +67,7 @@ void ResetNrdStats(RTXPTNrdIntegrationStats& Stats)
     Stats.LastDispatches       = 0;
     Stats.Width                = 0;
     Stats.Height               = 0;
+    Stats.PoolTextureBytes     = 0;
     Stats.Method               = RTXPTNrdMethod::REBLUR;
     Stats.LastFailureReason.clear();
 }
@@ -246,6 +248,10 @@ const char* GetNrdResourceTypeName(nrd::ResourceType Type)
             return "IN_VIEWZ";
         case nrd::ResourceType::IN_DISOCCLUSION_THRESHOLD_MIX:
             return "IN_DISOCCLUSION_THRESHOLD_MIX";
+        case nrd::ResourceType::IN_DIFF_CONFIDENCE:
+            return "IN_DIFF_CONFIDENCE";
+        case nrd::ResourceType::IN_SPEC_CONFIDENCE:
+            return "IN_SPEC_CONFIDENCE";
         case nrd::ResourceType::IN_DIFF_RADIANCE_HITDIST:
             return "IN_DIFF_RADIANCE_HITDIST";
         case nrd::ResourceType::IN_SPEC_RADIANCE_HITDIST:
@@ -537,6 +543,7 @@ bool RTXPTNrdIntegration::CreatePoolTextures(IRenderDevice* pDevice, Uint32 Widt
         RTXPTCreateZeroedTexture2D(pDevice, Desc, Zeros, &Texture);
         if (!Texture)
             return Fail("Failed to create NRD pool texture");
+        m_Stats.PoolTextureBytes += Uint64{Desc.Width} * Desc.Height * GetTextureFormatAttribs(Format).GetElementSize();
 
         if (Texture->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE) == nullptr ||
             Texture->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS) == nullptr)
@@ -642,6 +649,9 @@ bool RTXPTNrdIntegration::BindDispatchResources(IDeviceContext*,
                 return ResolveExternalView(RenderTargets.GetDenoiserDiffRadianceHitDistSRV(), RenderTargets.GetDenoiserDiffRadianceHitDistUAV(), DescriptorType, GetNrdResourceTypeName(Resource.type), pView);
             case nrd::ResourceType::IN_DISOCCLUSION_THRESHOLD_MIX:
                 return ResolveExternalView(RenderTargets.GetDenoiserDisocclusionThresholdMixSRV(), RenderTargets.GetDenoiserDisocclusionThresholdMixUAV(), DescriptorType, GetNrdResourceTypeName(Resource.type), pView);
+            case nrd::ResourceType::IN_DIFF_CONFIDENCE:
+            case nrd::ResourceType::IN_SPEC_CONFIDENCE:
+                return ResolveExternalView(RenderTargets.GetDenoiserHistoryConfidenceSRV(Attribs.PlaneIndex), RenderTargets.GetDenoiserHistoryConfidenceUAV(Attribs.PlaneIndex), DescriptorType, GetNrdResourceTypeName(Resource.type), pView);
             case nrd::ResourceType::OUT_SPEC_RADIANCE_HITDIST:
                 return ResolveExternalView(RenderTargets.GetDenoiserOutSpecRadianceHitDistSRV(Attribs.PlaneIndex), RenderTargets.GetDenoiserOutSpecRadianceHitDistUAV(Attribs.PlaneIndex), DescriptorType, GetNrdResourceTypeName(Resource.type), pView);
             case nrd::ResourceType::OUT_DIFF_RADIANCE_HITDIST:
@@ -757,6 +767,7 @@ void RTXPTNrdIntegration::PopulateCommonSettings(nrd::CommonSettings& Settings, 
     Settings.disocclusionThreshold               = Realtime.NRDDisocclusionThreshold;
     Settings.disocclusionThresholdAlternate      = Realtime.NRDDisocclusionThresholdAlternate;
     Settings.isDisocclusionThresholdMixAvailable = Realtime.NRDUseAlternateDisocclusionThresholdMix;
+    Settings.isHistoryConfidenceAvailable        = Attribs.HistoryConfidence;
     Settings.timeDeltaBetweenFrames              = Attribs.TimeDeltaSeconds;
     Settings.accumulationMode                    = Attribs.ResetHistory ? nrd::AccumulationMode::CLEAR_AND_RESTART : nrd::AccumulationMode::CONTINUE;
     Settings.resourceSize[0]                     = ToNrdDimension(RenderWidth);

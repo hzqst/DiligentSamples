@@ -10,7 +10,8 @@
 #include "RTXPTRayTracingPass.hpp"
 #include "RTXPTAccumulationPass.hpp"
 #include "RTXPTToneMappingPass.hpp"
-#include "RTXPTRealtimeRawPipeline.hpp"
+#include "RTXPTRealtimePipeline.hpp"
+#include "RTXPTNrdConfig.hpp"
 #include "RTXPTShaderSource.hpp"
 #include "RenderStateCache.h"
 #include "PipelineStateCache.h"
@@ -174,13 +175,14 @@ struct RTXPTEmbeddedView::Impl
     RTXPTAccumulationPass              Accumulation;
     RTXPTToneMappingPass               ToneMapping;
     RTXPTToneMappingParameters         ToneParameters;
-    RTXPTRealtimeRawPipeline           Raw;
+    RTXPTRealtimePipeline              Realtime;
     RTXPTPreparedSceneToken            LastScene;
     RTXPTViewHistoryInfo               History;
     RTXPTViewMode                      Mode = RTXPTViewMode::Reference;
     RTXPTLightsBakerSettings           Lighting;
     PathTracerCameraData               PreviousCamera{};
     PathTracerViewData                 PreviousView{};
+    double                             PreviousTime{};
     Uint32                             Width{}, Height{}, FrameIndex{}, Samples{};
     //The scene frame revisions this view's light sampling and history last followed.
     Uint64           LightingRevision{}, EmissiveRevision{}, ContentRevision{};
@@ -190,7 +192,9 @@ struct RTXPTEmbeddedView::Impl
     bool             EnableProfiling{};
     RTXPTGpuProfiler Profiler;
 
-    void AcceptFrame(const PathTracerCameraData& Camera, const PathTracerViewData& View, Uint32 SampleCount, Uint64 Revision, const RTXPTPreparedSceneToken& Prepared)
+    bool IsRealtime() const { return Mode == RTXPTViewMode::RealtimeRaw || Mode == RTXPTViewMode::RealtimeNative; }
+
+    void AcceptFrame(const PathTracerCameraData& Camera, const PathTracerViewData& View, double Time, Uint32 SampleCount, Uint64 Revision, const RTXPTPreparedSceneToken& Prepared)
     {
         History.Scene                         = Prepared;
         History.PreviousViewScene             = LastScene;
@@ -205,6 +209,7 @@ struct RTXPTEmbeddedView::Impl
         History.LightFeedbackHistoryFrames    = LightsBaker.GetFeedbackHistoryFrameCount();
         PreviousCamera                        = Camera;
         PreviousView                          = View;
+        PreviousTime                          = Time;
         Samples                               = SampleCount;
         ContentRevision                       = Revision;
         ++FrameIndex;
@@ -310,8 +315,11 @@ RTXPTErrorCode RTXPTEmbeddedView::Initialize(IRenderDevice* Device, IDeviceConte
         return RTXPTErrorCode::InvalidArgument;
     if (Width != CreateInfo.DisplaySize.Width || Height != CreateInfo.DisplaySize.Height ||
         CreateInfo.DisplayRTVFormat != TEX_FORMAT_RGBA8_UNORM_SRGB ||
-        (CreateInfo.Mode != RTXPTViewMode::Reference && CreateInfo.Mode != RTXPTViewMode::RealtimeRaw))
+        (CreateInfo.Mode != RTXPTViewMode::Reference && CreateInfo.Mode != RTXPTViewMode::RealtimeRaw &&
+         CreateInfo.Mode != RTXPTViewMode::RealtimeNative))
         return RTXPTErrorCode::UnsupportedViewConfiguration;
+    if (CreateInfo.Mode == RTXPTViewMode::RealtimeNative && !RTXPTIsNrdAvailable())
+        return RTXPTErrorCode::DenoiserUnavailable;
     const auto& S = *CreateInfo.Scene->m_Impl;
     R.Cache       = CreateInfo.Cache;
     R.PSOCache    = CreateInfo.PSOCache;
@@ -369,12 +377,24 @@ RTXPTErrorCode RTXPTEmbeddedView::Initialize(IRenderDevice* Device, IDeviceConte
     const RTXPTSceneFrame& Frame = S.Frames.GetFrame();
     if (!Frame.pTLAS || !R.InitializeRays(Frame.MaterialTextureCount) || !R.BindFrame(Frame))
         return RTXPTErrorCode::RayTracingSetupFailed;
-    if (R.Mode == RTXPTViewMode::RealtimeRaw)
+    if (R.IsRealtime())
     {
-        const auto Code = R.Raw.Initialize(Device, R.Cache, R.PSOCache, R.Constants, Width, Height, CreateInfo.DisplayRTVFormat);
+        RTXPTRealtimePipelineCreateInfo RealtimeCI;
+        RealtimeCI.Device            = Device;
+        RealtimeCI.Cache             = R.Cache;
+        RealtimeCI.PSOCache          = R.PSOCache;
+        RealtimeCI.Constants         = R.Constants;
+        RealtimeCI.Width             = Width;
+        RealtimeCI.Height            = Height;
+        RealtimeCI.DisplayFormat     = CreateInfo.DisplayRTVFormat;
+        RealtimeCI.Denoiser          = R.Mode == RTXPTViewMode::RealtimeNative ? RTXPTRealtimeDenoiser::NrdRelax : RTXPTRealtimeDenoiser::None;
+        RealtimeCI.HistoryConfidence = CreateInfo.NativeHistoryConfidence;
+        const auto Code              = R.Realtime.Initialize(RealtimeCI);
         if (Code != RTXPTErrorCode::Ok)
             return Code;
-        R.Radiance = R.Raw.GetTargets().GetOutputColorSRV()->GetTexture();
+        //Native publishes the merged output as DenoisedRadiance, never as current-frame noisy radiance.
+        if (R.Mode == RTXPTViewMode::RealtimeRaw)
+            R.Radiance = R.Realtime.GetTargets().GetOutputColorSRV()->GetTexture();
     }
     else if (!R.Accumulation.Initialize(Device, Factory, R.Cache, R.PSOCache, true) ||
              !R.ToneMapping.Initialize(Device, Factory, R.Cache, R.PSOCache, CreateInfo.DisplayRTVFormat, true) ||
@@ -393,7 +413,7 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
     ResetHistory  = ResetHistory || !R.OutputValid;
     R.OutputValid = false;
     R.History     = {};
-    R.Raw.InvalidateOutput();
+    R.Realtime.InvalidateOutput();
     if (!R.Ready)
         return RTXPTErrorCode::NotInitialized;
     constexpr float MaxExposure = 4294967296.0f;
@@ -409,7 +429,7 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
     if (!Frame.pTLAS || !Frame.Prepared.IsValid())
         return RTXPTErrorCode::FrameNotPrepared;
     const bool CameraCorrespondenceValid = !ResetHistory && R.LastScene.IsPreviousOf(Frame.Prepared);
-    if (R.Mode == RTXPTViewMode::RealtimeRaw)
+    if (R.IsRealtime())
         ResetHistory = !CameraCorrespondenceValid;
     if (!R.BindFrame(Frame))
         return RTXPTErrorCode::SceneBindingsFailed;
@@ -439,21 +459,25 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
     PT.analyticLightCount               = Frame.pLights->GetStats().LightCount;
     PT.environmentNEEEnabled            = (Frame.pLights->GetEmissiveTriangleCount() << 1u) | (S.EnvironmentSettings.Enabled ? 1u : 0u);
     Constants.envMap                    = S.Environment.GetConstants();
-    if (R.Mode == RTXPTViewMode::RealtimeRaw)
+    if (R.IsRealtime())
     {
         // Build supplies per-pixel path validity. Also reset the shared light proposals conservatively when
-        // actual scene instances lack correspondence (including missing/recovered parts).
+        // actual scene instances lack correspondence (including missing/recovered parts). Native's denoiser history
+        // follows the camera correspondence alone; instances without correspondence lose it per pixel instead.
         const bool FeedbackReset = ResetHistory || Frame.InvalidHistoryInstances != 0;
         if (FeedbackReset)
             R.LightsBaker.RequestFeedbackReset();
         PT.sampleBaseIndex = PT.sampleIndex = R.FrameIndex;
-        auto       Timing                   = R.Profiler.BeginFrame(R.Device, R.Context, R.EnableProfiling, {}, R.FrameIndex + 1);
-        const auto Code                     = R.Raw.Render(R.Context, R.Rays, R.LightsBaker, Constants, ToneParameters, R.DisplayRTV, &R.Profiler);
+        RTXPTRealtimeHistoryAttribs RealtimeHistory;
+        RealtimeHistory.Reset            = ResetHistory;
+        RealtimeHistory.TimeDeltaSeconds = !ResetHistory && Time > R.PreviousTime ? static_cast<float>(Time - R.PreviousTime) : -1.0f;
+        auto       Timing                = R.Profiler.BeginFrame(R.Device, R.Context, R.EnableProfiling, {}, R.FrameIndex + 1);
+        const auto Code                  = R.Realtime.Render(R.Context, R.Rays, R.LightsBaker, Constants, ToneParameters, RealtimeHistory, R.DisplayRTV, &R.Profiler);
         if (Code != RTXPTErrorCode::Ok)
             return Code;
         R.History.CameraCorrespondenceValid = CameraCorrespondenceValid;
         R.History.LightFeedbackReset        = FeedbackReset;
-        R.AcceptFrame(Camera, View, 0, Frame.Snapshot->ContentRevision, Frame.Prepared);
+        R.AcceptFrame(Camera, View, Time, 0, Frame.Snapshot->ContentRevision, Frame.Prepared);
         return RTXPTErrorCode::Ok;
     }
     {
@@ -490,7 +514,7 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
     Tone.pParams    = &ToneParameters;
     if (!R.ToneMapping.Render(R.Context, Tone))
         return RTXPTErrorCode::ToneMappingFailed;
-    R.AcceptFrame(Camera, View, Samples, Frame.Snapshot->ContentRevision, Frame.Prepared);
+    R.AcceptFrame(Camera, View, Time, Samples, Frame.Snapshot->ContentRevision, Frame.Prepared);
     return RTXPTErrorCode::Ok;
 }
 
@@ -501,19 +525,22 @@ void RTXPTEmbeddedView::InvalidateOutput()
     R.History     = {};
     R.LastScene   = {};
     R.Samples     = 0;
-    R.Raw.InvalidateOutput();
+    R.Realtime.InvalidateOutput();
 }
 
 ITexture*           RTXPTEmbeddedView::GetOutput() const { return m_Impl->Output; }
-RTXPTViewOutputInfo RTXPTEmbeddedView::GetOutputInfo(RTXPTViewOutput Output) const
+RTXPTViewOutputInfo RTXPTEmbeddedView::GetOutputInfo(RTXPTViewOutput Output, Uint32 Layer) const
 {
     const auto&         R = *m_Impl;
     RTXPTViewOutputInfo Info;
     ITexture*           Texture   = nullptr;
-    const auto&         Targets   = R.Raw.GetTargets();
+    const auto&         Targets   = R.Realtime.GetTargets();
+    const bool          bNative   = R.Mode == RTXPTViewMode::RealtimeNative;
     const auto          TextureOf = [](ITextureView* View) -> ITexture* {
         return View ? View->GetTexture() : nullptr;
     };
+    if (Layer != 0 && (Output != RTXPTViewOutput::LayerHistoryConfidence || Layer >= kRTXPTDenoisingLayerCount))
+        return Info;
     switch (Output)
     {
         case RTXPTViewOutput::Display:
@@ -522,12 +549,14 @@ RTXPTViewOutputInfo RTXPTEmbeddedView::GetOutputInfo(RTXPTViewOutput Output) con
             break;
         case RTXPTViewOutput::NoisyRadiance: Texture = R.Radiance; break;
         case RTXPTViewOutput::AccumulatedRadiance: Texture = R.Accumulated; break;
+        case RTXPTViewOutput::DenoisedRadiance: Texture = bNative ? TextureOf(Targets.GetOutputColorSRV()) : nullptr; break;
         case RTXPTViewOutput::RayDistance: Texture = TextureOf(Targets.GetDepthSRV()); break;
         case RTXPTViewOutput::PrimaryMotion: Texture = TextureOf(Targets.GetScreenMotionVectorsSRV()); break;
         case RTXPTViewOutput::SpecularMotion: Texture = TextureOf(Targets.GetSpecularMotionSRV()); break;
         case RTXPTViewOutput::SpecularHitDistance: Texture = TextureOf(Targets.GetSpecularHitTSRV()); break;
         case RTXPTViewOutput::AverageLayerRadiance: Texture = TextureOf(Targets.GetDenoiserAvgLayerRadianceHalfResSRV()); break;
         case RTXPTViewOutput::LayerHeader: Texture = TextureOf(Targets.GetDenoisingLayersHeaderSRV()); break;
+        case RTXPTViewOutput::LayerHistoryConfidence: Texture = bNative ? TextureOf(Targets.GetDenoiserHistoryConfidenceSRV(Layer)) : nullptr; break;
         default: return Info;
     }
     if (!Texture)
@@ -541,14 +570,15 @@ RTXPTViewOutputInfo RTXPTEmbeddedView::GetOutputInfo(RTXPTViewOutput Output) con
     Info.FrameIndex     = Info.Valid ? R.FrameIndex : 0;
     return Info;
 }
-const RTXPTViewHistoryInfo&  RTXPTEmbeddedView::GetHistoryInfo() const { return m_Impl->History; }
-RTXPTGpuProfiler&            RTXPTEmbeddedView::GetProfiler() { return m_Impl->Profiler; }
-Uint32                       RTXPTEmbeddedView::GetTraceCount() const { return m_Impl->Rays.GetStats().TraceCount; }
-Uint32                       RTXPTEmbeddedView::GetAccumulationCount() const { return m_Impl->Samples; }
-const RTXPTRealtimeRawStats& RTXPTEmbeddedView::GetRealtimeRawStats() const { return m_Impl->Raw.GetStats(); }
-IBuffer*                     RTXPTEmbeddedView::GetRealtimeLayerBuffer() const
+const RTXPTViewHistoryInfo& RTXPTEmbeddedView::GetHistoryInfo() const { return m_Impl->History; }
+RTXPTGpuProfiler&           RTXPTEmbeddedView::GetProfiler() { return m_Impl->Profiler; }
+Uint32                      RTXPTEmbeddedView::GetTraceCount() const { return m_Impl->Rays.GetStats().TraceCount; }
+Uint32                      RTXPTEmbeddedView::GetAccumulationCount() const { return m_Impl->Samples; }
+RTXPTViewMode               RTXPTEmbeddedView::GetMode() const { return m_Impl->Mode; }
+const RTXPTRealtimeStats&   RTXPTEmbeddedView::GetRealtimeStats() const { return m_Impl->Realtime.GetStats(); }
+IBuffer*                    RTXPTEmbeddedView::GetRealtimeLayerBuffer() const
 {
-    return m_Impl->OutputValid ? m_Impl->Raw.GetTargets().GetDenoisingLayersBuffer() : nullptr;
+    return m_Impl->OutputValid ? m_Impl->Realtime.GetTargets().GetDenoisingLayersBuffer() : nullptr;
 }
 
 void CreateRTXPTEmbeddedStateCache(IRenderDevice* Device, IRenderStateCache** Cache)
