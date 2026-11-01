@@ -16,8 +16,10 @@ def validate(directory: Path, require_host=False):
     manifest = json.loads((directory / "manifest.json").read_text())
     if manifest["schema"] != 1 or manifest["mode"] != "RealtimeRaw":
         raise ValueError("Unsupported capture schema/mode")
-    if manifest["dynamic_motion_validated"] or manifest["spp"] != 1:
-        raise ValueError("Raw capture must not claim temporal validation or accumulation")
+    if not isinstance(manifest["dynamic_motion_validated"], bool):
+        raise ValueError("Raw capture must state whether its producer validated dynamic motion")
+    if manifest["spp"] != 1:
+        raise ValueError("Raw capture must not claim accumulation")
     files = {}
     noisy = None
     for resource in manifest["resources"] + [manifest["layers"]]:
@@ -67,7 +69,8 @@ def validate(directory: Path, require_host=False):
             for x in range(width):
                 pixel = (y * width + x) * 4
                 output.write(struct.pack("<3f", *values[pixel:pixel + 3]))
-    report = {"frame_index": manifest["frame_index"], "dynamic_motion_validated": False, "resources": files}
+    report = {"frame_index": manifest["frame_index"], "dynamic_motion_validated": manifest["dynamic_motion_validated"],
+              "resources": files}
     (directory / "validation.json").write_text(json.dumps(report, indent=2) + "\n")
     return report
 

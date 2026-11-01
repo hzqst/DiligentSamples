@@ -19,8 +19,9 @@ struct RTXPTRealtimeRawStats
     Uint32 GuideBakes      = 0;
     Uint32 MergeDispatches = 0;
     bool   OutputValid     = false;
-    //Previous deformed surfaces and reflection correspondence are implemented separately in M2.
-    bool DynamicMotionValidated = false;
+    //Motion and history validity of direct rigid/skinned surfaces and single rigid planar reflections have numerical
+    //GPU tests. Other paths are reported invalid instead of approximated. This is not a denoiser/reconstruction claim.
+    bool DynamicMotionValidated = true;
 };
 
 //One view's provider-free, full-resolution, one-sample current-frame pipeline. The host owns and binds its scene
