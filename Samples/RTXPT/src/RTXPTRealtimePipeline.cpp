@@ -250,7 +250,7 @@ RTXPTErrorCode RTXPTRealtimePipeline::Denoise(IDeviceContext* Context, const Sam
     Attribs.HistoryConfidence           = m_Stats.HistoryConfidence;
     {
         RTXPTGpuProfiler::Scope Timing{Profiler, Context, RTXPTGpuProfiler::Stage::Denoise};
-        if (!m_Nrd.Denoise(Context, m_Merge, Attribs))
+        if (!m_Nrd.Denoise(Context, m_Merge, Attribs, Profiler))
             return RTXPTErrorCode::DenoiseFailed;
     }
     ++m_Stats.DenoiseDispatches;
