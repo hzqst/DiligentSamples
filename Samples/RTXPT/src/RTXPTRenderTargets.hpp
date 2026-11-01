@@ -29,6 +29,7 @@
 #include <array>
 #include <cstddef>
 #include <string>
+#include <vector>
 
 #include "BasicMath.hpp"
 #include "Buffer.h"
@@ -40,6 +41,12 @@
 
 namespace Diligent
 {
+
+// Creates a single-mip, uncompressed 2D texture whose texels start zeroed. New allocations are not zero on every
+// backend (on Vulkan they are not), and NRD and the denoiser passes read texels that have not been written yet:
+// NRD reads its pool even in a CLEAR_AND_RESTART frame, and NRD filters read the inputs of pixels that the
+// denoiser prepare skips because the layer has no surface there. Zeros is the upload source, grown as needed.
+void RTXPTCreateZeroedTexture2D(IRenderDevice* pDevice, const TextureDesc& Desc, std::vector<Uint8>& Zeros, ITexture** ppTexture);
 
 struct RTXPTRenderTargetFormats
 {
@@ -269,12 +276,14 @@ public:
     TEXTURE_FORMAT                     GetScreenMotionVectorsFormat() const { return m_Formats.ScreenMotionVectors; }
 
 private:
-    bool CreateTarget(IRenderDevice* pDevice, const TextureDesc& Desc, RefCntAutoPtr<ITexture>& Target);
-    bool CreateDenoisingLayersBuffer(IRenderDevice*          pDevice,
-                                     Uint64                  ElementCount,
-                                     RefCntAutoPtr<IBuffer>& Target);
-    bool SupportsBindFlags(IRenderDevice* pDevice, TEXTURE_FORMAT TargetFormat, BIND_FLAGS BindFlags) const;
-    bool FailResize(const char* Reason);
+    bool        CreateTarget(IRenderDevice* pDevice, const TextureDesc& Desc, RefCntAutoPtr<ITexture>& Target);
+    bool        CreateZeroedTarget(IRenderDevice* pDevice, const TextureDesc& Desc, std::vector<Uint8>& Zeros, RefCntAutoPtr<ITexture>& Target);
+    static bool ValidateTargetViews(const TextureDesc& Desc, RefCntAutoPtr<ITexture>& Target);
+    bool        CreateDenoisingLayersBuffer(IRenderDevice*          pDevice,
+                                            Uint64                  ElementCount,
+                                            RefCntAutoPtr<IBuffer>& Target);
+    bool        SupportsBindFlags(IRenderDevice* pDevice, TEXTURE_FORMAT TargetFormat, BIND_FLAGS BindFlags) const;
+    bool        FailResize(const char* Reason);
 
     RefCntAutoPtr<ITexture>                                        m_OutputColor;
     RefCntAutoPtr<ITexture>                                        m_AccumulatedRadiance;

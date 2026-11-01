@@ -1,5 +1,31 @@
 # RR input and resource contract GPU regression
 
+## Vulkan RGB10A2 UAV status
+
+hzqst/DiligentCore#8 (`2fab46b3`, 2026-10-29) maps the RGB10A2 formats to Vulkan's
+A2B10G10R10, so `DenoiserNormalRoughness` (RGB10A2_UNORM) is a supported UAV on the
+tested RTX 5060 and the non-RR (NRD/TAA/SR) realtime targets allocate on Vulkan.
+Entries below that call this an existing RGB10A2 limitation, skip the Vulkan NRD/TAA/SR
+stages or report Vulkan NRD as unvalidated were recorded before that fix and are kept
+as historical results. `RRSceneValidation.hpp` and `RRResourceContractTest.hpp` skip
+those stages only when the device reports no RGB10A2 UAV support.
+
+Before the NRD pool and denoiser textures were created zeroed
+(`RTXPTCreateZeroedTexture2D`), the first denoised Vulkan frame was mostly black. New
+allocations are not zero on Vulkan, NRD reads texels that have not been written yet (its
+pool even in a `CLEAR_AND_RESTART` frame, and the inputs of pixels without a surface in
+the denoised layer), and the final merge's `max(0, ...)` turned the resulting NaNs into
+zero. D3D12 allocations happened to be zero, which hid the problem there.
+
+Re-validation on RTX 5060 / Windows, Debug (2026-11-01):
+
+| Check | Result |
+| --- | --- |
+| `--subsampling_validation true`, `--nrd_method reblur` / `relax` | Vulkan and D3D12: all four runs report failures=0. |
+| `--rr_validation true` | Vulkan Native/E: failures=0, RR executions=448, creates=6, history resets=13; the NRD/TAA/SR stages ran. D3D12 Quality/F: the same counts in two runs; one earlier run, which compiled 36 new state-cache entries, reported one failed frame when stage 16 switched the NEE permutation. |
+| `RRPrepareInputsTest` | D3D12 and Vulkan: resource contracts, RR -> NRD -> RR (no longer skipped on Vulkan), prepare wrapper and 15 readback cases pass. |
+| `capture_realtime_baseline.py`, convergence-test, 320x240, Power+ NEE, RELAX, 3 runs per API | RMSE vs the undenoised mean, first frame: Vulkan 0.200 / 0.206 / 0.203, D3D12 0.206 / 0.204 / 0.203 (Vulkan was 0.46-0.49 before); frames 65-128: Vulkan 0.1258 / 0.1274 / 0.1259, D3D12 0.1258 / 0.1279 / 0.1275. No black pixels in any first frame. |
+
 ## Embedded RealtimeRaw evidence
 
 `RTXPTDebugCapture::Capture` exports the latest successful Embedded Raw view to a
@@ -274,8 +300,8 @@ checks cover invalid settings and Reference/multi-spp fallback.
 `--subsampling_validation true --exit_after_frames 672` exercises ten stages
 each for NRD and native RR: continuous camera motion, a revealing camera cut,
 history reset, rate/pattern changes, 641x361 / 639x359 resize and return to 1 spp.
-Use D3D12 for this full sequence. The existing Vulkan non-RR RGB10A2 allocation
-limitation remains; Vulkan's available RR path is tested separately.
+The full sequence also runs on Vulkan since hzqst/DiligentCore#8; the results below
+were recorded on D3D12 before that fix.
 
 `--hdr_capture_processed true` selects reconstructed linear HDR before bloom
 and tone mapping; default captures OutputColor (NRD merge output or RR input).
@@ -296,7 +322,7 @@ Results on RTX 5060 / Windows (2026-10-26), under ignored
 | Other patterns | Block jitter, compaction and stratification each render 3/4 rate at 641x361, with finite HDR and no graphics errors (`subsampling-pattern-{0,1,2}.log`, `.pfm`). Sobol is used in the paired comparisons below. |
 | NRD/RR transitions | Four 20-stage runs all report failures=0 (`subsampling-motion-{nrd,rr}-{0,3}.log`). These include continuous motion, disocclusion/cut, history reset, all fractional rates, pattern changes, odd resize and full-rate restoration. |
 | Existing integration | The 19-stage RR sequence reports failures=0, 448 RR executions, 6 creates and 13 history resets (`subsampling-transitions.log`). It additionally exercises Reference and TAA/SR switching. |
-| Vulkan RR | Quarter-rate compacted sampling at 641x361 exits 0; 128 actual RR executions, no graphics errors (`subsampling-vulkan.log`). Vulkan standalone NRD remains unvalidated due to the existing RGB10A2 allocation limitation; it is not counted as passing. |
+| Vulkan RR | Quarter-rate compacted sampling at 641x361 exits 0; 128 actual RR executions, no graphics errors (`subsampling-vulkan.log`). Vulkan standalone NRD remains unvalidated due to the existing RGB10A2 allocation limitation; it is not counted as passing (recorded before hzqst/DiligentCore#8; see [Vulkan RGB10A2 UAV status](#vulkan-rgb10a2-uav-status)). |
 | Other paths | SHaRC + HitObject/SER and the multi-spp fallback with FP32/TraceRay shadows each exit 0 without graphics errors (`subsampling-sharc.log`, `subsampling-spp-fallback.log`). |
 | Formatting | clang-format 10 reports no replacements in changed C++ files; whitespace checks pass. |
 
@@ -376,8 +402,8 @@ mode/history/reload sequence. Dynamic skinning uses
 
 Vulkan SHaRC runtime is explicitly unsupported: the engine does not enable
 64-bit shader integers/atomics. `--sharc true` must log that limitation and render
-without cache; use the existing supported RR route to avoid the separately
-documented RGB10A2 non-RR limitation. Offline SHaRC resolve SPIR-V compilation
+without cache. Before hzqst/DiligentCore#8 this check used the RR route to avoid the
+RGB10A2 non-RR limitation. Offline SHaRC resolve SPIR-V compilation
 passes, but is not evidence that Vulkan can execute it.
 
 Workstation results (RTX 5060, 2026-10-26):
@@ -422,10 +448,10 @@ Evidence from this workstation is under the superproject's ignored
 | RR / vertex ABI | `rr-final-D3D12.log`, `rr-final-Vk.log`: resource lifetime/resize/alias checks, 32-byte vertex skinning, and 15 numerical input cases pass. The production guide-baker entry reads back seven outputs, including distinct specular motion and invalid-roughness fallback. |
 | Visibility | `visibility-{D3D12,Vk}-{uint32,uint16}.log`: all four runs exit 0, 48 expected rays per configuration. |
 | Real-scene sequence | `integration-d3d12.log`, `integration-vk.log`: both report 19 stages, failures=0, RR executions=448, creates=6, history resets=13. Stages exercise camera motion, resize, Reference, mode/history changes and NEE/visibility specializations. |
-| Vulkan skipped stages | NRD/TAA/SR are still skipped by the harness due to the existing RGB10A2 UAV limitation. A zero sequence-failure count does not make these stages passing. |
+| Vulkan skipped stages | NRD/TAA/SR are still skipped by the harness due to the existing RGB10A2 UAV limitation. A zero sequence-failure count does not make these stages passing (recorded before hzqst/DiligentCore#8; see [Vulkan RGB10A2 UAV status](#vulkan-rgb10a2-uav-status)). |
 | Vulkan Reference startup | Retested with `--realtime false --aa off --vk_rr false`; `reference-vk.log` contains no graphics error and `reference-vk001.png` shows accumulated scene output. The previously recorded device loss did not reproduce in this run; this does not establish a root-cause fix. |
 | FP32 and TraceRay visibility | D3D12 Debug without denoising produces scene captures (`fp32-d3d12*`). Vulkan Release with RR Native/E produces scene captures (`fp32-rr-vk*`). Both use `--fp16 false --inline_shadows false`; Vulkan also uses TraceRay scatter. |
-| Vulkan realtime without denoising | `fp32-release-vk.log` reports unsupported RGB10A2 UAV and incomplete targets; capture shows the failure background. The non-RR allocation branch requires NRD resources even with `--nrd false`; this condition also exists in baseline `50774cdc`. This configuration is a known failure, not a passing FP32 render test. |
+| Vulkan realtime without denoising | `fp32-release-vk.log` reports unsupported RGB10A2 UAV and incomplete targets; capture shows the failure background. The non-RR allocation branch requires NRD resources even with `--nrd false`; this condition also exists in baseline `50774cdc`. This configuration is a known failure, not a passing FP32 render test (recorded before hzqst/DiligentCore#8; see [Vulkan RGB10A2 UAV status](#vulkan-rgb10a2-uav-status)). |
 | Vulkan Debug FP32 | The standalone launch did not reach a captured frame within 90 seconds; initialization was stopped by the test driver. Release subsequently compiled/rendered FP32 with RR. Debug runtime for this combination remains unverified. |
 
 RR tests now use `DenoisingGuidesBaker.hlsl::PrepareDLSSRRGuides`, rather than
@@ -486,6 +512,7 @@ cl /nologo /std:c++17 /EHsc /MDd /D_DEBUG /DDEVELOPMENT /DPLATFORM_WIN32=1 /DNOM
  /IDiligentCore\Graphics\GraphicsEngine\interface /IDiligentCore\Graphics\GraphicsTools\interface /IDiligentCore\Graphics\GraphicsAccessories\interface ^
  DiligentSamples\Samples\RTXPT\tests\RRPrepareInputsTest.cpp DiligentSamples\Samples\RTXPT\src\RTXPTRenderTargets.cpp DiligentSamples\Samples\RTXPT\src\RTXPTPostProcessPass.cpp ^
  /Fo"%TEMP%\\" /Fe"%TEMP%\RRPrepareInputsTest.exe" /link user32.lib ^
+ build\x64\Debug\DiligentCore\Graphics\GraphicsAccessories\Debug\Diligent-GraphicsAccessories.lib ^
  build\x64\Debug\DiligentCore\Common\Debug\Diligent-Common.lib ^
  build\x64\Debug\DiligentCore\Platforms\Basic\Debug\Diligent-BasicPlatform.lib ^
  build\x64\Debug\DiligentCore\Platforms\Win32\Debug\Diligent-Win32Platform.lib
@@ -544,7 +571,7 @@ Validation on RTX 5060: both backends pass the resource checks, production wrapp
 and 15 readback cases. D3D12 also checks RR -> NRD -> RR allocation with NRD's
 RGB10A2 encoding preserved. The tested Vulkan backend does not support the existing
 RGB10A2 UAV, so it reports that NRD switch as skipped and tests RR -> reference -> RR
-instead. This existing NRD limit does not block RR resources. The existing DXC
+instead. This existing NRD limit does not block RR resources (recorded before hzqst/DiligentCore#8; see [Vulkan RGB10A2 UAV status](#vulkan-rgb10a2-uav-status)). The existing DXC
 `rgb10_a2` annotation warning in NRD shader declarations is not a new validation
 error; the test does not dispatch the NRD fallback shader variants.
 
@@ -588,8 +615,9 @@ reset, Native, native-window resize to 768x432, reference accumulation, TAA,
 ordinary SR, standalone NRD, return to Quality RR, lighting/preset/environment
 changes, and NEE/MIS/visibility permutations before restoring defaults.
 D3D12 starts at F and explicitly changes to E during the sequence. Vulkan should
-be launched with E; its existing NRD RGB10A2 UAV limitation means the three
-NRD/TAA/SR stages are reported as skipped and remain reference-mode stages.
+be launched with E. The three NRD/TAA/SR stages are reported as skipped, and remain
+reference-mode stages, only on a device without RGB10A2 UAV support; on the tested
+RTX 5060 they run since hzqst/DiligentCore#8.
 Automatic window resize is implemented for Windows; other platforms require a
 manual resize check. Windows resizing goes through the actual window's WM_SIZE
 path, preserving the framework's window/ImGui/swap-chain dimension contract.
@@ -613,7 +641,7 @@ establish image-quality equivalence.
   evaluations, five objects and six history resets, including TAA/SR/NRD round trips.
 - Vulkan E completed the final sequence with zero failed frames, 224 RR evaluations,
   four objects and six resets. NRD/TAA/SR stages were explicitly skipped for the
-  existing RGB10A2 UAV limitation. No SDK F layout errors are suppressed; Vulkan F
+  existing RGB10A2 UAV limitation (recorded before hzqst/DiligentCore#8; see [Vulkan RGB10A2 UAV status](#vulkan-rgb10a2-uav-status)). No SDK F layout errors are suppressed; Vulkan F
   remains an unpassed configuration.
 - A new queued-barrier test reproduced `0xc0000005` before the Core Vulkan
   provider fix. After the fix, all five Core RR tests passed on Vulkan E.
@@ -996,7 +1024,7 @@ Final cache-007 Release validation also completed:
 - Vulkan ApproxInRealtime scene validation: zero failures, 224 RR executions,
   five feature creates and six history resets. NRD/TAA/SR mode checks were skipped
   because of the existing RGB10A2 UAV support limitation; these modes are not
-  covered by this Vulkan result.
+  covered by this Vulkan result (recorded before hzqst/DiligentCore#8; see [Vulkan RGB10A2 UAV status](#vulkan-rgb10a2-uav-status)).
 - D3D12 Reference / Full MIS / AA disabled rendered successfully without logged
   errors. This is a functional smoke test, not a converged image-quality comparison.
 
@@ -1051,7 +1079,7 @@ disable and re-enable changes and assertions that camera/environment changes ret
 light-feedback history. D3D12 Full MIS and Vulkan ApproxInRealtime both completed
 with zero failures and 320 RR executions (six/five creates respectively, nine image
 history resets). Vulkan still skips the three NRD/TAA/SR mode checks due to the
-existing RGB10A2 UAV limitation.
+existing RGB10A2 UAV limitation (recorded before hzqst/DiligentCore#8; see [Vulkan RGB10A2 UAV status](#vulkan-rgb10a2-uav-status)).
 
 The final Vulkan 1920x1080 Balanced/E startup smoke also rendered 1256 RR frames
 with no logged errors (one feature create and one history reset).

@@ -513,6 +513,9 @@ bool RTXPTNrdIntegration::CreatePoolTextures(IRenderDevice* pDevice, Uint32 Widt
     if (pInstanceDesc == nullptr)
         return Fail("Failed to query NRD instance description");
 
+    // NRD reads pool texels it has not written yet, even in a CLEAR_AND_RESTART frame: see RTXPTCreateZeroedTexture2D.
+    std::vector<Uint8> Zeros;
+
     auto CreatePoolTexture = [&](const nrd::TextureDesc& NrdDesc, const char* PoolName, Uint32 Index, RefCntAutoPtr<ITexture>& Texture) {
         const TEXTURE_FORMAT Format = ToDiligentFormat(NrdDesc.format);
         if (Format == TEX_FORMAT_UNKNOWN)
@@ -531,7 +534,7 @@ bool RTXPTNrdIntegration::CreatePoolTextures(IRenderDevice* pDevice, Uint32 Widt
         Desc.Format    = Format;
         Desc.BindFlags = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
 
-        pDevice->CreateTexture(Desc, nullptr, &Texture);
+        RTXPTCreateZeroedTexture2D(pDevice, Desc, Zeros, &Texture);
         if (!Texture)
             return Fail("Failed to create NRD pool texture");
 
