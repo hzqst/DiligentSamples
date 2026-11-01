@@ -51,7 +51,7 @@
 #include "../tests/HDRValidationCapture.hpp"
 #include "../tests/ReferenceValidationCapture.hpp"
 #include "RTXPTDenoisingGuidesBaker.hpp"
-#include "RTXPTNrdIntegration.hpp"
+#include "RTXPTNrdDenoiser.hpp"
 #include "RTXPTRenderTargets.hpp"
 #include "RTXPTToneMappingPass.hpp"
 #include "RTXPTPostProcessPipeline.hpp"
@@ -181,8 +181,6 @@ private:
     void                                InvalidatePreviousFrameConstants();
     bool                                RunReferencePathTraceAndPostProcess();
     bool                                Denoise();
-    bool                                EnsureNrdIntegrations();
-    void                                ResetNrdIntegrations();
     bool                                RunRealtimePostProcess();
     bool                                RunRealtimeNoDenoiserFinalMerge();
     bool                                PresentRealtimeFinalOutput();
@@ -226,34 +224,34 @@ private:
     std::vector<RTXPTEnvMapSource>          m_EnvMapSources;
     RTXPTEnvMapSettings                     m_EnvMapSettings;
     // The scene as runtime instances, and its GPU frames. The light sampling follows the frame revisions below.
-    std::unique_ptr<RTXPTSceneRuntime>                         m_SceneRuntime;
-    RTXPTImportedScene                                         m_ImportedScene;
-    RTXPTSceneFrameBuilder                                     m_SceneFrames;
-    Uint64                                                     m_SceneLightingRevision = 0;
-    Uint64                                                     m_SceneEmissiveRevision = 0;
-    RTXPTRenderTargets                                         m_RenderTargets;
-    RTXPTRayTracingPass                                        m_RayTracingPass;
-    SharcIntegration                                           m_Sharc;
-    AdaptiveSampling                                           m_AdaptiveSampling;
-    SharcSettings                                              m_SharcSettings;
-    bool                                                       m_SharcActive = false;
-    HDRValidationCapture                                       m_HDRCapture;
-    ReferenceValidationCapture                                 m_ReferenceCapture;
-    bool                                                       m_RequestSceneAnimations = false;
-    Uint32                                                     m_ExitAfterFrames        = 0;
-    RTXPTDenoisingGuidesBaker                                  m_DenoisingGuidesBaker;
-    std::array<RTXPTNrdIntegration, kRTXPTDenoisingLayerCount> m_NrdIntegrations;
-    bool                                                       m_LastRealtimePathTraceExecuted = false;
-    bool                                                       m_LastRealtimeFinalMergeReady   = false;
-    std::string                                                m_RealtimePathTraceStatus;
-    RTXPTBlitPass                                              m_BlitPass;
-    RTXPTPostProcessPipeline                                   m_PostProcessPipeline;
-    FirstPersonCamera                                          m_Camera;
-    RefCntAutoPtr<IBuffer>                                     m_FrameConstantsCB;
-    SampleConstants                                            m_LastFrameConstants;
-    RTXPTReferenceUIState                                      m_ReferenceUI;
-    RTXPTRealtimeSettings                                      m_RealtimeUI;
-    RTXPTRealtimeResetFlags                                    m_RealtimeResetPending = RTXPT_REALTIME_RESET_REALTIME_CACHES |
+    std::unique_ptr<RTXPTSceneRuntime> m_SceneRuntime;
+    RTXPTImportedScene                 m_ImportedScene;
+    RTXPTSceneFrameBuilder             m_SceneFrames;
+    Uint64                             m_SceneLightingRevision = 0;
+    Uint64                             m_SceneEmissiveRevision = 0;
+    RTXPTRenderTargets                 m_RenderTargets;
+    RTXPTRayTracingPass                m_RayTracingPass;
+    SharcIntegration                   m_Sharc;
+    AdaptiveSampling                   m_AdaptiveSampling;
+    SharcSettings                      m_SharcSettings;
+    bool                               m_SharcActive = false;
+    HDRValidationCapture               m_HDRCapture;
+    ReferenceValidationCapture         m_ReferenceCapture;
+    bool                               m_RequestSceneAnimations = false;
+    Uint32                             m_ExitAfterFrames        = 0;
+    RTXPTDenoisingGuidesBaker          m_DenoisingGuidesBaker;
+    RTXPTNrdDenoiser                   m_NrdDenoiser;
+    bool                               m_LastRealtimePathTraceExecuted = false;
+    bool                               m_LastRealtimeFinalMergeReady   = false;
+    std::string                        m_RealtimePathTraceStatus;
+    RTXPTBlitPass                      m_BlitPass;
+    RTXPTPostProcessPipeline           m_PostProcessPipeline;
+    FirstPersonCamera                  m_Camera;
+    RefCntAutoPtr<IBuffer>             m_FrameConstantsCB;
+    SampleConstants                    m_LastFrameConstants;
+    RTXPTReferenceUIState              m_ReferenceUI;
+    RTXPTRealtimeSettings              m_RealtimeUI;
+    RTXPTRealtimeResetFlags            m_RealtimeResetPending = RTXPT_REALTIME_RESET_REALTIME_CACHES |
         RTXPT_REALTIME_RESET_NRD_HISTORY |
         RTXPT_REALTIME_RESET_TAA_SR_HISTORY;
     RTXPTRealtimeResetFlags        m_CurrentFrameRealtimeReset   = RTXPT_REALTIME_RESET_NONE;

@@ -34,6 +34,8 @@
 #    include "RenderStateCache.h"
 #    include "Shader.h"
 #    include "ShaderMacroHelper.hpp"
+
+#    include "RTXPTShaderSource.hpp"
 #    if RTXPT_HAS_D3D_SHADER_REFLECTION
 #        include "ShaderD3D.h"
 #    endif
@@ -115,26 +117,6 @@ struct ParsedShaderIdentifier
     std::string                                      FilePath;
     std::vector<std::pair<std::string, std::string>> Macros;
 };
-
-void AppendShaderSearchDir(std::string& SearchDirs, const char* Path)
-{
-    if (Path == nullptr || Path[0] == '\0')
-        return;
-
-    if (!SearchDirs.empty())
-        SearchDirs += ';';
-    SearchDirs += Path;
-}
-
-std::string BuildNrdShaderSearchDirs()
-{
-    std::string SearchDirs;
-    AppendShaderSearchDir(SearchDirs, RTXPT_NRD_SHADER_SOURCE_DIR);
-    AppendShaderSearchDir(SearchDirs, RTXPT_NRD_SHADER_INCLUDE_DIR);
-    AppendShaderSearchDir(SearchDirs, RTXPT_NRD_SHADER_CONFIG_DIR);
-    AppendShaderSearchDir(SearchDirs, RTXPT_NRD_MATHLIB_INCLUDE_DIR);
-    return SearchDirs;
-}
 
 ParsedShaderIdentifier ParseShaderIdentifier(const char* ShaderIdentifier)
 {
@@ -424,9 +406,10 @@ bool RTXPTNrdIntegration::CreatePipelines(IRenderDevice* pDevice, IEngineFactory
     if (pInstanceDesc == nullptr)
         return Fail("Failed to query NRD instance description");
 
-    const std::string                              SearchDirs = BuildNrdShaderSearchDirs();
+    std::string SearchDirs;
+    RTXPTAppendNrdShaderSearchDirs(SearchDirs);
     RefCntAutoPtr<IShaderSourceInputStreamFactory> pShaderSourceFactory;
-    pEngineFactory->CreateDefaultShaderSourceStreamFactory(SearchDirs.c_str(), &pShaderSourceFactory);
+    CreateRTXPTShaderSourceFactory(pEngineFactory, SearchDirs.c_str(), &pShaderSourceFactory);
     if (!pShaderSourceFactory)
         return Fail("Failed to create NRD shader source factory");
 

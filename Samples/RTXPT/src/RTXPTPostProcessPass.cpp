@@ -36,10 +36,7 @@
 #include <string>
 
 #include "AsyncPrefix.hpp"
-
-#ifndef RTXPT_HAS_NRD
-#    define RTXPT_HAS_NRD 0
-#endif
+#include "RTXPTNrdConfig.hpp"
 
 namespace Diligent
 {
@@ -263,17 +260,7 @@ bool RTXPTPostProcessPass::Initialize(IRenderDevice* pDevice, IEngineFactory* pE
 
     std::string ShaderSearchPaths = "shaders;shaders\\PostProcessing;shaders\\PathTracer";
 #if RTXPT_HAS_NRD
-    const auto AppendShaderSearchPath = [&ShaderSearchPaths](const char* Path) {
-        if (Path == nullptr || Path[0] == '\0')
-            return;
-
-        ShaderSearchPaths += ";";
-        ShaderSearchPaths += Path;
-    };
-
-    AppendShaderSearchPath(RTXPT_NRD_SHADER_INCLUDE_DIR);
-    AppendShaderSearchPath(RTXPT_NRD_SHADER_CONFIG_DIR);
-    AppendShaderSearchPath(RTXPT_NRD_MATHLIB_INCLUDE_DIR);
+    RTXPTAppendNrdShaderSearchDirs(ShaderSearchPaths);
 #endif
 
     RefCntAutoPtr<IShaderSourceInputStreamFactory> pShaderSourceFactory;

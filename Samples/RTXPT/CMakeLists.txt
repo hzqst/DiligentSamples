@@ -5,8 +5,6 @@ project(RTXPT CXX)
 set(SOURCE
     src/RTXPTSample.cpp
     src/RTXPTPostProcessPipeline.cpp
-    src/RTXPTNrdConfig.cpp
-    src/RTXPTNrdIntegration.cpp
     src/SharcIntegration.cpp
     src/AdaptiveSampling.cpp
     src/RTXPTBloomPass.cpp
@@ -48,6 +46,7 @@ set(INCLUDE
     src/RTXPTPostProcessPass.hpp
     src/RTXPTNrdConfig.hpp
     src/RTXPTNrdIntegration.hpp
+    src/RTXPTNrdDenoiser.hpp
     src/RTXPTRayTracingPass.hpp
     src/SharcIntegration.hpp
     src/AdaptiveSampling.hpp
@@ -257,7 +256,6 @@ set(RTXPT_NRI_AVAILABLE OFF)
 set(RTXPT_NRD_MATHLIB_AVAILABLE OFF)
 set(RTXPT_NRD_SHADERMAKE_AVAILABLE OFF)
 set(RTXPT_NRD_CMAKE_DEPS_AVAILABLE OFF)
-set(RTXPT_HAS_D3D_SHADER_REFLECTION OFF)
 set(NRD_NRI OFF CACHE BOOL "Build NRD NRI integration")
 
 if(RTXPT_EFFECTIVE_NRD_ROOT)
@@ -376,8 +374,17 @@ if(RTXPT_NRD_ROOT_NORMALIZED)
 endif()
 
 include(cmake/RTXPTLibrary.cmake)
+set(RTXPT_NRD_LIBRARY_ARGS)
+set(RTXPT_NRD_SHADER_ARGS)
+if(RTXPT_HAS_NRD)
+    set(RTXPT_NRD_LIBRARY_ARGS NRD_TARGET NRD)
+    set(RTXPT_NRD_SHADER_DIRS "${RTXPT_NRD_SHADER_SOURCE_DIR}" "${RTXPT_NRD_SHADER_INCLUDE_DIR}")
+    list(REMOVE_DUPLICATES RTXPT_NRD_SHADER_DIRS)
+    set(RTXPT_NRD_SHADER_ARGS NRD_SHADER_DIRS ${RTXPT_NRD_SHADER_DIRS} MATHLIB_DIR "${RTXPT_NRD_MATHLIB_INCLUDE_DIR}")
+endif()
 add_rtxpt_library(RTXPT-Runtime
     SHARC_SHADER_DIR "${RTXPT_SHARC_ROOT}/include"
+    ${RTXPT_NRD_LIBRARY_ARGS}
     DEPENDENCIES Diligent-AssetLoader Diligent-JSON Diligent-GraphicsTools
                  Diligent-Archiver-static DiligentFX Diligent-Imgui)
 
@@ -414,12 +421,12 @@ if(PLATFORM_WIN32 OR PLATFORM_LINUX)
             "${RTXPT_SHARC_ROOT}/include" "$<TARGET_FILE_DIR:RTXPT>/shaders/SHARC"
         VERBATIM)
     add_dependencies(RTXPT RTXPT-SharcShaders)
-    rtxpt_stage_shaders(RTXPT "$<TARGET_FILE_DIR:RTXPT>/shaders")
+    rtxpt_stage_shaders(RTXPT "$<TARGET_FILE_DIR:RTXPT>/shaders" ${RTXPT_NRD_SHADER_ARGS})
 endif()
 
 if(DILIGENT_INSTALL_SAMPLES AND (PLATFORM_LINUX OR PLATFORM_WIN32))
     file(RELATIVE_PATH RTXPT_REL_PATH "${CMAKE_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
-    rtxpt_install_shaders("${CMAKE_INSTALL_BINDIR}/${RTXPT_REL_PATH}/$<CONFIG>/shaders")
+    rtxpt_install_shaders("${CMAKE_INSTALL_BINDIR}/${RTXPT_REL_PATH}/$<CONFIG>/shaders" ${RTXPT_NRD_SHADER_ARGS})
     install(DIRECTORY "${RTXPT_SHARC_ROOT}/include/"
             DESTINATION "${CMAKE_INSTALL_BINDIR}/${RTXPT_REL_PATH}/$<CONFIG>/shaders/SHARC")
 endif()
@@ -441,37 +448,19 @@ PRIVATE
     DiligentFX
 )
 
-if(RTXPT_HAS_NRD AND TARGET Diligent-GraphicsEngineD3DBaseInterface)
-    set(RTXPT_HAS_D3D_SHADER_REFLECTION ON)
-endif()
-
 target_compile_definitions(RTXPT
 PRIVATE
     RTXPT_SHARC_SHADER_DIR="${RTXPT_SHARC_ROOT}/include"
-    RTXPT_HAS_NRD=$<BOOL:${RTXPT_HAS_NRD}>
-    RTXPT_HAS_D3D_SHADER_REFLECTION=$<BOOL:${RTXPT_HAS_D3D_SHADER_REFLECTION}>
-    RTXPT_NRD_SHADER_INCLUDE_DIR="${RTXPT_NRD_SHADER_INCLUDE_DIR}"
-    RTXPT_NRD_SHADER_SOURCE_DIR="${RTXPT_NRD_SHADER_SOURCE_DIR}"
-    RTXPT_NRD_SHADER_CONFIG_DIR="${RTXPT_NRD_SHADER_CONFIG_DIR}"
-    RTXPT_NRD_MATHLIB_INCLUDE_DIR="${RTXPT_NRD_MATHLIB_INCLUDE_DIR}"
 )
 
-# The shared post-process implementation also serves the Sample's existing NRD branch.
-target_compile_definitions(RTXPT-Runtime PRIVATE
-    RTXPT_HAS_NRD=$<BOOL:${RTXPT_HAS_NRD}>
-    RTXPT_NRD_SHADER_INCLUDE_DIR="${RTXPT_NRD_SHADER_INCLUDE_DIR}"
-    RTXPT_NRD_SHADER_CONFIG_DIR="${RTXPT_NRD_SHADER_CONFIG_DIR}"
-    RTXPT_NRD_MATHLIB_INCLUDE_DIR="${RTXPT_NRD_MATHLIB_INCLUDE_DIR}")
-
 if(RTXPT_HAS_NRD)
-    target_link_libraries(RTXPT PRIVATE NRD)
-    if(TARGET Diligent-GraphicsEngineD3DBaseInterface)
-        target_link_libraries(RTXPT PRIVATE Diligent-GraphicsEngineD3DBaseInterface)
-    endif()
-    target_include_directories(RTXPT PRIVATE
-        "${RTXPT_NRD_INCLUDE_DIR}"
-        "${RTXPT_NRD_SHADER_INCLUDE_DIR}"
-    )
+    # Run from the source directory, the Sample finds NRD's shaders in its source tree; staged and
+    # installed copies are found under shaders/NRD.
+    target_compile_definitions(RTXPT-Runtime PRIVATE
+        RTXPT_NRD_SHADER_SOURCE_DIR="${RTXPT_NRD_SHADER_SOURCE_DIR}"
+        RTXPT_NRD_SHADER_INCLUDE_DIR="${RTXPT_NRD_SHADER_INCLUDE_DIR}"
+        RTXPT_NRD_SHADER_CONFIG_DIR="${RTXPT_NRD_SHADER_CONFIG_DIR}"
+        RTXPT_NRD_MATHLIB_INCLUDE_DIR="${RTXPT_NRD_MATHLIB_INCLUDE_DIR}")
 endif()
 
 if (PLATFORM_WIN32 AND D3D12_SUPPORTED AND CMAKE_SIZEOF_VOID_P EQUAL 8)

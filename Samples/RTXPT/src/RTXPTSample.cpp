@@ -221,23 +221,6 @@ void DrawDisabledTooltip(const char* Text)
         ImGui::SetTooltip("%s", Text);
 }
 
-void InsertDenoiserPrepareOutputBarriers(IDeviceContext* pContext, const RTXPTRenderTargets& RenderTargets)
-{
-    RTXPTRayTracingPass::InsertUAVBarrier(pContext, RenderTargets.GetOutputColorUAV());
-    RTXPTRayTracingPass::InsertUAVBarrier(pContext, RenderTargets.GetCombinedHistoryClampRelaxUAV());
-    RTXPTRayTracingPass::InsertUAVBarrier(pContext, RenderTargets.GetDenoiserViewspaceZUAV());
-    RTXPTRayTracingPass::InsertUAVBarrier(pContext, RenderTargets.GetDenoiserMotionVectorsUAV());
-    RTXPTRayTracingPass::InsertUAVBarrier(pContext, RenderTargets.GetDenoiserNormalRoughnessUAV());
-    RTXPTRayTracingPass::InsertUAVBarrier(pContext, RenderTargets.GetDenoiserDiffRadianceHitDistUAV());
-    RTXPTRayTracingPass::InsertUAVBarrier(pContext, RenderTargets.GetDenoiserSpecRadianceHitDistUAV());
-    RTXPTRayTracingPass::InsertUAVBarrier(pContext, RenderTargets.GetDenoiserDisocclusionThresholdMixUAV());
-}
-
-void InsertDenoiserFinalMergeOutputBarrier(IDeviceContext* pContext, const RTXPTRenderTargets& RenderTargets)
-{
-    RTXPTRayTracingPass::InsertUAVBarrier(pContext, RenderTargets.GetOutputColorUAV());
-}
-
 constexpr int kNEEMaxSampleCount = 63; // NEEBSDFMISInfo packs each sample count into six bits.
 
 Uint32 PackEnvironmentNEEAndEmissiveTriangleCount(bool EnableEnvNEE, Uint32 EmissiveTriangleCount)
@@ -1628,7 +1611,7 @@ bool RTXPTSample::EnsureRenderTargets()
                                  RTXPT_REALTIME_RESET_NRD_HISTORY |
                                  RTXPT_REALTIME_RESET_TAA_SR_HISTORY,
                              "Render targets (re)created");
-        ResetNrdIntegrations();
+        m_NrdDenoiser.Reset();
         InvalidatePreviousFrameConstants();
     }
     return Ok && ResourcesValid;
@@ -2092,50 +2075,6 @@ bool RTXPTSample::PresentRealtimeFinalOutput()
     return true;
 }
 
-void RTXPTSample::ResetNrdIntegrations()
-{
-    for (RTXPTNrdIntegration& Integration : m_NrdIntegrations)
-        Integration.Reset();
-}
-
-bool RTXPTSample::EnsureNrdIntegrations()
-{
-    if (!IsStandaloneNrdAvailable())
-    {
-        RecordRealtimePathTraceStatus(GetStandaloneNrdDisabledReason());
-        return false;
-    }
-
-    const Uint32 Width  = m_RenderTargets.GetRenderWidth();
-    const Uint32 Height = m_RenderTargets.GetRenderHeight();
-
-    RTXPTNrdIntegrationCreateInfo NrdCI;
-    NrdCI.pEngineFactory   = m_pEngineFactory;
-    NrdCI.pStateCache      = m_pStateCache;
-    NrdCI.Method           = m_RealtimeUI.NRDMethod;
-    NrdCI.Width            = Width;
-    NrdCI.Height           = Height;
-    NrdCI.ComputeSupported = m_FeatureCaps.ComputeShaders;
-    for (RTXPTNrdIntegration& Integration : m_NrdIntegrations)
-    {
-        const bool NeedsRecreate =
-            !Integration.IsReady() ||
-            Integration.GetMethod() != m_RealtimeUI.NRDMethod ||
-            Integration.GetWidth() != Width ||
-            Integration.GetHeight() != Height;
-
-        if (NeedsRecreate &&
-            !Integration.Initialize(m_pDevice, NrdCI))
-        {
-            RecordRealtimePathTraceStatus(Integration.GetLastFailureReason());
-            ResetNrdIntegrations();
-            return false;
-        }
-    }
-
-    return true;
-}
-
 bool RTXPTSample::Denoise()
 {
     if (!m_RealtimeUI.ActualUseStandaloneDenoiser())
@@ -2147,62 +2086,40 @@ bool RTXPTSample::Denoise()
         return false;
     }
 
-    if (!EnsureNrdIntegrations())
+    if (!IsStandaloneNrdAvailable())
+    {
+        RecordRealtimePathTraceStatus(GetStandaloneNrdDisabledReason());
         return false;
+    }
 
-    const bool ResetHistory =
+    RTXPTNrdIntegrationCreateInfo NrdCI;
+    NrdCI.pEngineFactory   = m_pEngineFactory;
+    NrdCI.pStateCache      = m_pStateCache;
+    NrdCI.Method           = m_RealtimeUI.NRDMethod;
+    NrdCI.Width            = m_RenderTargets.GetRenderWidth();
+    NrdCI.Height           = m_RenderTargets.GetRenderHeight();
+    NrdCI.ComputeSupported = m_FeatureCaps.ComputeShaders;
+    if (!m_NrdDenoiser.Prepare(m_pDevice, NrdCI))
+    {
+        RecordRealtimePathTraceStatus(m_NrdDenoiser.GetLastFailureReason());
+        return false;
+    }
+
+    const Int32 LayerCount = std::clamp(m_RealtimeUI.DenoisingLayersActiveCount, Int32{1}, static_cast<Int32>(kRTXPTDenoisingLayerCount));
+
+    RTXPTNrdDenoiserFrameAttribs Attribs;
+    Attribs.pFrameConstants  = &m_LastFrameConstants;
+    Attribs.pRealtime        = &m_RealtimeUI;
+    Attribs.LayerCount       = static_cast<Uint32>(LayerCount);
+    Attribs.FrameIndex       = m_FrameIndex;
+    Attribs.TimeDeltaSeconds = m_LastElapsedTimeSeconds > 0.0f ? m_LastElapsedTimeSeconds : -1.0f;
+    Attribs.ResetHistory =
         HasRealtimeResetFlag(m_CurrentFrameRealtimeReset, RTXPT_REALTIME_RESET_NRD_HISTORY) ||
         HasRealtimeResetFlag(m_CurrentFrameRealtimeReset, RTXPT_REALTIME_RESET_REALTIME_CACHES);
-    const bool EnableValidation = m_RenderTargets.GetDenoiserOutValidationUAV() != nullptr;
-
-    Int32 MaxPassCount = std::min(m_RealtimeUI.DenoisingLayersActiveCount, static_cast<Int32>(kRTXPTDenoisingLayerCount));
-    MaxPassCount       = std::max(MaxPassCount, Int32{1});
-
-    bool InitWithStableRadiance = true;
-    for (Int32 Pass = MaxPassCount - 1; Pass >= 0; --Pass)
+    if (!m_PostProcessPipeline.RunNrdDenoiser(m_pImmediateContext, m_RenderTargets, m_NrdDenoiser, Attribs))
     {
-        const Uint32 PlaneIndex = static_cast<Uint32>(Pass);
-        if (!m_PostProcessPipeline.RunDenoiserPrepare(m_pImmediateContext,
-                                                      m_RenderTargets,
-                                                      m_RealtimeUI.NRDMethod,
-                                                      PlaneIndex,
-                                                      InitWithStableRadiance))
-        {
-            RecordRealtimePathTraceStatus("Denoiser prepare dispatch failed");
-            return false;
-        }
-
-        InitWithStableRadiance = false;
-        InsertDenoiserPrepareOutputBarriers(m_pImmediateContext, m_RenderTargets);
-
-        RTXPTNrdFrameAttribs Attribs;
-        Attribs.pRenderTargets   = &m_RenderTargets;
-        Attribs.pFrameConstants  = &m_LastFrameConstants;
-        Attribs.pRealtime        = &m_RealtimeUI;
-        Attribs.PlaneIndex       = PlaneIndex;
-        Attribs.FrameIndex       = m_FrameIndex;
-        Attribs.TimeDeltaSeconds = m_LastElapsedTimeSeconds > 0.0f ? m_LastElapsedTimeSeconds : -1.0f;
-        Attribs.ResetHistory     = ResetHistory;
-        Attribs.EnableValidation = EnableValidation;
-
-        if (!m_NrdIntegrations[PlaneIndex].Dispatch(m_pImmediateContext, Attribs))
-        {
-            RecordRealtimePathTraceStatus(m_NrdIntegrations[PlaneIndex].GetLastFailureReason());
-            return false;
-        }
-
-        const bool HasValidation = m_RenderTargets.GetDenoiserOutValidationSRV() != nullptr;
-        if (!m_PostProcessPipeline.RunDenoiserFinalMerge(m_pImmediateContext,
-                                                         m_RenderTargets,
-                                                         m_RealtimeUI.NRDMethod,
-                                                         PlaneIndex,
-                                                         HasValidation))
-        {
-            RecordRealtimePathTraceStatus("Denoiser final merge dispatch failed");
-            return false;
-        }
-
-        InsertDenoiserFinalMergeOutputBarrier(m_pImmediateContext, m_RenderTargets);
+        RecordRealtimePathTraceStatus(m_NrdDenoiser.GetLastFailureReason());
+        return false;
     }
 
     m_LastRealtimeFinalMergeReady = true;
@@ -2611,7 +2528,7 @@ void RTXPTSample::WindowResize(Uint32 Width, Uint32 Height)
     InvalidatePreviousFrameConstants();
 
     const bool Ok = EnsureRenderTargets();
-    ResetNrdIntegrations();
+    m_NrdDenoiser.Reset();
     const bool ResourcesValid = m_PostProcessPipeline.ValidateRenderTargets(m_RenderTargets);
     m_AccumulationActive =
         Ok && ResourcesValid &&
@@ -3257,7 +3174,7 @@ void RTXPTSample::UpdateUI()
         {
             m_RealtimeUI.NRDMethod = static_cast<RTXPTNrdMethod>(std::clamp(NrdMethod, 0, 1));
             RequestRealtimeReset(RTXPT_REALTIME_RESET_NRD_HISTORY, "NRD mode changed");
-            ResetNrdIntegrations();
+            m_NrdDenoiser.Reset();
         }
 
         if (ImGui::CollapsingHeader("Advanced Settings"))

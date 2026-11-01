@@ -69,7 +69,34 @@ nrd::HitDistanceReconstructionMode ToNrdHitDistanceMode(RTXPTNrdHitDistanceRecon
     }
 }
 
+void AppendShaderSearchDir(std::string& SearchDirs, const char* Path)
+{
+    if (Path == nullptr || Path[0] == '\0')
+        return;
+
+    if (!SearchDirs.empty())
+        SearchDirs += ';';
+    SearchDirs += Path;
+}
+
 } // namespace
+
+void RTXPTAppendNrdShaderSearchDirs(std::string& SearchDirs)
+{
+    AppendShaderSearchDir(SearchDirs, "shaders/NRD");
+#    ifdef RTXPT_NRD_SHADER_SOURCE_DIR
+    AppendShaderSearchDir(SearchDirs, RTXPT_NRD_SHADER_SOURCE_DIR);
+#    endif
+#    ifdef RTXPT_NRD_SHADER_INCLUDE_DIR
+    AppendShaderSearchDir(SearchDirs, RTXPT_NRD_SHADER_INCLUDE_DIR);
+#    endif
+#    ifdef RTXPT_NRD_SHADER_CONFIG_DIR
+    AppendShaderSearchDir(SearchDirs, RTXPT_NRD_SHADER_CONFIG_DIR);
+#    endif
+#    ifdef RTXPT_NRD_MATHLIB_INCLUDE_DIR
+    AppendShaderSearchDir(SearchDirs, RTXPT_NRD_MATHLIB_INCLUDE_DIR);
+#    endif
+}
 
 nrd::Denoiser RTXPTToNrdDenoiser(RTXPTNrdMethod Method)
 {
