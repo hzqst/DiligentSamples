@@ -629,6 +629,7 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
     CommandLineParser Args{argc, argv};
     Args.Parse("realtime", m_RealtimeUI.RealtimeMode);
     Args.Parse("realtime_raw", m_RealtimeRawEnabled);
+    Args.Parse("realtime_native", m_RealtimeNativeEnabled);
     Args.Parse("embedded_reference", m_UseEmbeddedReference);
     Args.Parse("asyncPrefix", m_EnableAsyncPrefix);
     Args.Parse("async_queue", m_CreateAsyncQueue);
@@ -684,11 +685,16 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
                                                {{"native", RAY_RECONSTRUCTION_QUALITY_NATIVE}, {"quality", RAY_RECONSTRUCTION_QUALITY_QUALITY}, {"balanced", RAY_RECONSTRUCTION_QUALITY_BALANCED}, {"performance", RAY_RECONSTRUCTION_QUALITY_PERFORMANCE}, {"ultra_performance", RAY_RECONSTRUCTION_QUALITY_ULTRA_PERFORMANCE}}, m_RayReconstructionSettings.Quality);
     Args.ParseEnum<RAY_RECONSTRUCTION_DLSS_PRESET>("rr_preset", 0,
                                                    {{"F", RAY_RECONSTRUCTION_DLSS_PRESET_F}, {"E", RAY_RECONSTRUCTION_DLSS_PRESET_E}}, m_RayReconstructionSettings.Preset);
-    if (m_RealtimeRawEnabled)
+    if (IsSharedRealtimeEnabled())
     {
+        if (m_RealtimeRawEnabled && m_RealtimeNativeEnabled)
+        {
+            LOG_ERROR_MESSAGE("realtime_raw and realtime_native are exclusive");
+            return CommandLineStatus::Error;
+        }
         if (m_UseEmbeddedReference || m_ValidateRayReconstruction || m_ValidateSubSampling || m_ValidateAsyncPrefix)
         {
-            LOG_ERROR_MESSAGE("RealtimeRaw cannot be combined with embedded_reference or advanced validation modes");
+            LOG_ERROR_MESSAGE("realtime_raw and realtime_native cannot be combined with embedded_reference or advanced validation modes");
             return CommandLineStatus::Error;
         }
         m_RealtimeUI.RealtimeMode              = true;
@@ -775,7 +781,7 @@ void RTXPTSample::ResetSceneDependentResources()
     m_EmbeddedDisplaySRV.Release();
     m_EmbeddedReference.reset();
     m_EmbeddedScene.reset();
-    m_RealtimeRaw.reset();
+    m_SharedRealtime.reset();
     m_EmbeddedBlit.Reset();
     m_Materials.Reset();
     m_LightsBaker.SceneReloaded();
@@ -1576,9 +1582,9 @@ bool RTXPTSample::EnsureRenderTargets()
     SanitizeRealtimeSettings(m_RealtimeUI);
     RTXPTRenderTargetCreateInfo CreateInfo =
         MakeRenderTargetCreateInfo(m_CurrentTargetDimensions, m_RealtimeUI, m_FeatureCaps.RayTracing);
-    if (m_RealtimeRawEnabled)
+    if (IsSharedRealtimeEnabled())
     {
-        //The shared Raw view owns layers/guides and never needs progressive radiance storage.
+        //The shared realtime pipeline owns layers/guides/denoiser targets and never needs progressive radiance storage.
         CreateInfo.CreateRealtimeResources   = false;
         CreateInfo.CreateAccumulatedRadiance = false;
     }
@@ -2146,9 +2152,9 @@ bool RTXPTSample::RunRealtimePostProcess()
 
 bool RTXPTSample::RunRealtimePathTraceOnly()
 {
-    if (m_RealtimeRawEnabled)
+    if (IsSharedRealtimeEnabled())
     {
-        const bool Ok = RunRealtimeRaw();
+        const bool Ok = RunSharedRealtime();
         if (!Ok)
             ClearFallback(float4{0.9f, 0.15f, 0.05f, 1.0f});
         return Ok;
@@ -2223,28 +2229,41 @@ bool RTXPTSample::RunRealtimePathTraceOnly()
     return true;
 }
 
-bool RTXPTSample::RunRealtimeRaw()
+bool RTXPTSample::RunSharedRealtime()
 {
     DrainAsyncPrefix();
-    if (m_RealtimeRaw)
-        m_RealtimeRaw->InvalidateOutput();
+    //Only a successful previous frame of the same pipeline continues the denoiser history.
+    bool bHistoryValid = m_SharedRealtime && m_SharedRealtime->GetStats().OutputValid;
+    if (m_SharedRealtime)
+        m_SharedRealtime->InvalidateOutput();
     if (!PrepareSceneFrame())
         return false;
     const Uint32 Width = m_RenderTargets.GetRenderWidth(), Height = m_RenderTargets.GetRenderHeight();
-    if (!m_RealtimeRaw || m_RealtimeRaw->GetTargets().GetRenderWidth() != Width || m_RealtimeRaw->GetTargets().GetRenderHeight() != Height)
+    if (!m_SharedRealtime || m_SharedRealtime->GetTargets().GetRenderWidth() != Width || m_SharedRealtime->GetTargets().GetRenderHeight() != Height)
     {
-        auto       Raw  = std::make_unique<RTXPTRealtimeRawPipeline>();
-        const auto Code = Raw->Initialize(m_pDevice, m_pStateCache, m_pPSOCache, m_FrameConstantsCB,
-                                          Width, Height, m_RenderTargets.GetLdrColorRTV()->GetDesc().Format);
+        RTXPTRealtimePipelineCreateInfo CreateInfo;
+        CreateInfo.Device        = m_pDevice;
+        CreateInfo.Cache         = m_pStateCache;
+        CreateInfo.PSOCache      = m_pPSOCache;
+        CreateInfo.Constants     = m_FrameConstantsCB;
+        CreateInfo.Width         = Width;
+        CreateInfo.Height        = Height;
+        CreateInfo.DisplayFormat = m_RenderTargets.GetLdrColorRTV()->GetDesc().Format;
+        CreateInfo.Denoiser      = m_RealtimeNativeEnabled ? RTXPTRealtimeDenoiser::NrdRelax : RTXPTRealtimeDenoiser::None;
+        auto       Pipeline      = std::make_unique<RTXPTRealtimePipeline>();
+        const auto Code          = Pipeline->Initialize(CreateInfo);
         if (Code != RTXPTErrorCode::Ok)
         {
             RecordRealtimePathTraceStatus(GetRTXPTErrorCodeString(Code));
             return false;
         }
-        m_RealtimeRaw = std::move(Raw);
+        m_SharedRealtime = std::move(Pipeline);
+        bHistoryValid    = false;
     }
-    const auto Code                 = m_RealtimeRaw->Render(m_pImmediateContext, m_RayTracingPass, m_LightsBaker,
-                                            m_LastFrameConstants, m_ReferenceUI.ToneMapping, m_RenderTargets.GetLdrColorRTV(), &m_GpuProfiler);
+    RTXPTRealtimeHistoryAttribs History;
+    History.Reset                   = !bHistoryValid || m_LastFrameConstants.ptConsts.resetAccumulation != 0;
+    const auto Code                 = m_SharedRealtime->Render(m_pImmediateContext, m_RayTracingPass, m_LightsBaker,
+                                               m_LastFrameConstants, m_ReferenceUI.ToneMapping, History, m_RenderTargets.GetLdrColorRTV(), &m_GpuProfiler);
     m_LastRealtimePathTraceExecuted = Code == RTXPTErrorCode::Ok;
     m_LastRealtimeFinalMergeReady   = m_LastRealtimePathTraceExecuted;
     if (Code != RTXPTErrorCode::Ok)
@@ -2252,8 +2271,8 @@ bool RTXPTSample::RunRealtimeRaw()
         RecordRealtimePathTraceStatus(GetRTXPTErrorCodeString(Code));
         return false;
     }
-    RecordRealtimePathTraceStatus("RealtimeRaw: current frame; dynamic motion not validated");
-    m_HDRCapture.Capture(m_pDevice, m_pImmediateContext, m_RealtimeRaw->GetTargets().GetOutputColorSRV()->GetTexture(), m_FrameIndex);
+    RecordRealtimePathTraceStatus(m_RealtimeNativeEnabled ? "RealtimeNative: RELAX per denoising layer" : "RealtimeRaw: current frame");
+    m_HDRCapture.Capture(m_pDevice, m_pImmediateContext, m_SharedRealtime->GetTargets().GetOutputColorSRV()->GetTexture(), m_FrameIndex);
     return m_BlitPass.Render(m_pImmediateContext, m_pSwapChain, m_RenderTargets.GetPresentationSRV());
 }
 
@@ -2427,8 +2446,8 @@ void RTXPTSample::Render()
 
 void RTXPTSample::Update(double CurrTime, double ElapsedTime, bool DoUpdateUI)
 {
-    //The Raw validation preset is fixed until the common view settings entry point is added.
-    if (m_RealtimeRawEnabled)
+    //The shared realtime validation presets are fixed until the common view settings entry point is added.
+    if (IsSharedRealtimeEnabled())
         DoUpdateUI = false;
     if (m_ReferenceCapture.Enabled())
     {
@@ -2502,12 +2521,14 @@ void RTXPTSample::Update(double CurrTime, double ElapsedTime, bool DoUpdateUI)
 #if PLATFORM_WIN32
     if (m_ExitAfterFrames != 0 && m_FrameIndex >= m_ExitAfterFrames)
     {
-        if (m_RealtimeRawEnabled)
+        if (IsSharedRealtimeEnabled())
         {
-            const auto Stats = m_RealtimeRaw ? m_RealtimeRaw->GetStats() : RTXPTRealtimeRawStats{};
-            std::cout << "RealtimeRaw: frames=" << Stats.CompletedFrames << " build=" << Stats.BuildDispatches
+            const auto Stats = m_SharedRealtime ? m_SharedRealtime->GetStats() : RTXPTRealtimeStats{};
+            std::cout << (m_RealtimeNativeEnabled ? "RealtimeNative" : "RealtimeRaw") << ": frames=" << Stats.CompletedFrames << " build=" << Stats.BuildDispatches
                       << " fill=" << Stats.FillDispatches << " guides=" << Stats.GuideBakes
-                      << " merge=" << Stats.MergeDispatches << " dynamicMotionValidated=" << Stats.DynamicMotionValidated << std::endl;
+                      << " merge=" << Stats.MergeDispatches << " denoise=" << Stats.DenoiseDispatches
+                      << " historyResets=" << Stats.HistoryResets << " nrdInstances=" << Stats.NrdInstances
+                      << " dynamicMotionValidated=" << Stats.DynamicMotionValidated << std::endl;
             PostQuitMessage(m_LastFrameSucceeded && Stats.OutputValid ? 0 : 1);
         }
         else

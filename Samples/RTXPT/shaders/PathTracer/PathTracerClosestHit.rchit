@@ -74,6 +74,9 @@ namespace PathTracer
                             t_SkinnedVertexBuffer[indices.z].positionAndNormalX.xyz * bary.z;
         }
         const float3 previousWorldPosition = previousSurfaceValid ? mul(float4(localPosition, 1.0), subInstance.PreviousTransform).xyz : worldPos;
+        // Same place, pose and material as in the previous frame.
+        const uint unchangedFlags = kSubInstanceFlagUnchangedSurface | kSubInstanceFlagPreviousMaterial;
+        const bool previousUnchanged = previousSurfaceValid && (subInstance.Flags & unchangedFlags) == unchangedFlags;
 #endif
         worldNormal                  = Bridge::interpolateNormal(V0, V1, V2, Attributes.barycentrics);
         if (dot(worldNormal, worldNormal) < 1e-6)
@@ -224,6 +227,7 @@ namespace PathTracer
 #if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
                                  previousWorldPosition,
                                  previousSurfaceValid,
+                                 previousUnchanged,
                                  previousReflectionPlane,
 #endif
                                  neeTriangleLightIndex,

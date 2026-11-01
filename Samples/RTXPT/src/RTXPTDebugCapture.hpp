@@ -6,7 +6,7 @@
 #include <iomanip>
 #include <vector>
 #include "RTXPTEmbeddedRenderer.hpp"
-#include "RTXPTRealtimeRawPipeline.hpp"
+#include "RTXPTRealtimePipeline.hpp"
 #include "RTXPTRealtimeSettings.hpp"
 #include "GraphicsAccessories.hpp"
 #include "RTXPTGpuProfiler.hpp"
@@ -14,7 +14,7 @@
 namespace Diligent
 {
 //Explicit development readback. The caller supplies a NEW directory and may add host metadata there afterwards.
-//Only a successful current Raw output can be captured. No manifest is published for an incomplete readback/write.
+//Only a successful current Raw or Native output can be captured. No manifest is published for an incomplete readback/write.
 //Texture bytes are tightly packed, little endian, top row first, array slices in ascending order. No color conversion.
 //The layer buffer retains the shader's packed representation; inactive records/padding are not valid surface guides.
 class RTXPTDebugCapture
@@ -22,7 +22,8 @@ class RTXPTDebugCapture
 public:
     static bool Capture(IRenderDevice* Device, IDeviceContext* Context, RTXPTEmbeddedView& View, const std::filesystem::path& Directory)
     {
-        const auto Color = View.GetOutputInfo(RTXPTViewOutput::NoisyRadiance);
+        const bool bNative = View.GetMode() == RTXPTViewMode::RealtimeNative;
+        const auto Color   = View.GetOutputInfo(bNative ? RTXPTViewOutput::DenoisedRadiance : RTXPTViewOutput::NoisyRadiance);
         if (!Device || !Context || !Color.Valid || !View.GetRealtimeLayerBuffer())
             return false;
         try
@@ -31,12 +32,13 @@ public:
                 return false;
             std::ofstream Manifest{Directory / "manifest.json.pending"};
             const auto&   History = View.GetHistoryInfo();
+            const auto&   Stats   = View.GetRealtimeStats();
             Manifest << std::setprecision(17)
-                     << "{\n\"schema\":1,\"mode\":\"RealtimeRaw\",\"frame_index\":" << Color.FrameIndex
+                     << "{\n\"schema\":1,\"mode\":\"" << (bNative ? "RealtimeNative" : "RealtimeRaw") << "\",\"frame_index\":" << Color.FrameIndex
                      << ",\"render_size\":[" << Color.Size.Width << ',' << Color.Size.Height
                      << "],\"display_size\":[" << Color.Size.Width << ',' << Color.Size.Height
                      << "],\"spp\":1,\"sample_base_index\":" << Color.FrameIndex - 1
-                     << ",\"jitter\":[0,0],\"dynamic_motion_validated\":" << (View.GetRealtimeRawStats().DynamicMotionValidated ? "true" : "false")
+                     << ",\"jitter\":[0,0],\"dynamic_motion_validated\":" << (Stats.DynamicMotionValidated ? "true" : "false")
                      << ",\"previous_surface_storage_bytes\":" << History.PreviousTransformStorageBytes + History.PreviousSkinnedRangeBytes
                      << ",\"previous_skinned_range_bytes\":" << History.PreviousSkinnedRangeBytes
                      << ",\"skinned_arena_storage_bytes\":" << History.SkinnedVertexStorageBytes
@@ -47,19 +49,24 @@ public:
                      << ",\"light_feedback_reset\":" << (History.LightFeedbackReset ? "true" : "false")
                      << ",\"valid_previous_rigid_instances\":" << History.ValidPreviousRigidInstances
                      << ",\"valid_previous_skinned_instances\":" << History.ValidPreviousSkinnedInstances
-                     << ",\"invalid_history_instances\":" << History.InvalidHistoryInstances << ','
+                     << ",\"invalid_history_instances\":" << History.InvalidHistoryInstances
+                     << ",\"denoiser\":" << (bNative ? "\"NRD_RELAX\"" : "null")
+                     << ",\"denoiser_history_reset\":" << (bNative ? (Stats.LastHistoryReset ? "true" : "false") : "null")
+                     << ",\"denoiser_history_confidence\":" << (bNative ? (Stats.HistoryConfidence ? "true" : "false") : "null")
+                     << ",\"nrd_instances\":" << Stats.NrdInstances << ",\"nrd_pool_bytes\":" << Stats.NrdPoolBytes << ','
                      << "\"valid_correspondence_count\":null,\"total_gpu_memory_bytes\":null,"
                         "\"byte_order\":\"little\",\"row_order\":\"top_to_bottom\","
                         "\"primary_motion_convention\":\"current_to_previous; xy=render_local_pixels_without_jitter; z=previous_clip_w-current_clip_w; w=exported_surface_and_all_retained_paths_valid\","
-                        "\"specular_motion_convention\":\"current_to_previous; xy=render_local_pixels_without_jitter; z=previous_clip_w-current_clip_w; w=one_supported_reflected_path_valid\","
+                        "\"specular_motion_convention\":\"current_to_previous; xy=render_local_pixels_without_jitter; z=previous_clip_w-current_clip_w; w=one_reflected_path_with_valid_history\","
                         "\"virtual_motion_convention\":\"packed layer world-space current_to_previous\",\"resources\":[\n";
             struct Output
             {
                 RTXPTViewOutput Kind;
                 const char*     Name;
+                Uint32          Layer = 0;
             };
-            const Output Outputs[] = {
-                {RTXPTViewOutput::NoisyRadiance, "noisy_radiance"},
+            std::vector<Output> Outputs = {
+                bNative ? Output{RTXPTViewOutput::DenoisedRadiance, "denoised_radiance"} : Output{RTXPTViewOutput::NoisyRadiance, "noisy_radiance"},
                 {RTXPTViewOutput::Display, "display"},
                 {RTXPTViewOutput::RayDistance, "ray_distance_not_view_z"},
                 {RTXPTViewOutput::PrimaryMotion, "primary_motion"},
@@ -67,10 +74,16 @@ public:
                 {RTXPTViewOutput::SpecularHitDistance, "specular_hit_distance"},
                 {RTXPTViewOutput::AverageLayerRadiance, "average_layer_radiance"},
                 {RTXPTViewOutput::LayerHeader, "layer_header"}};
+            static constexpr const char* ConfidenceNames[kRTXPTDenoisingLayerCount] = {"history_confidence_layer0", "history_confidence_layer1", "history_confidence_layer2"};
+            if (bNative)
+            {
+                for (Uint32 Layer = 0; Layer < kRTXPTDenoisingLayerCount; ++Layer)
+                    Outputs.push_back({RTXPTViewOutput::LayerHistoryConfidence, ConfidenceNames[Layer], Layer});
+            }
             bool First = true;
             for (const auto& Output : Outputs)
             {
-                const auto Info = View.GetOutputInfo(Output.Kind);
+                const auto Info = View.GetOutputInfo(Output.Kind, Output.Layer);
                 if (!Info.Valid || Info.FrameIndex != Color.FrameIndex)
                     return false;
                 const auto&  Desc     = Info.Texture->GetDesc();
@@ -98,7 +111,7 @@ public:
                         "\"validity\":\"layer header and VertexIndexAndRoughness high 16 bits; PreviousVirtualPosition.w is path history validity; inactive/padding undefined\"},\n";
             View.GetProfiler().Poll();
             WriteTiming(Manifest, View.GetProfiler());
-            Manifest << ",\"unavailable_stages\":[\"NRD\",\"TAA\",\"SR\",\"RR\",\"Bloom\"]\n}\n";
+            Manifest << ",\"unavailable_stages\":[" << (bNative ? "" : "\"NRD\",") << "\"TAA\",\"SR\",\"RR\",\"Bloom\"]\n}\n";
             Manifest.flush();
             if (!Manifest) return false;
             Manifest.close();

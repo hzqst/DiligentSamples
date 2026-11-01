@@ -14,6 +14,15 @@ namespace PathTracer
     }
 
 #if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS || defined(__INTELLISENSE__)
+    // The host passes the previous view unchanged when the camera did not move.
+    inline bool DenoisingLayersCameraUnchanged()
+    {
+        const float4x4 current  = g_Const.view.MatWorldToClipNoOffset;
+        const float4x4 previous = g_Const.previousView.MatWorldToClipNoOffset;
+        return all(current[0] == previous[0]) && all(current[1] == previous[1]) &&
+            all(current[2] == previous[2]) && all(current[3] == previous[3]);
+    }
+
     inline PathState SplitDeltaPath(const PathState oldPath,
                                     const float3 rayDir,
                                     const SurfaceData surfaceData,
@@ -34,6 +43,8 @@ namespace PathTracer
             dot(surfaceData.previousReflectionPlane.xyz, surfaceData.previousReflectionPlane.xyz) > 0.5;
         newPath.setFlag(PathFlags::unsupportedMotionPath,
             oldPath.hasFlag(PathFlags::unsupportedMotionPath) || !supportedReflection);
+        newPath.setFlag(PathFlags::changedMotionPath,
+            oldPath.hasFlag(PathFlags::changedMotionPath) || !surfaceData.previousSurfaceUnchanged);
         newPath.previousReflectionPlane = surfaceData.previousReflectionPlane;
 
         if (lobe.transmission == 0)
@@ -199,6 +210,10 @@ namespace PathTracer
             const bool singleReflection = vertexIndex == 2 && !blockedAtSurface &&
                 !path.hasFlag(PathFlags::unsupportedMotionPath);
             bool historyValid = surfaceData.previousSurfaceValid && (vertexIndex == 1 || singleReflection);
+            // A path without supported motion still reprojects onto itself when neither the camera nor any surface
+            // along it changed since the previous frame: its motion is zero.
+            historyValid = historyValid || (surfaceData.previousSurfaceUnchanged &&
+                !path.hasFlag(PathFlags::changedMotionPath) && DenoisingLayersCameraUnchanged());
             float3 previousVirtualPos = virtualWorldPos + virtualWorldMotion;
             if (singleReflection)
             {

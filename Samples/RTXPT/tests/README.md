@@ -26,9 +26,39 @@ Re-validation on RTX 5060 / Windows, Debug (2026-11-01):
 | `RRPrepareInputsTest` | D3D12 and Vulkan: resource contracts, RR -> NRD -> RR (no longer skipped on Vulkan), prepare wrapper and 15 readback cases pass. |
 | `capture_realtime_baseline.py`, convergence-test, 320x240, Power+ NEE, RELAX, 3 runs per API | RMSE vs the undenoised mean, first frame: Vulkan 0.200 / 0.206 / 0.203, D3D12 0.206 / 0.204 / 0.203 (Vulkan was 0.46-0.49 before); frames 65-128: Vulkan 0.1258 / 0.1274 / 0.1259, D3D12 0.1258 / 0.1279 / 0.1275. No black pixels in any first frame. |
 
-## Embedded RealtimeRaw evidence
+## RealtimeNative evidence
 
-`RTXPTDebugCapture::Capture` exports the latest successful Embedded Raw view to a
+The shared Native pipeline (`--realtime_native true`, `RTXPTViewMode::RealtimeNative`)
+was measured with `capture_realtime_baseline.py --preset native --repeats 3` on
+convergence-test, 320x240, Power+ NEE (RTX 5060 / Windows, Debug, 2026-11-01). RMSE is
+against the mean of 4096 undenoised frames; "tail" is frames 65-128.
+
+| Check | D3D12 | Vulkan |
+| --- | --- | --- |
+| Tail mean RMSE | 0.1269 / 0.1269 / 0.1262 | 0.1261 / 0.1263 / 0.1255 |
+| Tail adjacent-frame luminance MAE | 0.003842 / 0.003860 / 0.003833 | 0.003829 / 0.003842 / 0.003854 |
+| Frame 32 RMSE / tail mean | 1.009 / 1.019 / 1.009 | 1.017 / 1.014 / 1.005 |
+| First frame RMSE | 0.2032 / 0.2055 / 0.2015 | 0.2031 / 0.2009 / 0.2008 |
+
+The Sample's own NRD route (`--preset sample`) measured 0.1262 / 0.1262 / 0.1267,
+0.003862 / 0.003847 / 0.003836, 1.007 / 1.012 / 1.000 and 0.2018 / 0.2044 / 0.2031 on
+D3D12 in the same session. Before unchanged unsupported paths kept their layer history
+(see Prepared surface history), Native with the history confidence input measured a
+tail RMSE of 0.142-0.144 and an adjacent MAE of 0.0121: the curved mirror, glass and thin
+transmission pixels of this scene never accumulated. Without the confidence input it
+matched the Sample route (0.1265 / 0.00381).
+
+An embedding host's GPU tests cover the per-pixel history rules: an instance replaced in
+place (with a light color change of equal luminance, because prepare demodulates the
+albedo) contains no color of the old one on its first frame while a run without the
+confidence input does; a host cut restarts every layer; rigid, skinned and camera motion
+continue the history without trails; reflected layers keep their history only where the
+path has a valid correspondence or nothing along it changed; failures, revocation, mode
+changes, resize and a view that misses frames restart only the affected view.
+
+## Embedded realtime evidence
+
+`RTXPTDebugCapture::Capture` exports the latest successful Embedded Raw or Native view to a
 new directory. Enable `EnableProfiling` on the scene/view create info to collect
 asynchronous GPU timestamps. Ordinary rendering never waits for query results;
 an occupied query ring drops a measurement. The explicit capture waits for GPU
@@ -36,14 +66,17 @@ readback and must not be used as a throughput benchmark.
 
 The completed `manifest.json` identifies the successful view frame, seed/sample
 index, local sizes, resource formats, byte order, array slices and tightly packed
-row sizes. Binary outputs include current noisy HDR, encoded display, ray distance
+row sizes. Binary outputs include current noisy HDR (Native: denoised HDR and each
+layer's R8 history confidence), encoded display, ray distance
 (not ViewZ), primary motion, specular hit distance, average layer radiance, all
 header planes and the actual packed surface buffer. The latter follows
 `PathTracer/DenoisingLayers.hlsli`; inactive records and padding are undefined.
-It is not a set of validated standalone NRD/RR input textures. Direct rigid/skinned
+Native manifests also state `denoiser` (`NRD_RELAX`), whether the frame restarted the
+history, whether the confidence input is enabled, the NRD instance count and pool bytes.
+The raw guides are not a set of validated standalone NRD/RR input textures. Direct rigid/skinned
 surface motion and single planar reflection motion have host GPU numerical tests
 (see Prepared surface history below); the
-manifest's `dynamic_motion_validated` copies `RTXPTRealtimeRawStats` and does not
+manifest's `dynamic_motion_validated` copies `RTXPTRealtimeStats` and does not
 mean that a denoiser or reconstructor consumed the inputs.
 
 ```text
@@ -137,16 +170,21 @@ the Build payload and stores the previous virtual position in each layer record;
 its w marks path history validity. The plane is used only when the hit triangle has
 a previous correspondence and an unchanged material, and the plane, vertex and
 shading normals agree. Refraction, multiple delta bounces, deforming or non-planar
-mirrors, missed rays and unknown correspondence are invalid. `SpecularMotion` is a
+mirrors, missed rays and unknown correspondence are invalid while the camera or any
+surface along the path moves or changes material. A path along which nothing changed
+since the previous frame (every hit sub-instance has `kSubInstanceFlag_UnchangedSurface`
+and its previous material, and the previous view equals the current one) reprojects
+onto itself with zero motion, so it keeps valid history; missed rays and untracked or
+reset instances never do. `SpecularMotion` is a
 separate render-size RGBA16F output with the primary motion convention; its w is
-one only for a supported reflection path. Primary w aggregates the validity of all
+one only for a single reflected path with valid history. Primary w aggregates the validity of all
 retained paths, and light-feedback reprojection and the guide radiance history read
 it. Host GPU regression projects moving objects in a static mirror and static
 objects in a moving or rotating mirror through independent previous/current plane
 oracles with the same 0.25-pixel tolerance, and checks a diffuse-to-mirror material
 switch, reset/untracked recovery and the invalid cases above.
 
-With these tests `RTXPTRealtimeRawStats::DynamicMotionValidated` is true. It states
+With these tests `RTXPTRealtimeStats::DynamicMotionValidated` is true. It states
 that the motion and validity inputs above are correct for the supported paths; it
 does not cover denoiser, super-resolution or ray reconstruction consumption.
 

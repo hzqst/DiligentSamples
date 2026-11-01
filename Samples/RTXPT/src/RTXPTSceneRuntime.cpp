@@ -215,6 +215,10 @@ const char* GetRTXPTErrorCodeString(RTXPTErrorCode Code)
         case RTXPTErrorCode::UnsupportedViewConfiguration: return "embedded views require a supported mode, equal render/display sizes and an sRGB RGBA8 output RTV";
         case RTXPTErrorCode::GuidesFailed: return "realtime guides failed";
         case RTXPTErrorCode::RealtimeMergeFailed: return "realtime layer merge failed";
+        case RTXPTErrorCode::DenoiserUnavailable: return "this build has no NRD denoiser";
+        case RTXPTErrorCode::DenoiserUnsupportedDevice: return "the device lacks compute or a UAV format of the NRD denoiser inputs";
+        case RTXPTErrorCode::DenoiserSetupFailed: return "NRD denoiser instances or pipelines could not be created";
+        case RTXPTErrorCode::DenoiseFailed: return "realtime NRD denoising failed";
     }
     return "unknown error";
 }

@@ -3,6 +3,10 @@
 The denoiser is measured against the realtime estimator's own expectation: the mean of many
 undenoised frames rendered with the same tracer settings. A Reference image, when given, only
 reports the realtime estimator's bias; it is not the denoiser's target.
+
+--preset native measures the denoised runs with the Sample's --realtime_native preset (the shared
+RealtimeNative pipeline, RELAX only) instead of the Sample's own NRD path; the mean and noisy runs
+are the same for both presets.
 """
 
 import argparse
@@ -42,13 +46,15 @@ def run_sample(args, label, denoiser, start, count, sequence):
         "--width", str(args.width), "--height", str(args.height),
         "--asyncPrefix", "false", "--async_queue", "false", "--sharc", "false",
         "--spp", "1", "--subsampling", "0", "--aa", "off", "--nee_type", str(args.nee_type),
-        "--nrd", "true" if denoiser else "false",
+        "--nrd", "true" if denoiser and args.preset == "sample" else "false",
         "--hdr_capture_path", capture_path,
         "--hdr_capture_start", str(start), "--hdr_capture_count", str(count),
         "--hdr_capture_sequence", "true" if sequence else "false",
         "--exit_after_frames", str(start + count + EXIT_MARGIN_FRAMES),
     ]
-    if denoiser:
+    if denoiser and args.preset == "native":
+        command += ["--realtime_native", "true"]
+    elif denoiser:
         command += ["--nrd_method", denoiser]
     startup = None
     if os.name == "nt":
@@ -107,6 +113,8 @@ def main():
     parser.add_argument("--height", type=int, default=240)
     parser.add_argument("--nee-type", type=int, choices=(0, 1), default=1)
     parser.add_argument("--denoiser", choices=("relax", "reblur"), default="relax")
+    parser.add_argument("--preset", choices=("sample", "native"), default="sample",
+                        help="Denoise with the Sample's NRD path or the --realtime_native preset.")
     parser.add_argument("--warmup", type=int, default=64, help="Frames before the mean capture starts.")
     parser.add_argument("--mean-frames", type=int, default=4096)
     parser.add_argument("--frames", type=int, default=128, help="Sequence length from the first frame.")
@@ -119,10 +127,12 @@ def main():
         parser.error("Sizes, frame counts, repeats and timeout must be positive")
     if not 0 < args.tail_fraction <= 1:
         parser.error("tail-fraction must be in (0, 1]")
+    if args.preset == "native" and args.denoiser != "relax":
+        parser.error("The native preset denoises with RELAX only")
     args.output = args.output.resolve()
     # A fresh directory prevents stale files from masquerading as a successful capture.
     args.output.mkdir(parents=True, exist_ok=False)
-    manifest = {"status": "running", "api": args.api, "denoiser": args.denoiser, "runs": {}}
+    manifest = {"status": "running", "api": args.api, "denoiser": args.denoiser, "preset": args.preset, "runs": {}}
     report = args.output / "manifest.json"
     try:
         args.exe = args.exe.resolve(strict=True)

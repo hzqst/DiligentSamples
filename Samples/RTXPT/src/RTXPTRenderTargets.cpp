@@ -65,6 +65,7 @@ bool FormatsMatch(const RTXPTRenderTargetFormats& Lhs, const RTXPTRenderTargetFo
         Lhs.DenoiserOutDiffRadianceHitDist == Rhs.DenoiserOutDiffRadianceHitDist &&
         Lhs.DenoiserOutSpecRadianceHitDist == Rhs.DenoiserOutSpecRadianceHitDist &&
         Lhs.DenoiserOutValidation == Rhs.DenoiserOutValidation &&
+        Lhs.DenoiserHistoryConfidence == Rhs.DenoiserHistoryConfidence &&
         Lhs.DenoiserAvgLayerRadianceHalfRes == Rhs.DenoiserAvgLayerRadianceHalfRes;
 }
 
@@ -127,6 +128,8 @@ void RTXPTRenderTargets::Reset()
     for (auto& Texture : m_DenoiserOutSpecRadianceHitDist)
         Texture.Release();
     m_DenoiserOutValidation.Release();
+    for (auto& Texture : m_DenoiserHistoryConfidence)
+        Texture.Release();
     m_DenoiserAvgLayerRadianceHalfRes.Release();
     m_RRDiffuseAlbedo.Release();
     m_RRSpecAlbedo.Release();
@@ -385,6 +388,8 @@ bool RTXPTRenderTargets::Resize(IRenderDevice* pDevice, const RTXPTRenderTargetC
                 return FailResize("RGBA16F UAV DenoiserOutDiffRadianceHitDist is not supported; RTXPT realtime denoiser outputs are unavailable");
             if (!SupportsBindFlags(pDevice, Formats.DenoiserOutSpecRadianceHitDist, UavFlags))
                 return FailResize("RGBA16F UAV DenoiserOutSpecRadianceHitDist is not supported; RTXPT realtime denoiser outputs are unavailable");
+            if (!SupportsBindFlags(pDevice, Formats.DenoiserHistoryConfidence, UavFlags))
+                return FailResize("R8 UAV DenoiserHistoryConfidence is not supported; RTXPT realtime denoiser inputs are unavailable");
         }
         if (!SupportsBindFlags(pDevice, Formats.DenoiserAvgLayerRadianceHalfRes, UavFlags))
             return FailResize("RGBA16F UAV DenoiserAvgLayerRadianceHalfRes is not supported; RTXPT realtime guide resources are unavailable");
@@ -426,6 +431,7 @@ bool RTXPTRenderTargets::Resize(IRenderDevice* pDevice, const RTXPTRenderTargetC
     std::array<RefCntAutoPtr<ITexture>, kRTXPTDenoisingLayerCount> DenoiserOutDiffRadianceHitDist;
     std::array<RefCntAutoPtr<ITexture>, kRTXPTDenoisingLayerCount> DenoiserOutSpecRadianceHitDist;
     RefCntAutoPtr<ITexture>                                        DenoiserOutValidation;
+    std::array<RefCntAutoPtr<ITexture>, kRTXPTDenoisingLayerCount> DenoiserHistoryConfidence;
     RefCntAutoPtr<ITexture>                                        DenoiserAvgLayerRadianceHalfRes;
     RefCntAutoPtr<ITexture>                                        RRDiffuseAlbedo, RRSpecAlbedo, RRNormalsAndRoughness, RRDepth, RRMotionVectors;
     RefCntAutoPtr<ITexture>                                        RRSpecMotionVectors;
@@ -527,12 +533,15 @@ bool RTXPTRenderTargets::Resize(IRenderDevice* pDevice, const RTXPTRenderTargetC
 
             for (Uint32 PlaneIndex = 0; PlaneIndex < kRTXPTDenoisingLayerCount; ++PlaneIndex)
             {
-                const std::string DiffName = "RTXPT DenoiserOutDiffRadianceHitDist[" + std::to_string(PlaneIndex) + "]";
-                const std::string SpecName = "RTXPT DenoiserOutSpecRadianceHitDist[" + std::to_string(PlaneIndex) + "]";
+                const std::string DiffName       = "RTXPT DenoiserOutDiffRadianceHitDist[" + std::to_string(PlaneIndex) + "]";
+                const std::string SpecName       = "RTXPT DenoiserOutSpecRadianceHitDist[" + std::to_string(PlaneIndex) + "]";
+                const std::string ConfidenceName = "RTXPT DenoiserHistoryConfidence[" + std::to_string(PlaneIndex) + "]";
                 if (!CreateZeroedTarget(pDevice, MakeTargetDesc(DiffName.c_str(), RenderWidth, RenderHeight, Formats.DenoiserOutDiffRadianceHitDist, UavFlags), Zeros, DenoiserOutDiffRadianceHitDist[PlaneIndex]))
                     return FailResize("Failed to create RTXPT DenoiserOutDiffRadianceHitDist");
                 if (!CreateZeroedTarget(pDevice, MakeTargetDesc(SpecName.c_str(), RenderWidth, RenderHeight, Formats.DenoiserOutSpecRadianceHitDist, UavFlags), Zeros, DenoiserOutSpecRadianceHitDist[PlaneIndex]))
                     return FailResize("Failed to create RTXPT DenoiserOutSpecRadianceHitDist");
+                if (!CreateZeroedTarget(pDevice, MakeTargetDesc(ConfidenceName.c_str(), RenderWidth, RenderHeight, Formats.DenoiserHistoryConfidence, UavFlags), Zeros, DenoiserHistoryConfidence[PlaneIndex]))
+                    return FailResize("Failed to create RTXPT DenoiserHistoryConfidence");
             }
 
             if (CreateDenoiserValidation &&
@@ -576,6 +585,7 @@ bool RTXPTRenderTargets::Resize(IRenderDevice* pDevice, const RTXPTRenderTargetC
     m_DenoiserOutDiffRadianceHitDist      = DenoiserOutDiffRadianceHitDist;
     m_DenoiserOutSpecRadianceHitDist      = DenoiserOutSpecRadianceHitDist;
     m_DenoiserOutValidation               = DenoiserOutValidation;
+    m_DenoiserHistoryConfidence           = DenoiserHistoryConfidence;
     m_DenoiserAvgLayerRadianceHalfRes     = DenoiserAvgLayerRadianceHalfRes;
     m_RRDiffuseAlbedo                     = RRDiffuseAlbedo;
     m_RRSpecAlbedo                        = RRSpecAlbedo;
@@ -653,6 +663,8 @@ bool RTXPTRenderTargets::HasRealtimeRenderTargets() const
         std::all_of(m_DenoiserOutDiffRadianceHitDist.begin(), m_DenoiserOutDiffRadianceHitDist.end(),
                     [](const RefCntAutoPtr<ITexture>& Texture) { return Texture != nullptr; }) &&
         std::all_of(m_DenoiserOutSpecRadianceHitDist.begin(), m_DenoiserOutSpecRadianceHitDist.end(),
+                    [](const RefCntAutoPtr<ITexture>& Texture) { return Texture != nullptr; }) &&
+        std::all_of(m_DenoiserHistoryConfidence.begin(), m_DenoiserHistoryConfidence.end(),
                     [](const RefCntAutoPtr<ITexture>& Texture) { return Texture != nullptr; });
 
     return m_PreviousDepth != nullptr &&
@@ -901,6 +913,16 @@ ITextureView* RTXPTRenderTargets::GetDenoiserSpecRadianceHitDistUAV() const { re
 ITextureView* RTXPTRenderTargets::GetDenoiserSpecRadianceHitDistSRV() const { return GetTextureSRV(m_DenoiserSpecRadianceHitDist); }
 ITextureView* RTXPTRenderTargets::GetDenoiserDisocclusionThresholdMixUAV() const { return GetTextureUAV(m_DenoiserDisocclusionThresholdMix); }
 ITextureView* RTXPTRenderTargets::GetDenoiserDisocclusionThresholdMixSRV() const { return GetTextureSRV(m_DenoiserDisocclusionThresholdMix); }
+
+ITextureView* RTXPTRenderTargets::GetDenoiserHistoryConfidenceUAV(Uint32 PlaneIndex) const
+{
+    return PlaneIndex < m_DenoiserHistoryConfidence.size() ? GetTextureUAV(m_DenoiserHistoryConfidence[PlaneIndex]) : nullptr;
+}
+
+ITextureView* RTXPTRenderTargets::GetDenoiserHistoryConfidenceSRV(Uint32 PlaneIndex) const
+{
+    return PlaneIndex < m_DenoiserHistoryConfidence.size() ? GetTextureSRV(m_DenoiserHistoryConfidence[PlaneIndex]) : nullptr;
+}
 
 ITextureView* RTXPTRenderTargets::GetDenoiserOutDiffRadianceHitDistUAV(Uint32 PlaneIndex) const
 {
