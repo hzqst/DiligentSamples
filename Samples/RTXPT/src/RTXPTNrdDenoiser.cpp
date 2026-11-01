@@ -29,6 +29,7 @@
 #include "DebugUtilities.hpp"
 
 #include "RTXPTRayTracingPass.hpp"
+#include "RTXPTGpuProfiler.hpp"
 
 namespace Diligent
 {
@@ -116,7 +117,7 @@ bool RTXPTNrdDenoiser::Prepare(IRenderDevice* pDevice, const RTXPTNrdIntegration
  * 3. The final merge remodulates the denoised radiance and adds it to the merge output.
  * The merge output is linear HDR. Attribs.PostProcess supplies the render targets and the merge output UAV.
  */
-bool RTXPTNrdDenoiser::Denoise(IDeviceContext* pContext, RTXPTPostProcessPass& PostProcess, const RTXPTNrdDenoiserFrameAttribs& Attribs)
+bool RTXPTNrdDenoiser::Denoise(IDeviceContext* pContext, RTXPTPostProcessPass& PostProcess, const RTXPTNrdDenoiserFrameAttribs& Attribs, RTXPTGpuProfiler* Profiler)
 {
     m_LastFailureReason.clear();
 
@@ -130,6 +131,11 @@ bool RTXPTNrdDenoiser::Denoise(IDeviceContext* pContext, RTXPTPostProcessPass& P
     const bool           bEnableValidation = pRenderTargets->GetDenoiserOutValidationUAV() != nullptr;
     const bool           bMergeValidation  = pRenderTargets->GetDenoiserOutValidationSRV() != nullptr;
 
+    using Stage = RTXPTGpuProfiler::Stage;
+    constexpr std::array<Stage, kRTXPTDenoisingLayerCount> PrepareStages{Stage::NrdPrepare0, Stage::NrdPrepare1, Stage::NrdPrepare2};
+    constexpr std::array<Stage, kRTXPTDenoisingLayerCount> DispatchStages{Stage::NrdDispatch0, Stage::NrdDispatch1, Stage::NrdDispatch2};
+    constexpr std::array<Stage, kRTXPTDenoisingLayerCount> MergeStages{Stage::NrdMerge0, Stage::NrdMerge1, Stage::NrdMerge2};
+
     bool bInitOutput = true;
     for (Uint32 LayerIndex = Attribs.LayerCount; LayerIndex-- > 0;)
     {
@@ -139,11 +145,13 @@ bool RTXPTNrdDenoiser::Denoise(IDeviceContext* pContext, RTXPTPostProcessPass& P
         PrepareAttribs.InitOutput                      = bInitOutput;
         PrepareAttribs.MiniConstants.params.x          = LayerIndex;
         PrepareAttribs.MiniConstants.params.y          = bInitOutput ? 1u : 0u;
-        if (!PostProcess.RunDenoiserPrepare(pContext, PrepareAttribs))
-            return Fail("Denoiser prepare dispatch failed");
-
+        {
+            RTXPTGpuProfiler::Scope Timing{Profiler, pContext, PrepareStages[LayerIndex]};
+            if (!PostProcess.RunDenoiserPrepare(pContext, PrepareAttribs))
+                return Fail("Denoiser prepare dispatch failed");
+            InsertDenoiserPrepareOutputBarriers(pContext, *pRenderTargets, Attribs.PostProcess.pMergeOutputUAV, LayerIndex);
+        }
         bInitOutput = false;
-        InsertDenoiserPrepareOutputBarriers(pContext, *pRenderTargets, Attribs.PostProcess.pMergeOutputUAV, LayerIndex);
 
         RTXPTNrdFrameAttribs NrdAttribs;
         NrdAttribs.pRenderTargets    = pRenderTargets;
@@ -155,11 +163,14 @@ bool RTXPTNrdDenoiser::Denoise(IDeviceContext* pContext, RTXPTPostProcessPass& P
         NrdAttribs.ResetHistory      = Attribs.ResetHistory;
         NrdAttribs.EnableValidation  = bEnableValidation;
         NrdAttribs.HistoryConfidence = Attribs.HistoryConfidence;
-        if (!m_Layers[LayerIndex].Dispatch(pContext, NrdAttribs))
         {
-            // The layer already reported the failure.
-            m_LastFailureReason = m_Layers[LayerIndex].GetLastFailureReason();
-            return false;
+            RTXPTGpuProfiler::Scope Timing{Profiler, pContext, DispatchStages[LayerIndex]};
+            if (!m_Layers[LayerIndex].Dispatch(pContext, NrdAttribs))
+            {
+                // The layer already reported the failure.
+                m_LastFailureReason = m_Layers[LayerIndex].GetLastFailureReason();
+                return false;
+            }
         }
 
         RTXPTDenoiserPostProcessAttribs MergeAttribs = Attribs.PostProcess;
@@ -168,10 +179,12 @@ bool RTXPTNrdDenoiser::Denoise(IDeviceContext* pContext, RTXPTPostProcessPass& P
         MergeAttribs.HasValidation                   = bMergeValidation;
         MergeAttribs.MiniConstants.params.x          = LayerIndex;
         MergeAttribs.MiniConstants.params.y          = bMergeValidation ? 1u : 0u;
-        if (!PostProcess.RunDenoiserFinalMerge(pContext, MergeAttribs))
-            return Fail("Denoiser final merge dispatch failed");
-
-        RTXPTRayTracingPass::InsertUAVBarrier(pContext, Attribs.PostProcess.pMergeOutputUAV);
+        {
+            RTXPTGpuProfiler::Scope Timing{Profiler, pContext, MergeStages[LayerIndex]};
+            if (!PostProcess.RunDenoiserFinalMerge(pContext, MergeAttribs))
+                return Fail("Denoiser final merge dispatch failed");
+            RTXPTRayTracingPass::InsertUAVBarrier(pContext, Attribs.PostProcess.pMergeOutputUAV);
+        }
     }
 
     return true;

@@ -38,6 +38,8 @@
 namespace Diligent
 {
 
+class RTXPTGpuProfiler;
+
 struct RTXPTNrdDenoiserFrameAttribs
 {
     // Render targets and merge output shared by every layer; the denoiser sets the per-layer fields.
@@ -63,7 +65,7 @@ public:
     // releases every layer, so the next successful call starts all histories from scratch.
     bool Prepare(IRenderDevice* pDevice, const RTXPTNrdIntegrationCreateInfo& CreateInfo);
 
-    bool Denoise(IDeviceContext* pContext, RTXPTPostProcessPass& PostProcess, const RTXPTNrdDenoiserFrameAttribs& Attribs);
+    bool Denoise(IDeviceContext* pContext, RTXPTPostProcessPass& PostProcess, const RTXPTNrdDenoiserFrameAttribs& Attribs, RTXPTGpuProfiler* Profiler = nullptr);
 
     bool IsReady() const;
     // The permanent and transient NRD pool textures of all layers.
