@@ -6,6 +6,7 @@
 #include <iomanip>
 #include <vector>
 #include "RTXPTEmbeddedRenderer.hpp"
+#include "RTXPTRealtimeRawPipeline.hpp"
 #include "RTXPTRealtimeSettings.hpp"
 #include "GraphicsAccessories.hpp"
 #include "RTXPTGpuProfiler.hpp"
@@ -35,7 +36,8 @@ public:
                      << ",\"render_size\":[" << Color.Size.Width << ',' << Color.Size.Height
                      << "],\"display_size\":[" << Color.Size.Width << ',' << Color.Size.Height
                      << "],\"spp\":1,\"sample_base_index\":" << Color.FrameIndex - 1
-                     << ",\"jitter\":[0,0],\"dynamic_motion_validated\":false,\"previous_surface_storage_bytes\":" << History.PreviousTransformStorageBytes + History.PreviousSkinnedRangeBytes
+                     << ",\"jitter\":[0,0],\"dynamic_motion_validated\":" << (View.GetRealtimeRawStats().DynamicMotionValidated ? "true" : "false")
+                     << ",\"previous_surface_storage_bytes\":" << History.PreviousTransformStorageBytes + History.PreviousSkinnedRangeBytes
                      << ",\"previous_skinned_range_bytes\":" << History.PreviousSkinnedRangeBytes
                      << ",\"skinned_arena_storage_bytes\":" << History.SkinnedVertexStorageBytes
                      << ",\"prepared_epoch\":" << History.Scene.Epoch << ",\"prepared_execution\":" << History.Scene.Execution

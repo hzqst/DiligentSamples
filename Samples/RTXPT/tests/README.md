@@ -15,8 +15,10 @@ row sizes. Binary outputs include current noisy HDR, encoded display, ray distan
 header planes and the actual packed surface buffer. The latter follows
 `PathTracer/DenoisingLayers.hlsli`; inactive records and padding are undefined.
 It is not a set of validated standalone NRD/RR input textures. Direct rigid/skinned
-correspondence has numerical tests below; complete dynamic/path-space validity
-remains explicitly unvalidated.
+surface motion and single planar reflection motion have host GPU numerical tests
+(see Prepared surface history below); the
+manifest's `dynamic_motion_validated` copies `RTXPTRealtimeRawStats` and does not
+mean that a denoiser or reconstructor consumed the inputs.
 
 ```text
 python tests/validate_realtime_capture.py <capture-directory>
@@ -56,8 +58,8 @@ previous instance transform. It retains the existing path-space motion transform
 Primary motion xyz remains current-to-previous render-local pixels with clip-w
 depth change in z. Its w is now one only for a direct rigid or skinned surface with valid
 surface and camera correspondence. It does not establish visibility/disocclusion
-validity. Reflected paths remain invalid here; the aggregate
-`DynamicMotionValidated` capability remains false. Hosts must explicitly use
+validity. Reflected paths are covered by the reflection paragraph below.
+Hosts must explicitly use
 Untracked when they cannot promise continuity. Reset is a discontinuity event;
 a subsequent Continuous frame can use the reset frame as its new baseline.
 
@@ -103,6 +105,24 @@ readback waits occur outside the queued sequence. These frame boundaries are
 required to retire dynamic descriptors in a headless test, just as in the host.
 The CPU history test and existing retry harness also verify that a skin write
 followed by BLAS failure, or later scene failure, cannot overwrite published data.
+
+A single reflection off a rigid planar mirror carries the previous mirror plane in
+the Build payload and stores the previous virtual position in each layer record;
+its w marks path history validity. The plane is used only when the hit triangle has
+a previous correspondence and an unchanged material, and the plane, vertex and
+shading normals agree. Refraction, multiple delta bounces, deforming or non-planar
+mirrors, missed rays and unknown correspondence are invalid. `SpecularMotion` is a
+separate render-size RGBA16F output with the primary motion convention; its w is
+one only for a supported reflection path. Primary w aggregates the validity of all
+retained paths, and light-feedback reprojection and the guide radiance history read
+it. Host GPU regression projects moving objects in a static mirror and static
+objects in a moving or rotating mirror through independent previous/current plane
+oracles with the same 0.25-pixel tolerance, and checks a diffuse-to-mirror material
+switch, reset/untracked recovery and the invalid cases above.
+
+With these tests `RTXPTRealtimeRawStats::DynamicMotionValidated` is true. It states
+that the motion and validity inputs above are correct for the supported paths; it
+does not cover denoiser, super-resolution or ray reconstruction consumption.
 
 ## Host failure notification
 
