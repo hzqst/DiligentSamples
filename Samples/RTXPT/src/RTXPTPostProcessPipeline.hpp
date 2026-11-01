@@ -35,6 +35,7 @@
 #include "RenderDevice.h"
 #include "RTXPTAccumulationPass.hpp"
 #include "RTXPTBloomPass.hpp"
+#include "RTXPTNrdDenoiser.hpp"
 #include "RTXPTPostProcessPass.hpp"
 #include "RTXPTRenderTargets.hpp"
 #include "RTXPTSuperResolutionPass.hpp"
@@ -92,17 +93,11 @@ public:
                          Uint32                    SampleIndex,
                          bool                      ResetAccumulation);
 
-    bool RunDenoiserPrepare(IDeviceContext*           pContext,
-                            const RTXPTRenderTargets& RenderTargets,
-                            RTXPTNrdMethod            Method,
-                            Uint32                    PlaneIndex,
-                            bool                      InitOutput);
-
-    bool RunDenoiserFinalMerge(IDeviceContext*           pContext,
-                               const RTXPTRenderTargets& RenderTargets,
-                               RTXPTNrdMethod            Method,
-                               Uint32                    PlaneIndex,
-                               bool                      HasValidation);
+    // Ignores Attribs.PostProcess: the realtime merge always targets the OutputColor of RenderTargets.
+    bool RunNrdDenoiser(IDeviceContext*                     pContext,
+                        const RTXPTRenderTargets&           RenderTargets,
+                        RTXPTNrdDenoiser&                   Denoiser,
+                        const RTXPTNrdDenoiserFrameAttribs& Attribs);
 
     bool RunNoDenoiserFinalMerge(IDeviceContext*           pContext,
                                  const RTXPTRenderTargets& RenderTargets);

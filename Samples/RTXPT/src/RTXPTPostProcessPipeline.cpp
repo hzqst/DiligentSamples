@@ -224,39 +224,17 @@ bool RTXPTPostProcessPipeline::RunAccumulation(IDeviceContext*           pContex
     return Executed;
 }
 
-bool RTXPTPostProcessPipeline::RunDenoiserPrepare(IDeviceContext*           pContext,
-                                                  const RTXPTRenderTargets& RenderTargets,
-                                                  RTXPTNrdMethod            Method,
-                                                  Uint32                    PlaneIndex,
-                                                  bool                      InitOutput)
+bool RTXPTPostProcessPipeline::RunNrdDenoiser(IDeviceContext*                     pContext,
+                                              const RTXPTRenderTargets&           RenderTargets,
+                                              RTXPTNrdDenoiser&                   Denoiser,
+                                              const RTXPTNrdDenoiserFrameAttribs& Attribs)
 {
-    RTXPTDenoiserPostProcessAttribs Attribs = MakeRealtimePostProcessAttribs(RenderTargets);
-    Attribs.Method                          = Method;
-    Attribs.PlaneIndex                      = PlaneIndex;
-    Attribs.InitOutput                      = InitOutput;
-    Attribs.MiniConstants.params.x          = PlaneIndex;
-    Attribs.MiniConstants.params.y          = InitOutput ? 1u : 0u;
-    return m_PostProcessPass.RunDenoiserPrepare(pContext, Attribs);
-}
+    RTXPTNrdDenoiserFrameAttribs DenoiserAttribs = Attribs;
+    DenoiserAttribs.PostProcess                  = MakeRealtimePostProcessAttribs(RenderTargets);
 
-bool RTXPTPostProcessPipeline::RunDenoiserFinalMerge(IDeviceContext*           pContext,
-                                                     const RTXPTRenderTargets& RenderTargets,
-                                                     RTXPTNrdMethod            Method,
-                                                     Uint32                    PlaneIndex,
-                                                     bool                      HasValidation)
-{
-    RTXPTDenoiserPostProcessAttribs Attribs = MakeRealtimePostProcessAttribs(RenderTargets);
-    Attribs.Method                          = Method;
-    Attribs.PlaneIndex                      = PlaneIndex;
-    Attribs.HasValidation                   = HasValidation;
-    Attribs.MiniConstants.params.x          = PlaneIndex;
-    Attribs.MiniConstants.params.y          = HasValidation ? 1u : 0u;
-
-    const bool Executed                 = m_PostProcessPass.RunDenoiserFinalMerge(pContext, Attribs);
+    const bool Executed                 = Denoiser.Denoise(pContext, m_PostProcessPass, DenoiserAttribs);
     m_Stats.RealtimeMergeStageReady     = m_PostProcessPass.IsReady();
     m_Stats.LastRealtimeFinalMergeReady = Executed;
-    if (!Executed)
-        DEV_ERROR("RTXPT denoiser final merge failed");
     return Executed;
 }
 

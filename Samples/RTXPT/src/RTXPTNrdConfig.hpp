@@ -30,6 +30,8 @@
 
 #if RTXPT_HAS_NRD
 
+#    include <string>
+
 #    include "NRD.h"
 #    include "NRDSettings.h"
 
@@ -46,6 +48,11 @@ bool        RTXPTIsNrdAvailable();
 nrd::Denoiser       RTXPTToNrdDenoiser(RTXPTNrdMethod Method);
 nrd::RelaxSettings  RTXPTMakeRelaxSettings(const RTXPTNrdRelaxUiSettings& Ui);
 nrd::ReblurSettings RTXPTMakeReblurSettings(const RTXPTNrdReblurUiSettings& Ui);
+
+// Appends the default search directories of the NRD shaders and headers. They are used only without a host
+// shader source (see RTXPTShaderSource.hpp): first shaders/NRD, where rtxpt_stage_shaders() deploys them,
+// then the source-tree directories a host may define for running from its source directory.
+void RTXPTAppendNrdShaderSearchDirs(std::string& SearchDirs);
 
 #endif
 
