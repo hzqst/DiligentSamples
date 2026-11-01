@@ -684,6 +684,7 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
     Args.Parse("nee_mis", m_ReferenceUI.NEEMISType);
     Args.Parse("nee_type", m_ReferenceUI.NEEType);
     Args.Parse("nee_candidates", m_ReferenceUI.NEECandidateSamples);
+    Args.Parse("reference_firefly", m_ReferenceUI.ReferenceFireflyFilterEnabled);
     m_ReferenceUI.NEECandidateSamples = std::clamp(m_ReferenceUI.NEECandidateSamples, 1, kNEEMaxSampleCount);
     m_ReferenceUI.NEEMISType          = std::clamp(m_ReferenceUI.NEEMISType, 0, 2);
     m_ReferenceUI.NEEType             = std::clamp(m_ReferenceUI.NEEType, 0, 2);
@@ -691,6 +692,7 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
     Args.Parse("scene", m_InitialSceneName);
     Args.Parse("scene_animations", m_RequestSceneAnimations);
     Args.Parse("nrd", m_RealtimeUI.StandaloneDenoiser);
+    Args.ParseEnum<RTXPTNrdMethod>("nrd_method", 0, {{"reblur", RTXPTNrdMethod::REBLUR}, {"relax", RTXPTNrdMethod::RELAX}}, m_RealtimeUI.NRDMethod);
     Args.Parse("rr_validation", m_ValidateRayReconstruction);
     Args.Parse("vk_rr", m_EnableVulkanRayReconstruction);
     Args.ParseEnum<RTXPTRealtimeAAMode>("aa", 0,
