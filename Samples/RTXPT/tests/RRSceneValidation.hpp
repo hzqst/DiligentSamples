@@ -111,10 +111,10 @@ void RTXPTSample::RunRayReconstructionValidation(double CurrTime)
         case 6:
         case 7:
         case 8:
-            if (m_pDevice->GetDeviceInfo().IsVulkanDevice())
+            if ((m_pDevice->GetTextureFormatInfoExt(TEX_FORMAT_RGB10A2_UNORM).BindFlags & BIND_UNORDERED_ACCESS) == 0)
             {
-                // Existing NRD RGB10A2 UAV allocation blocks these realtime modes.
-                LOG_WARNING_MESSAGE("RR validation: Vulkan NRD/TAA/SR mode regression skipped (existing RGB10A2 UAV support limitation)");
+                // NRD's normal/roughness input needs an RGB10A2 UAV; without it these realtime modes cannot allocate.
+                LOG_WARNING_MESSAGE("RR validation: NRD/TAA/SR mode regression skipped (RGB10A2 UAV unsupported)");
                 m_RealtimeUI.RealtimeMode = false;
                 break;
             }

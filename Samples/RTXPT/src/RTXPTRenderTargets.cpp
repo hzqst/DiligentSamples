@@ -26,6 +26,7 @@
 
 #include "RTXPTRenderTargets.hpp"
 #include "DebugUtilities.hpp"
+#include "GraphicsAccessories.hpp"
 
 #include <algorithm>
 
@@ -147,10 +148,37 @@ void RTXPTRenderTargets::Reset()
     m_Formats    = {};
 }
 
+void RTXPTCreateZeroedTexture2D(IRenderDevice* pDevice, const TextureDesc& Desc, std::vector<Uint8>& Zeros, ITexture** ppTexture)
+{
+    VERIFY(Desc.Type == RESOURCE_DIM_TEX_2D && Desc.MipLevels == 1 && Desc.SampleCount == 1, "Only single-mip, single-sample 2D textures are supported");
+    VERIFY(GetTextureFormatAttribs(Desc.Format).ComponentType != COMPONENT_TYPE_COMPRESSED, "Compressed formats are not supported");
+
+    const Uint64 RowBytes = Uint64{Desc.Width} * GetTextureFormatAttribs(Desc.Format).GetElementSize();
+    const size_t Bytes    = static_cast<size_t>(RowBytes * Desc.Height);
+    if (Zeros.size() < Bytes)
+        Zeros.resize(Bytes, 0);
+
+    TextureSubResData ZeroSubresource{Zeros.data(), RowBytes};
+    TextureData       InitData{&ZeroSubresource, 1};
+    pDevice->CreateTexture(Desc, &InitData, ppTexture);
+}
+
 bool RTXPTRenderTargets::CreateTarget(IRenderDevice* pDevice, const TextureDesc& Desc, RefCntAutoPtr<ITexture>& Target)
 {
     Target.Release();
     pDevice->CreateTexture(Desc, nullptr, &Target);
+    return ValidateTargetViews(Desc, Target);
+}
+
+bool RTXPTRenderTargets::CreateZeroedTarget(IRenderDevice* pDevice, const TextureDesc& Desc, std::vector<Uint8>& Zeros, RefCntAutoPtr<ITexture>& Target)
+{
+    Target.Release();
+    RTXPTCreateZeroedTexture2D(pDevice, Desc, Zeros, &Target);
+    return ValidateTargetViews(Desc, Target);
+}
+
+bool RTXPTRenderTargets::ValidateTargetViews(const TextureDesc& Desc, RefCntAutoPtr<ITexture>& Target)
+{
     if (!Target)
     {
         LOG_ERROR_MESSAGE("Failed to create ", Desc.Name);
@@ -482,31 +510,33 @@ bool RTXPTRenderTargets::Resize(IRenderDevice* pDevice, const RTXPTRenderTargetC
             return FailResize("Failed to create RTXPT ScratchFloat1");
         if (!CreateRayReconstructionResources)
         {
-            if (!CreateTarget(pDevice, MakeTargetDesc("RTXPT DenoiserViewspaceZ", RenderWidth, RenderHeight, Formats.DenoiserViewspaceZ, UavFlags), DenoiserViewspaceZ))
+            // NRD reads its inputs and outputs before every texel has been written; see RTXPTCreateZeroedTexture2D.
+            std::vector<Uint8> Zeros;
+            if (!CreateZeroedTarget(pDevice, MakeTargetDesc("RTXPT DenoiserViewspaceZ", RenderWidth, RenderHeight, Formats.DenoiserViewspaceZ, UavFlags), Zeros, DenoiserViewspaceZ))
                 return FailResize("Failed to create RTXPT DenoiserViewspaceZ");
-            if (!CreateTarget(pDevice, MakeTargetDesc("RTXPT DenoiserMotionVectors", RenderWidth, RenderHeight, Formats.DenoiserMotionVectors, UavFlags), DenoiserMotionVectors))
+            if (!CreateZeroedTarget(pDevice, MakeTargetDesc("RTXPT DenoiserMotionVectors", RenderWidth, RenderHeight, Formats.DenoiserMotionVectors, UavFlags), Zeros, DenoiserMotionVectors))
                 return FailResize("Failed to create RTXPT DenoiserMotionVectors");
-            if (!CreateTarget(pDevice, MakeTargetDesc("RTXPT DenoiserNormalRoughness", RenderWidth, RenderHeight, Formats.DenoiserNormalRoughness, UavFlags), DenoiserNormalRoughness))
+            if (!CreateZeroedTarget(pDevice, MakeTargetDesc("RTXPT DenoiserNormalRoughness", RenderWidth, RenderHeight, Formats.DenoiserNormalRoughness, UavFlags), Zeros, DenoiserNormalRoughness))
                 return FailResize("Failed to create RTXPT DenoiserNormalRoughness");
-            if (!CreateTarget(pDevice, MakeTargetDesc("RTXPT DenoiserDiffRadianceHitDist", RenderWidth, RenderHeight, Formats.DenoiserDiffRadianceHitDist, UavFlags), DenoiserDiffRadianceHitDist))
+            if (!CreateZeroedTarget(pDevice, MakeTargetDesc("RTXPT DenoiserDiffRadianceHitDist", RenderWidth, RenderHeight, Formats.DenoiserDiffRadianceHitDist, UavFlags), Zeros, DenoiserDiffRadianceHitDist))
                 return FailResize("Failed to create RTXPT DenoiserDiffRadianceHitDist");
-            if (!CreateTarget(pDevice, MakeTargetDesc("RTXPT DenoiserSpecRadianceHitDist", RenderWidth, RenderHeight, Formats.DenoiserSpecRadianceHitDist, UavFlags), DenoiserSpecRadianceHitDist))
+            if (!CreateZeroedTarget(pDevice, MakeTargetDesc("RTXPT DenoiserSpecRadianceHitDist", RenderWidth, RenderHeight, Formats.DenoiserSpecRadianceHitDist, UavFlags), Zeros, DenoiserSpecRadianceHitDist))
                 return FailResize("Failed to create RTXPT DenoiserSpecRadianceHitDist");
-            if (!CreateTarget(pDevice, MakeTargetDesc("RTXPT DenoiserDisocclusionThresholdMix", RenderWidth, RenderHeight, Formats.DenoiserDisocclusionThresholdMix, UavFlags), DenoiserDisocclusionThresholdMix))
+            if (!CreateZeroedTarget(pDevice, MakeTargetDesc("RTXPT DenoiserDisocclusionThresholdMix", RenderWidth, RenderHeight, Formats.DenoiserDisocclusionThresholdMix, UavFlags), Zeros, DenoiserDisocclusionThresholdMix))
                 return FailResize("Failed to create RTXPT DenoiserDisocclusionThresholdMix");
 
             for (Uint32 PlaneIndex = 0; PlaneIndex < kRTXPTDenoisingLayerCount; ++PlaneIndex)
             {
                 const std::string DiffName = "RTXPT DenoiserOutDiffRadianceHitDist[" + std::to_string(PlaneIndex) + "]";
                 const std::string SpecName = "RTXPT DenoiserOutSpecRadianceHitDist[" + std::to_string(PlaneIndex) + "]";
-                if (!CreateTarget(pDevice, MakeTargetDesc(DiffName.c_str(), RenderWidth, RenderHeight, Formats.DenoiserOutDiffRadianceHitDist, UavFlags), DenoiserOutDiffRadianceHitDist[PlaneIndex]))
+                if (!CreateZeroedTarget(pDevice, MakeTargetDesc(DiffName.c_str(), RenderWidth, RenderHeight, Formats.DenoiserOutDiffRadianceHitDist, UavFlags), Zeros, DenoiserOutDiffRadianceHitDist[PlaneIndex]))
                     return FailResize("Failed to create RTXPT DenoiserOutDiffRadianceHitDist");
-                if (!CreateTarget(pDevice, MakeTargetDesc(SpecName.c_str(), RenderWidth, RenderHeight, Formats.DenoiserOutSpecRadianceHitDist, UavFlags), DenoiserOutSpecRadianceHitDist[PlaneIndex]))
+                if (!CreateZeroedTarget(pDevice, MakeTargetDesc(SpecName.c_str(), RenderWidth, RenderHeight, Formats.DenoiserOutSpecRadianceHitDist, UavFlags), Zeros, DenoiserOutSpecRadianceHitDist[PlaneIndex]))
                     return FailResize("Failed to create RTXPT DenoiserOutSpecRadianceHitDist");
             }
 
             if (CreateDenoiserValidation &&
-                !CreateTarget(pDevice, MakeTargetDesc("RTXPT DenoiserOutValidation", RenderWidth, RenderHeight, Formats.DenoiserOutValidation, UavFlags), DenoiserOutValidation))
+                !CreateZeroedTarget(pDevice, MakeTargetDesc("RTXPT DenoiserOutValidation", RenderWidth, RenderHeight, Formats.DenoiserOutValidation, UavFlags), Zeros, DenoiserOutValidation))
                 return FailResize("Failed to create RTXPT DenoiserOutValidation");
         }
 
