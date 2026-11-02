@@ -18,7 +18,7 @@ function(add_rtxpt_library target)
         RTXPTEmissiveTrianglePass RTXPTRayTracingPass RTXPTSkinnedGeometry
         RTXPTSceneRuntime RTXPTSceneFrame RTXPTSceneImporter RTXPTComputePass
         RTXPTAccumulationPass RTXPTToneMappingPass RTXPTRenderTargets
-        RTXPTDenoisingGuidesBaker RTXPTPostProcessPass RTXPTRealtimePipeline
+        RTXPTDenoisingGuidesBaker RTXPTPostProcessPass RTXPTRealtimePipeline RTXPTSuperResolutionInputPass
         RTXPTNrdConfig RTXPTNrdIntegration RTXPTNrdDenoiser)
     set(source_files)
     foreach(source IN LISTS sources)

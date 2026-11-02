@@ -1394,3 +1394,82 @@ on 2026-10-29. Before the fix, the gray base-color assertion failed: expected
 0.107930 (linear gray times factor 0.5), actual 0.250980. The corrupt/missing-file
 diagnostics belong to the existing negative tests. Vulkan also reported that the
 installed validation layer (1.4.350) is older than the headers (1.4.363).
+
+## Realtime super resolution inputs (M4.2)
+
+`RTXPTSuperResolutionInputPass` converts the realtime guides of a view into the
+render-size inputs of a temporal upscaler, and `RTXPTSuperResolutionInputs.hpp` is
+the stateless adapter that turns a source-settings query and a prepared frame into a
+`SuperResolutionDesc` and `ExecuteSuperResolutionAttribs`. Neither executes an
+upscaler yet; the view that owns the factory, the feature and its jitter sequence
+comes with the RealtimeDLSSSR mode.
+
+- Depth (R32F): the dominant layer's ray distance along the frame's camera ray,
+  projected with `MatWorldToClipNoOffset` to forward [0, 1] depth (near < far).
+  It is the distance the motion vectors used, so a replaced primary surface yields
+  its virtual point. Sky, misses and non-finite or non-positive distances are far (1).
+- Motion (RG16F): primary motion xy, current-to-previous render pixels without
+  jitter, scale 1. Non-finite motion is 0.
+- Ignore-history mask (R8 UNORM): 1 on a surface whose primary motion w is not
+  positive or whose motion is non-finite. Build clears w when any retained layer
+  lacks history, so the mask is conservative rather than exact primary validity.
+  Sky keeps its camera motion and its history. DLSS receives it as its
+  current-color bias mask; Diligent documents R8_UINT, which no provider checks.
+- Exposure (1x1 R16F): 1, with `PreExposure` and `ExposureScale` 1 and neither auto
+  exposure nor sharpening, so display exposure stays with tone mapping.
+- Jitter: `ApplyJitter` stores the upscaler's render-pixel jitter in
+  `view.PixelOffset` and, with Y negated, in `camera.Jitter`, the convention of the
+  RR path. The camera samples at the pixel center minus the jitter, as a jittered
+  projection does; the matrices and the field of view are unchanged.
+
+`MakeDesc` rejects auto exposure, sharpening, non-HDR outputs and query results
+outside the provider's own minimum/maximum, since NGX itself accepts any size.
+`MakeExecuteAttribs` rejects a frame that was not traced at the input size with this
+jitter alone (display-size image, camera, viewport or motion scale, a jitter applied
+twice or with the other sign, micro-jitter, jitter beyond half a pixel), an inverted
+depth range, an output aliasing the color input and inputs prepared at another size.
+
+`SRPrepareInputsTest.cpp` runs the production pass and adapter on D3D12 or Vulkan
+with graphics validation. A synthetic BUILD shader writes the ray distance and
+motion of a plane with the production camera ray and motion helpers at an odd
+7x5 render size of an 11x8 display, so one 8x8 group exercises the bounds guard.
+An independent CPU pinhole oracle intersects the same plane through the jittered
+sample position and projects the point. Fifteen cases cover a front and a tilted
+plane (center and edge pixels), jitter only (motion 0), planes near the near and
+far planes and beyond the far plane, object motion, camera motion with jitter, a
+surface without correspondence, the sky under camera rotation, infinite, NaN and
+negative distances and NaN/infinite motion. Depth tolerance is 1e-5 and motion
+tolerance 0.25 pixel (FP16). The fixtures assert that the tilted corner pixel
+separates projected depth from a ray distance taken for view Z, and that the
+jitter changes the expected depth by more than ten times the tolerance.
+
+Replacing the jittered BUILD ray with the unjittered pinhole ray, writing a scaled
+ray distance as depth or masking the sky each make the test fail.
+
+From an x64 VS 2022 Developer Command Prompt at the DiligentEngine root, with a
+Debug DiligentCore build in `<core-build>`:
+
+```bat
+cl /nologo /std:c++17 /EHsc /MDd /D_DEBUG /DDEVELOPMENT /DPLATFORM_WIN32=1 /DNOMINMAX ^
+ /IDiligentCore\Platforms\Basic\interface /IDiligentCore\Primitives\interface /IDiligentCore\Common\interface ^
+ /IDiligentCore\Graphics\GraphicsEngine\interface /IDiligentCore\Graphics\GraphicsTools\interface /IDiligentCore\Graphics\GraphicsAccessories\interface ^
+ DiligentSamples\Samples\RTXPT\tests\SRPrepareInputsTest.cpp DiligentSamples\Samples\RTXPT\src\RTXPTSuperResolutionInputPass.cpp ^
+ /Fo"%TEMP%\\" /Fe"%TEMP%\SRPrepareInputsTest.exe" /link user32.lib ^
+ <core-build>\Graphics\GraphicsAccessories\Debug\Diligent-GraphicsAccessories.lib ^
+ <core-build>\Common\Debug\Diligent-Common.lib ^
+ <core-build>\Platforms\Basic\Debug\Diligent-BasicPlatform.lib ^
+ <core-build>\Platforms\Win32\Debug\Diligent-Win32Platform.lib
+```
+
+Run it from a directory with the engine and DXC runtime DLLs, for example
+`<core-build>\Tests\DiligentCoreAPITest\Debug`:
+
+```bat
+"%TEMP%\SRPrepareInputsTest.exe" "%CD%\GraphicsEngineD3D12_64d.dll" <DiligentEngine>\DiligentSamples\Samples\RTXPT\shaders
+"%TEMP%\SRPrepareInputsTest.exe" "%CD%\GraphicsEngineVk_64d.dll" <DiligentEngine>\DiligentSamples\Samples\RTXPT\shaders
+```
+
+Both passed on RTX 5060 / Windows, Debug, 2026-11-02. Not covered here: alpha-masked
+surfaces and surface replacement through a real BUILD dispatch, the host
+viewport/guard pixels of final composition, and the jitter sign against an actual
+DLSS evaluation; they need the RealtimeDLSSSR view.
