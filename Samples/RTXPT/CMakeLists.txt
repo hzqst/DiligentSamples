@@ -136,7 +136,6 @@ set(SHADERS
     shaders/PostProcessing/RTXPTAccumulation.csh
     shaders/PostProcessing/RTXPTPostProcess.csh
     shaders/PostProcessing/RTXPTTemporalAAInputs.csh
-    shaders/PostProcessing/RTXPTSuperResolutionMotion.csh
     shaders/PostProcessing/RTXPTSuperResolutionInputs.csh
     shaders/PostProcessing/RTXPTDenoiserNRD.hlsli
     shaders/PostProcessing/RTXPTBloomShared.h
