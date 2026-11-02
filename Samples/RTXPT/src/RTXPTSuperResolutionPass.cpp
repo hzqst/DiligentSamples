@@ -277,10 +277,10 @@ RTXPTSuperResolutionFrameDesc RTXPTSuperResolutionPass::ResolveFrameDesc(const R
     SRAttribs.OptimizationType = Settings.OptimizationType;
 
     SuperResolutionSourceSettings SRSettings;
-    m_Factory->GetSourceSettings(SRAttribs, SRSettings);
-    if (SRSettings.OptimalInputWidth == 0 || SRSettings.OptimalInputHeight == 0)
+    if (!m_Factory->GetSourceSettings(SRAttribs, SRSettings))
     {
-        DEV_ERROR("RTXPT super resolution source settings are invalid");
+        // The provider never substitutes another quality mode; report the unavailable selection.
+        m_Stats.DisabledReason = "super resolution quality mode unavailable for the output resolution";
         return DirectFrameDesc;
     }
 
@@ -585,7 +585,9 @@ bool RTXPTSuperResolutionPass::Execute(IDeviceContext* pContext, const RTXPTSupe
     if (Attribs.pMotionVectorsSRV == nullptr)
         return FailExecute("super resolution converted motion vectors SRV is null");
 
-    m_Upscaler->Execute(Attribs);
+    if (!m_Upscaler->Execute(Attribs))
+        return FailExecute("super resolution upscaler execute failed");
+
     m_Stats.DisabledReason.clear();
     m_Stats.LastExecute = true;
     ++m_Stats.ExecuteCount;
