@@ -61,6 +61,8 @@ set(INCLUDE
     src/RTXPTSuperResolutionPass.hpp
     src/RTXPTRayReconstructionPass.hpp
     src/RTXPTRayReconstructionInputs.hpp
+    src/RTXPTSuperResolutionInputPass.hpp
+    src/RTXPTSuperResolutionInputs.hpp
     src/RTXPTTemporalAAPass.hpp
     src/RTXPTToneMappingPass.hpp
     src/RTXPTBlitPass.hpp
@@ -134,6 +136,7 @@ set(SHADERS
     shaders/PostProcessing/RTXPTPostProcess.csh
     shaders/PostProcessing/RTXPTTemporalAAInputs.csh
     shaders/PostProcessing/RTXPTSuperResolutionMotion.csh
+    shaders/PostProcessing/RTXPTSuperResolutionInputs.csh
     shaders/PostProcessing/RTXPTDenoiserNRD.hlsli
     shaders/PostProcessing/RTXPTBloomShared.h
     shaders/PostProcessing/RTXPTBloomCopy.psh
