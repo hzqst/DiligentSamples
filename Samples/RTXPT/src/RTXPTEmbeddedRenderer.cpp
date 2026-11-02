@@ -13,6 +13,7 @@
 #include "RTXPTRealtimePipeline.hpp"
 #include "RTXPTNrdConfig.hpp"
 #include "RTXPTShaderSource.hpp"
+#include "RTXPTSuperResolutionInputs.hpp"
 #include "RenderStateCache.h"
 #include "PipelineStateCache.h"
 #include "ArchiverFactoryLoader.h"
@@ -28,6 +29,17 @@ namespace
 //Next event estimation of the reference tracer: light candidates sampled per vertex, and how many of them are traced.
 constexpr Uint32 kNEECandidateSamples = 5;
 constexpr Uint32 kNEEFullSamples      = 1;
+
+SUPER_RESOLUTION_OPTIMIZATION_TYPE ToOptimizationType(RTXPTUpscaleQuality Quality)
+{
+    switch (Quality)
+    {
+        case RTXPTUpscaleQuality::Quality: return SUPER_RESOLUTION_OPTIMIZATION_TYPE_HIGH_QUALITY;
+        case RTXPTUpscaleQuality::Balanced: return SUPER_RESOLUTION_OPTIMIZATION_TYPE_BALANCED;
+        case RTXPTUpscaleQuality::Performance: return SUPER_RESOLUTION_OPTIMIZATION_TYPE_HIGH_PERFORMANCE;
+    }
+    return SUPER_RESOLUTION_OPTIMIZATION_TYPE_COUNT;
+}
 } // namespace
 
 struct RTXPTEmbeddedScene::Impl
@@ -177,14 +189,18 @@ struct RTXPTEmbeddedView::Impl
     RTXPTToneMappingPass               ToneMapping;
     RTXPTToneMappingParameters         ToneParameters;
     RTXPTRealtimePipeline              Realtime;
-    RTXPTPreparedSceneToken            LastScene;
-    RTXPTViewHistoryInfo               History;
-    RTXPTViewMode                      Mode = RTXPTViewMode::Reference;
-    RTXPTLightsBakerSettings           Lighting;
-    PathTracerCameraData               PreviousCamera{};
-    PathTracerViewData                 PreviousView{};
-    double                             PreviousTime{};
-    Uint32                             Width{}, Height{}, FrameIndex{}, Samples{};
+    //RealtimeDLSSSR: the factory that created the upscaler is kept for the feature's lifetime.
+    RefCntAutoPtr<ISuperResolutionFactory> SuperResolutionFactory;
+    RefCntAutoPtr<ISuperResolution>        Upscaler;
+    RTXPTViewSuperResolutionInfo           SuperResolution;
+    RTXPTPreparedSceneToken                LastScene;
+    RTXPTViewHistoryInfo                   History;
+    RTXPTViewMode                          Mode = RTXPTViewMode::Reference;
+    RTXPTLightsBakerSettings               Lighting;
+    PathTracerCameraData                   PreviousCamera{};
+    PathTracerViewData                     PreviousView{};
+    double                                 PreviousTime{};
+    Uint32                                 Width{}, Height{}, DisplayWidth{}, DisplayHeight{}, FrameIndex{}, Samples{};
     //The scene frame revisions this view's light sampling and history last followed.
     Uint64           LightingRevision{}, EmissiveRevision{}, ContentRevision{};
     bool             LightsBakerReady{};
@@ -193,7 +209,8 @@ struct RTXPTEmbeddedView::Impl
     bool             EnableProfiling{};
     RTXPTGpuProfiler Profiler;
 
-    bool IsRealtime() const { return Mode == RTXPTViewMode::RealtimeRaw || Mode == RTXPTViewMode::RealtimeNative; }
+    bool IsRealtime() const { return Mode != RTXPTViewMode::Reference; }
+    bool IsDenoised() const { return Mode == RTXPTViewMode::RealtimeNative || Mode == RTXPTViewMode::RealtimeDLSSSR; }
 
     void AcceptFrame(const PathTracerCameraData& Camera, const PathTracerViewData& View, double Time, Uint32 SampleCount, Uint64 Revision, const RTXPTPreparedSceneToken& Prepared)
     {
@@ -286,13 +303,50 @@ struct RTXPTEmbeddedView::Impl
         return Rays.Bind(Context, Bindings);
     }
 
+    //Selects the DLSS variant, queries exactly the requested quality for the display size and creates the feature for
+    //the queried input size, which becomes the render size. Nothing is created for an unsupported query.
+    RTXPTErrorCode CreateUpscaler(ISuperResolutionFactory* Factory, RTXPTUpscaleQuality Quality)
+    {
+        SuperResolutionInfo Variant;
+        if (Factory == nullptr || !RTXPTSuperResolutionInputs::FindDLSSVariant(*Factory, Variant))
+            return RTXPTErrorCode::SuperResolutionUnavailable;
+        SuperResolutionSourceSettingsAttribs Query;
+        Query.VariantId        = Variant.VariantId;
+        Query.OutputWidth      = DisplayWidth;
+        Query.OutputHeight     = DisplayHeight;
+        Query.OutputFormat     = RTXPTRenderTargetFormats{}.ProcessedOutputColor;
+        Query.Flags            = SUPER_RESOLUTION_FLAG_NONE;
+        Query.OptimizationType = ToOptimizationType(Quality);
+        SuperResolutionSourceSettings Source;
+        SuperResolutionDesc           Desc;
+        if (Query.OptimizationType == SUPER_RESOLUTION_OPTIMIZATION_TYPE_COUNT || !Factory->GetSourceSettings(Query, Source) ||
+            !RTXPTSuperResolutionInputs::MakeDesc(Query, Source, Desc))
+            return RTXPTErrorCode::SuperResolutionQueryFailed;
+        Factory->CreateSuperResolution(Desc, &Upscaler);
+        if (!Upscaler)
+            return RTXPTErrorCode::SuperResolutionCreateFailed;
+        SuperResolutionFactory      = Factory;
+        Width                       = Desc.InputWidth;
+        Height                      = Desc.InputHeight;
+        SuperResolution.Variant     = Variant.Name;
+        SuperResolution.Quality     = Quality;
+        SuperResolution.RenderSize  = {Width, Height};
+        SuperResolution.DisplaySize = {DisplayWidth, DisplayHeight};
+        return RTXPTErrorCode::Ok;
+    }
+
     bool CreateTarget(const char* Name, TEXTURE_FORMAT Format, BIND_FLAGS Flags, RefCntAutoPtr<ITexture>& Target)
+    {
+        return CreateTarget(Name, Format, Flags, Width, Height, Target);
+    }
+
+    bool CreateTarget(const char* Name, TEXTURE_FORMAT Format, BIND_FLAGS Flags, Uint32 TargetWidth, Uint32 TargetHeight, RefCntAutoPtr<ITexture>& Target)
     {
         TextureDesc Desc;
         Desc.Name      = Name;
         Desc.Type      = RESOURCE_DIM_TEX_2D;
-        Desc.Width     = Width;
-        Desc.Height    = Height;
+        Desc.Width     = TargetWidth;
+        Desc.Height    = TargetHeight;
         Desc.MipLevels = 1;
         Desc.Format    = Format;
         Desc.BindFlags = Flags | BIND_SHADER_RESOURCE;
@@ -307,29 +361,41 @@ RTXPTEmbeddedView::~RTXPTEmbeddedView() = default;
 
 RTXPTErrorCode RTXPTEmbeddedView::Initialize(IRenderDevice* Device, IDeviceContext* Context, const RTXPTEmbeddedViewCreateInfo& CreateInfo)
 {
-    m_Impl             = std::make_unique<Impl>();
-    auto& R            = *m_Impl;
-    R.EnableProfiling  = CreateInfo.EnableProfiling;
-    const Uint32 Width = CreateInfo.RenderSize.Width, Height = CreateInfo.RenderSize.Height;
+    m_Impl                      = std::make_unique<Impl>();
+    auto& R                     = *m_Impl;
+    R.EnableProfiling           = CreateInfo.EnableProfiling;
+    const bool bSuperResolution = CreateInfo.Mode == RTXPTViewMode::RealtimeDLSSSR;
     if (!Device || !Context || !CreateInfo.Shaders || !CreateInfo.Cache || !CreateInfo.Scene || !CreateInfo.Scene->IsReady() ||
-        !Width || !Height || !CreateInfo.DisplaySize.Width || !CreateInfo.DisplaySize.Height)
+        !CreateInfo.DisplaySize.Width || !CreateInfo.DisplaySize.Height ||
+        (!bSuperResolution && (!CreateInfo.RenderSize.Width || !CreateInfo.RenderSize.Height)))
         return RTXPTErrorCode::InvalidArgument;
-    if (Width != CreateInfo.DisplaySize.Width || Height != CreateInfo.DisplaySize.Height ||
-        CreateInfo.DisplayRTVFormat != TEX_FORMAT_RGBA8_UNORM_SRGB ||
+    const bool bRenderSizeValid = bSuperResolution ?
+        CreateInfo.RenderSize.Width == 0 && CreateInfo.RenderSize.Height == 0 :
+        CreateInfo.RenderSize.Width == CreateInfo.DisplaySize.Width && CreateInfo.RenderSize.Height == CreateInfo.DisplaySize.Height;
+    if (!bRenderSizeValid || CreateInfo.DisplayRTVFormat != TEX_FORMAT_RGBA8_UNORM_SRGB ||
         (CreateInfo.Mode != RTXPTViewMode::Reference && CreateInfo.Mode != RTXPTViewMode::RealtimeRaw &&
-         CreateInfo.Mode != RTXPTViewMode::RealtimeNative))
+         CreateInfo.Mode != RTXPTViewMode::RealtimeNative && !bSuperResolution))
         return RTXPTErrorCode::UnsupportedViewConfiguration;
-    if (CreateInfo.Mode == RTXPTViewMode::RealtimeNative && !RTXPTIsNrdAvailable())
+    R.Mode = CreateInfo.Mode;
+    if (R.IsDenoised() && !RTXPTIsNrdAvailable())
         return RTXPTErrorCode::DenoiserUnavailable;
-    const auto& S = *CreateInfo.Scene->m_Impl;
-    R.Cache       = CreateInfo.Cache;
-    R.PSOCache    = CreateInfo.PSOCache;
-    R.Scene       = &S;
-    R.Device      = Device;
-    R.Context     = Context;
-    R.Width       = Width;
-    R.Height      = Height;
-    R.Mode        = CreateInfo.Mode;
+    R.DisplayWidth  = CreateInfo.DisplaySize.Width;
+    R.DisplayHeight = CreateInfo.DisplaySize.Height;
+    R.Width         = CreateInfo.RenderSize.Width;
+    R.Height        = CreateInfo.RenderSize.Height;
+    if (bSuperResolution)
+    {
+        const auto Code = R.CreateUpscaler(CreateInfo.SuperResolutionFactory, CreateInfo.UpscaleQuality);
+        if (Code != RTXPTErrorCode::Ok)
+            return Code;
+    }
+    const Uint32 Width = R.Width, Height = R.Height;
+    const auto&  S = *CreateInfo.Scene->m_Impl;
+    R.Cache        = CreateInfo.Cache;
+    R.PSOCache     = CreateInfo.PSOCache;
+    R.Scene        = &S;
+    R.Device       = Device;
+    R.Context      = Context;
     RTXPTShaderSourceScope ShaderScope{CreateInfo.Shaders};
     auto*                  Factory = Device->GetEngineFactory();
     BufferDesc             ConstantsDesc;
@@ -348,7 +414,7 @@ RTXPTErrorCode RTXPTEmbeddedView::Initialize(IRenderDevice* Device, IDeviceConte
          !R.CreateTarget("RTXPT accumulated", TEX_FORMAT_RGBA32_FLOAT, BIND_UNORDERED_ACCESS, R.Accumulated) ||
          !R.CreateTarget("RTXPT processed", TEX_FORMAT_RGBA16_FLOAT, BIND_UNORDERED_ACCESS, R.Processed)))
         return RTXPTErrorCode::FrameTargetsFailed;
-    if (!R.CreateTarget("RTXPT display output", TEX_FORMAT_RGBA8_TYPELESS, BIND_RENDER_TARGET, R.Output))
+    if (!R.CreateTarget("RTXPT display output", TEX_FORMAT_RGBA8_TYPELESS, BIND_RENDER_TARGET, R.DisplayWidth, R.DisplayHeight, R.Output))
         return RTXPTErrorCode::FrameTargetsFailed;
     //Encode once on the RTV. The UNORM SRV lets the host copy encoded display bytes without decoding them again.
     TextureViewDesc DisplayView;
@@ -390,12 +456,15 @@ RTXPTErrorCode RTXPTEmbeddedView::Initialize(IRenderDevice* Device, IDeviceConte
         RealtimeCI.Width             = Width;
         RealtimeCI.Height            = Height;
         RealtimeCI.DisplayFormat     = CreateInfo.DisplayRTVFormat;
-        RealtimeCI.Denoiser          = R.Mode == RTXPTViewMode::RealtimeNative ? RTXPTRealtimeDenoiser::NrdRelax : RTXPTRealtimeDenoiser::None;
+        RealtimeCI.Denoiser          = R.IsDenoised() ? RTXPTRealtimeDenoiser::NrdRelax : RTXPTRealtimeDenoiser::None;
         RealtimeCI.HistoryConfidence = CreateInfo.NativeHistoryConfidence;
+        RealtimeCI.SuperResolution   = bSuperResolution;
+        RealtimeCI.DisplayWidth      = bSuperResolution ? R.DisplayWidth : 0;
+        RealtimeCI.DisplayHeight     = bSuperResolution ? R.DisplayHeight : 0;
         const auto Code              = R.Realtime.Initialize(RealtimeCI);
         if (Code != RTXPTErrorCode::Ok)
             return Code;
-        //Native publishes the merged output as DenoisedRadiance, never as current-frame noisy radiance.
+        //Native and DLSSSR publish the merged output as DenoisedRadiance, never as current-frame noisy radiance.
         if (R.Mode == RTXPTViewMode::RealtimeRaw)
             R.Radiance = R.Realtime.GetTargets().GetOutputColorSRV()->GetTexture();
     }
@@ -427,6 +496,17 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
     if (Camera.ViewportWidth != R.Width || Camera.ViewportHeight != R.Height ||
         View.ViewportSize.x != float(R.Width) || View.ViewportSize.y != float(R.Height))
         return RTXPTErrorCode::InvalidArgument;
+    //DLSSSR alone jitters the camera, once, by the sample its feature requests for this successful frame.
+    PathTracerCameraData FrameCamera = Camera;
+    PathTracerViewData   FrameView   = View;
+    float2               Jitter{0, 0};
+    if (R.Upscaler)
+    {
+        if (Camera.Jitter != float2{0, 0} || View.PixelOffset != float2{0, 0})
+            return RTXPTErrorCode::InvalidArgument;
+        R.Upscaler->GetJitterOffset(R.FrameIndex, Jitter.x, Jitter.y);
+        RTXPTSuperResolutionInputs::ApplyJitter(Jitter, FrameCamera, FrameView);
+    }
     const auto&            S     = *R.Scene;
     const RTXPTSceneFrame& Frame = S.Frames.GetFrame();
     if (!Frame.pTLAS || !Frame.Prepared.IsValid())
@@ -443,9 +523,9 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
             std::memcmp(&View, &R.PreviousView, sizeof(View)) != 0 || Frame.Snapshot->ContentRevision != R.ContentRevision;
     const Uint32    Samples = ResetHistory ? 1u : R.Samples + 1u;
     SampleConstants Constants;
-    Constants.view                      = View;
-    Constants.previousView              = ResetHistory ? View : R.PreviousView;
-    Constants.camera                    = Camera;
+    Constants.view                      = FrameView;
+    Constants.previousView              = ResetHistory ? FrameView : R.PreviousView;
+    Constants.camera                    = FrameCamera;
     Constants.viewProj                  = View.MatWorldToClip;
     Constants.viewProjInv               = View.MatClipToWorldNoOffset;
     Constants.cameraPositionAndTime     = float4{Camera.PosW, float(Time)};
@@ -457,8 +537,8 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
     PT.sampleBaseIndex                  = Samples;
     PT.sampleIndex                      = Samples;
     PT.resetAccumulation                = ResetHistory;
-    PT.camera                           = Camera;
-    PT.prevCamera                       = ResetHistory ? Camera : R.PreviousCamera;
+    PT.camera                           = FrameCamera;
+    PT.prevCamera                       = ResetHistory ? FrameCamera : R.PreviousCamera;
     PT.analyticLightCount               = Frame.pLights->GetStats().LightCount;
     PT.environmentNEEEnabled            = (Frame.pLights->GetEmissiveTriangleCount() << 1u) | (S.EnvironmentSettings.Enabled ? 1u : 0u);
     Constants.envMap                    = S.Environment.GetConstants();
@@ -474,13 +554,29 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
         RTXPTRealtimeHistoryAttribs RealtimeHistory;
         RealtimeHistory.Reset            = ResetHistory;
         RealtimeHistory.TimeDeltaSeconds = !ResetHistory && Time > R.PreviousTime ? static_cast<float>(Time - R.PreviousTime) : -1.0f;
+        RealtimeHistory.Upscaler         = R.Upscaler;
         auto       Timing                = R.Profiler.BeginFrame(R.Device, R.Context, R.EnableProfiling, {}, R.FrameIndex + 1);
+        const auto ExecutesBefore        = R.Realtime.GetStats().SuperResolutionExecutes;
         const auto Code                  = R.Realtime.Render(R.Context, R.Rays, R.LightsBaker, Constants, ToneParameters, RealtimeHistory, R.DisplayRTV, &R.Profiler);
+        if (Code == RTXPTErrorCode::SuperResolutionInputsFailed || Code == RTXPTErrorCode::SuperResolutionExecuteFailed)
+        {
+            ++R.SuperResolution.Failures;
+            //DLSS creates its feature with the first Execute, so a failure before any accepted one is a creation failure.
+            if (Code == RTXPTErrorCode::SuperResolutionExecuteFailed && ExecutesBefore == 0)
+                return RTXPTErrorCode::SuperResolutionCreateFailed;
+        }
         if (Code != RTXPTErrorCode::Ok)
             return Code;
         R.History.CameraCorrespondenceValid = CameraCorrespondenceValid;
         R.History.LightFeedbackReset        = FeedbackReset;
-        R.AcceptFrame(Camera, View, Time, 0, Frame.Snapshot->ContentRevision, Frame.Prepared);
+        if (R.Upscaler)
+        {
+            R.SuperResolution.Jitter    = Jitter;
+            R.SuperResolution.LastReset = ResetHistory;
+            R.SuperResolution.Executes  = R.Realtime.GetStats().SuperResolutionExecutes;
+            R.SuperResolution.Resets    = R.Realtime.GetStats().SuperResolutionResets;
+        }
+        R.AcceptFrame(FrameCamera, FrameView, Time, 0, Frame.Snapshot->ContentRevision, Frame.Prepared);
         return RTXPTErrorCode::Ok;
     }
     {
@@ -538,7 +634,9 @@ RTXPTViewOutputInfo RTXPTEmbeddedView::GetOutputInfo(RTXPTViewOutput Output, Uin
     RTXPTViewOutputInfo Info;
     ITexture*           Texture   = nullptr;
     const auto&         Targets   = R.Realtime.GetTargets();
-    const bool          bNative   = R.Mode == RTXPTViewMode::RealtimeNative;
+    const bool          bNative   = R.IsDenoised();
+    const bool          bUpscaled = R.Mode == RTXPTViewMode::RealtimeDLSSSR;
+    const auto&         SRInputs  = R.Realtime.GetSuperResolutionInputs();
     const auto          TextureOf = [](ITextureView* View) -> ITexture* {
         return View ? View->GetTexture() : nullptr;
     };
@@ -560,6 +658,10 @@ RTXPTViewOutputInfo RTXPTEmbeddedView::GetOutputInfo(RTXPTViewOutput Output, Uin
         case RTXPTViewOutput::AverageLayerRadiance: Texture = TextureOf(Targets.GetDenoiserAvgLayerRadianceHalfResSRV()); break;
         case RTXPTViewOutput::LayerHeader: Texture = TextureOf(Targets.GetDenoisingLayersHeaderSRV()); break;
         case RTXPTViewOutput::LayerHistoryConfidence: Texture = bNative ? TextureOf(Targets.GetDenoiserHistoryConfidenceSRV(Layer)) : nullptr; break;
+        case RTXPTViewOutput::UpscaledRadiance: Texture = bUpscaled ? TextureOf(Targets.GetProcessedOutputColorSRV()) : nullptr; break;
+        case RTXPTViewOutput::SuperResolutionDepth: Texture = bUpscaled ? TextureOf(SRInputs.GetDepthSRV()) : nullptr; break;
+        case RTXPTViewOutput::SuperResolutionMotion: Texture = bUpscaled ? TextureOf(SRInputs.GetMotionVectorsSRV()) : nullptr; break;
+        case RTXPTViewOutput::SuperResolutionIgnoreHistoryMask: Texture = bUpscaled ? TextureOf(SRInputs.GetIgnoreHistoryMaskSRV()) : nullptr; break;
         default: return Info;
     }
     if (!Texture)
@@ -573,13 +675,16 @@ RTXPTViewOutputInfo RTXPTEmbeddedView::GetOutputInfo(RTXPTViewOutput Output, Uin
     Info.FrameIndex     = Info.Valid ? R.FrameIndex : 0;
     return Info;
 }
-const RTXPTViewHistoryInfo& RTXPTEmbeddedView::GetHistoryInfo() const { return m_Impl->History; }
-RTXPTGpuProfiler&           RTXPTEmbeddedView::GetProfiler() { return m_Impl->Profiler; }
-Uint32                      RTXPTEmbeddedView::GetTraceCount() const { return m_Impl->Rays.GetStats().TraceCount; }
-Uint32                      RTXPTEmbeddedView::GetAccumulationCount() const { return m_Impl->Samples; }
-RTXPTViewMode               RTXPTEmbeddedView::GetMode() const { return m_Impl->Mode; }
-const RTXPTRealtimeStats&   RTXPTEmbeddedView::GetRealtimeStats() const { return m_Impl->Realtime.GetStats(); }
-IBuffer*                    RTXPTEmbeddedView::GetRealtimeLayerBuffer() const
+const RTXPTViewHistoryInfo&         RTXPTEmbeddedView::GetHistoryInfo() const { return m_Impl->History; }
+RTXPTGpuProfiler&                   RTXPTEmbeddedView::GetProfiler() { return m_Impl->Profiler; }
+Uint32                              RTXPTEmbeddedView::GetTraceCount() const { return m_Impl->Rays.GetStats().TraceCount; }
+Uint32                              RTXPTEmbeddedView::GetAccumulationCount() const { return m_Impl->Samples; }
+RTXPTViewMode                       RTXPTEmbeddedView::GetMode() const { return m_Impl->Mode; }
+RTXPTViewSize                       RTXPTEmbeddedView::GetRenderSize() const { return {m_Impl->Width, m_Impl->Height}; }
+RTXPTViewSize                       RTXPTEmbeddedView::GetDisplaySize() const { return {m_Impl->DisplayWidth, m_Impl->DisplayHeight}; }
+const RTXPTViewSuperResolutionInfo& RTXPTEmbeddedView::GetSuperResolutionInfo() const { return m_Impl->SuperResolution; }
+const RTXPTRealtimeStats&           RTXPTEmbeddedView::GetRealtimeStats() const { return m_Impl->Realtime.GetStats(); }
+IBuffer*                            RTXPTEmbeddedView::GetRealtimeLayerBuffer() const
 {
     return m_Impl->OutputValid ? m_Impl->Realtime.GetTargets().GetDenoisingLayersBuffer() : nullptr;
 }

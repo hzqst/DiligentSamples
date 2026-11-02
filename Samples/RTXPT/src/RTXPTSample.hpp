@@ -142,10 +142,23 @@ private:
     bool                                   m_RealtimeNativeEnabled = false;
     std::unique_ptr<RTXPTRealtimePipeline> m_SharedRealtime;
 
-    bool                                RunEmbeddedReference();
-    bool                                m_UseEmbeddedReference = false;
+    //RealtimeDLSSSR: the device's super resolution factory, shared by the embedded views.
+    RefCntAutoPtr<ISuperResolutionFactory> m_EmbeddedSuperResolutionFactory;
+    //--sr_validation: S05-S08 of the RealtimeDLSSSR views on the Sample's scene, run once, then the Sample exits.
+    void   RunSuperResolutionValidation();
+    bool   m_ValidateSuperResolution           = false;
+    bool   m_SuperResolutionValidationDone     = false;
+    Uint32 m_SuperResolutionValidationFailures = 0;
+
+    //--embedded_reference and --embedded_mode render the Sample's scene through one embedded view of that mode.
+    bool                                RunEmbeddedView();
+    bool                                EnsureEmbeddedScene(IShaderSourceInputStreamFactory* Shaders);
+    void                                CreateEmbeddedShaderSource(IShaderSourceInputStreamFactory** Shaders) const;
+    bool                                m_UseEmbeddedView        = false;
+    RTXPTViewMode                       m_EmbeddedMode           = RTXPTViewMode::Reference;
+    RTXPTUpscaleQuality                 m_EmbeddedUpscaleQuality = RTXPTUpscaleQuality::Quality;
     std::unique_ptr<RTXPTEmbeddedScene> m_EmbeddedScene; // Outlives resizes, which recreate only the view.
-    std::unique_ptr<RTXPTEmbeddedView>  m_EmbeddedReference;
+    std::unique_ptr<RTXPTEmbeddedView>  m_EmbeddedView;
     RefCntAutoPtr<IRenderStateCache>    m_pEmbeddedStateCache; // Outlives resizes and scene reloads for recreated embedded renderers.
     RefCntAutoPtr<ITextureView>         m_EmbeddedDisplaySRV;
     RTXPTBlitPass                       m_EmbeddedBlit;

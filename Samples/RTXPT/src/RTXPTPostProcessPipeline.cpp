@@ -94,7 +94,7 @@ bool RTXPTPostProcessPipeline::Initialize(IRenderDevice* pDevice, const RTXPTPos
         return false;
     }
 
-    m_Stats.SuperResolutionStageReady = m_SuperResolutionPass.Initialize(pDevice, CreateInfo.pStateCache);
+    m_Stats.SuperResolutionStageReady = m_SuperResolutionPass.Initialize(pDevice, CreateInfo.pStateCache, CreateInfo.pFrameConstants);
     if (!m_Stats.SuperResolutionStageReady)
     {
         DEV_ERROR("RTXPT super-resolution pass failed to initialize");

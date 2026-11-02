@@ -1,6 +1,7 @@
 #include "RTXPTRealtimePipeline.hpp"
 #include "MapHelper.hpp"
 #include "RTXPTNrdConfig.hpp"
+#include "RTXPTSuperResolutionInputs.hpp"
 #include "../shaders/PathTracer/SubSampling.h"
 #include <cmath>
 #include <limits>
@@ -42,15 +43,21 @@ RTXPTErrorCode RTXPTRealtimePipeline::Initialize(const RTXPTRealtimePipelineCrea
     m_Stats = {};
     m_Targets.Reset();
     m_Nrd.Reset();
+    m_SuperResolutionInputs.Reset();
     m_PixelList.Release();
     m_Constants         = CreateInfo.Constants;
     m_DisplayFormat     = CreateInfo.DisplayFormat;
     m_Denoiser          = CreateInfo.Denoiser;
+    m_SuperResolution   = CreateInfo.SuperResolution;
     auto* const  Device = CreateInfo.Device;
     auto* const  Cache  = CreateInfo.Cache;
     const Uint32 Width = CreateInfo.Width, Height = CreateInfo.Height;
+    const Uint32 DisplayWidth  = m_SuperResolution ? CreateInfo.DisplayWidth : Width;
+    const Uint32 DisplayHeight = m_SuperResolution ? CreateInfo.DisplayHeight : Height;
     if (!Device || !Cache || !CreateInfo.Constants || !Width || !Height || CreateInfo.DisplayFormat == TEX_FORMAT_UNKNOWN ||
-        ComputeRTXPTLayerPlaneStride(Width, Height) > std::numeric_limits<Uint32>::max())
+        ComputeRTXPTLayerPlaneStride(Width, Height) > std::numeric_limits<Uint32>::max() ||
+        DisplayWidth < Width || DisplayHeight < Height ||
+        (!m_SuperResolution && (CreateInfo.DisplayWidth != 0 || CreateInfo.DisplayHeight != 0)))
         return RTXPTErrorCode::InvalidArgument;
     const bool bNative = m_Denoiser == RTXPTRealtimeDenoiser::NrdRelax;
     if (bNative && !RTXPTIsNrdAvailable())
@@ -59,7 +66,7 @@ RTXPTErrorCode RTXPTRealtimePipeline::Initialize(const RTXPTRealtimePipelineCrea
     if (bNative && !SupportsNrdInputs(Device, Targets.Formats))
         return RTXPTErrorCode::DenoiserUnsupportedDevice;
 
-    Targets.Dimensions              = {Width, Height, Width, Height, false};
+    Targets.Dimensions              = {Width, Height, DisplayWidth, DisplayHeight, m_SuperResolution};
     Targets.CreateRealtimeResources = true;
     if (!m_Targets.Resize(Device, Targets))
         return RTXPTErrorCode::FrameTargetsFailed;
@@ -76,8 +83,11 @@ RTXPTErrorCode RTXPTRealtimePipeline::Initialize(const RTXPTRealtimePipelineCrea
     if (!m_Guides.Initialize(Device, Factory, Cache, m_Constants, true) ||
         !m_Merge.Initialize(Device, Factory, Cache, m_Constants, true, bNative ? RTXPTPostProcessPassSet::RealtimeNative : RTXPTPostProcessPassSet::RealtimeRaw) ||
         !m_ToneMapping.Initialize(Device, Factory, Cache, CreateInfo.PSOCache, m_DisplayFormat, true) ||
-        !m_ToneMapping.ResizeResources(Device, Width, Height, Targets.Formats.OutputColor))
+        !m_ToneMapping.ResizeResources(Device, DisplayWidth, DisplayHeight, Targets.Formats.OutputColor))
         return RTXPTErrorCode::PostProcessSetupFailed;
+    if (m_SuperResolution &&
+        (!m_SuperResolutionInputs.Initialize(Device, Factory, Cache, m_Constants) || !m_SuperResolutionInputs.Resize(Device, Width, Height)))
+        return RTXPTErrorCode::SuperResolutionInputsFailed;
     if (bNative)
     {
         //RELAX with the Sample's default settings, the configuration of the M3.0 baseline.
@@ -102,7 +112,8 @@ RTXPTErrorCode RTXPTRealtimePipeline::Initialize(const RTXPTRealtimePipelineCrea
 
 /* Build initializes headers/surfaces, then light preparation consumes this frame's depth/motion before Fill.
  * Fill produces one current sample per layer; guides are spatial/current-frame only. Raw merges the noisy layers and
- * Native denoises them first (Denoise); both produce linear HDR, and ToneMapping writes the host's explicit RTV.
+ * Native denoises them first (Denoise); both produce render-size linear HDR. A SuperResolution pipeline upscales it to
+ * the display size (Upscale), and ToneMapping writes the host's explicit RTV at the display size.
  * Only completion of the entire chain publishes valid output.
  */
 RTXPTErrorCode RTXPTRealtimePipeline::Render(IDeviceContext* Context, RTXPTRayTracingPass& Rays, RTXPTLightsBaker& Lights, const SampleConstants& Input, const RTXPTToneMappingParameters& ToneParameters, const RTXPTRealtimeHistoryAttribs& History, ITextureView* DisplayRTV, RTXPTGpuProfiler* Profiler)
@@ -111,23 +122,28 @@ RTXPTErrorCode RTXPTRealtimePipeline::Render(IDeviceContext* Context, RTXPTRayTr
     if (!m_Ready)
         return RTXPTErrorCode::NotInitialized;
     const Uint32 Width = m_Targets.GetRenderWidth(), Height = m_Targets.GetRenderHeight();
+    const Uint32 DisplayWidth = m_Targets.GetDisplayWidth(), DisplayHeight = m_Targets.GetDisplayHeight();
     if (!Context || !DisplayRTV || DisplayRTV->GetDesc().Format != m_DisplayFormat ||
-        DisplayRTV->GetTexture()->GetDesc().Width != Width || DisplayRTV->GetTexture()->GetDesc().Height != Height ||
+        DisplayRTV->GetTexture()->GetDesc().Width != DisplayWidth || DisplayRTV->GetTexture()->GetDesc().Height != DisplayHeight ||
         Input.ptConsts.imageWidth != Width || Input.ptConsts.imageHeight != Height ||
-        Input.ptConsts.NEEType > 1 || ToneParameters.AutoExposure)
+        Input.ptConsts.NEEType > 1 || ToneParameters.AutoExposure || (m_SuperResolution && !History.Upscaler))
         return RTXPTErrorCode::InvalidArgument;
 
     SampleConstants Constants = Input;
     auto&           PT        = Constants.ptConsts;
     PT.invSubSampleCount      = 1.0f;
-    PT.useReSTIRDI = PT.useReSTIRGI = PT.superResolutionActive = 0;
-    PT.perPixelJitterAAScale                                   = 0;
-    PT.DLSSRRBrightnessClampK                                  = 0;
-    PT._activeDenoisingLayerCount                              = kRTXPTDenoisingLayerCount;
-    PT.maxDenoisingLayerVertexDepth                            = std::min(PT.bounceCount, kMaxLayerVertexDepth);
-    PT.genericTSLineStride                                     = static_cast<Uint32>(ComputeRTXPTLayerLineStride(Width));
-    PT.genericTSPlaneStride                                    = static_cast<Uint32>(ComputeRTXPTLayerPlaneStride(Width, Height));
-    PT.preExposedGrayLuminance                                 = m_ToneMapping.ComputePreExposedGrayLuminance(ToneParameters, true);
+    PT.useReSTIRDI = PT.useReSTIRGI = 0;
+    PT.superResolutionActive        = m_SuperResolution ? 1u : 0u;
+    PT.perPixelJitterAAScale        = 0;
+    PT.DLSSRRBrightnessClampK       = 0;
+    PT._activeDenoisingLayerCount   = kRTXPTDenoisingLayerCount;
+    PT.maxDenoisingLayerVertexDepth = std::min(PT.bounceCount, kMaxLayerVertexDepth);
+    PT.genericTSLineStride          = static_cast<Uint32>(ComputeRTXPTLayerLineStride(Width));
+    PT.genericTSPlaneStride         = static_cast<Uint32>(ComputeRTXPTLayerPlaneStride(Width, Height));
+    PT.preExposedGrayLuminance      = m_ToneMapping.ComputePreExposedGrayLuminance(ToneParameters, true);
+    //Textures are sampled for the output resolution the upscaler reconstructs.
+    if (m_SuperResolution)
+        PT.texLODBias += RTXPTSuperResolutionInputs::ComputeTexLODBias(Width, Height, DisplayWidth, DisplayHeight);
     if (m_Denoiser == RTXPTRealtimeDenoiser::NrdRelax)
     {
         //As RTXPTSample::UpdateFrameConstants converts the Sample's realtime firefly threshold.
@@ -214,11 +230,17 @@ RTXPTErrorCode RTXPTRealtimePipeline::Render(IDeviceContext* Context, RTXPTRayTr
     }
     ++m_Stats.MergeDispatches;
     RTXPTRayTracingPass::InsertUAVBarrier(Context, Dispatch.pOutputColorUAV);
+    if (m_SuperResolution)
+    {
+        const auto Code = Upscale(Context, Constants, History, Profiler);
+        if (Code != RTXPTErrorCode::Ok)
+            return Code;
+    }
     RTXPTToneMappingRenderAttribs Tone;
-    Tone.pSourceSRV = m_Targets.GetOutputColorSRV();
+    Tone.pSourceSRV = m_SuperResolution ? m_Targets.GetProcessedOutputColorSRV() : m_Targets.GetOutputColorSRV();
     Tone.pLdrRTV    = DisplayRTV;
-    Tone.Width      = Width;
-    Tone.Height     = Height;
+    Tone.Width      = DisplayWidth;
+    Tone.Height     = DisplayHeight;
     Tone.pParams    = &ToneParameters;
     {
         RTXPTGpuProfiler::Scope Timing{Profiler, Context, RTXPTGpuProfiler::Stage::ToneMapping};
@@ -256,6 +278,33 @@ RTXPTErrorCode RTXPTRealtimePipeline::Denoise(IDeviceContext* Context, const Sam
     ++m_Stats.DenoiseDispatches;
     m_Stats.HistoryResets += History.Reset ? 1u : 0u;
     m_Stats.LastHistoryReset = History.Reset;
+    return RTXPTErrorCode::Ok;
+}
+
+/* Converts this frame's guides into the upscaler's render-size depth, motion and ignore-history mask with the uploaded
+ * constants, so depth reconstructs the rays BUILD traced, then upscales the merged HDR into the display-size output.
+ * The upscaler receives exposure 1 and no sharpening; display exposure stays with tone mapping. Its Execute
+ * transitions every input and output.
+ */
+RTXPTErrorCode RTXPTRealtimePipeline::Upscale(IDeviceContext* Context, const SampleConstants& Constants, const RTXPTRealtimeHistoryAttribs& History, RTXPTGpuProfiler* Profiler)
+{
+    {
+        RTXPTGpuProfiler::Scope Timing{Profiler, Context, RTXPTGpuProfiler::Stage::SuperResolutionInputs};
+        if (!m_SuperResolutionInputs.Prepare(Context, m_Targets.GetDepthSRV(), m_Targets.GetScreenMotionVectorsSRV()))
+            return RTXPTErrorCode::SuperResolutionInputsFailed;
+    }
+    ExecuteSuperResolutionAttribs Attribs;
+    if (!RTXPTSuperResolutionInputs::MakeExecuteAttribs(Context, History.Upscaler->GetDesc(), m_SuperResolutionInputs,
+                                                        m_Targets.GetOutputColorSRV(), m_Targets.GetProcessedOutputColorUAV(),
+                                                        Constants, History.Reset, std::max(History.TimeDeltaSeconds, 0.0f), Attribs))
+        return RTXPTErrorCode::InvalidArgument;
+    {
+        RTXPTGpuProfiler::Scope Timing{Profiler, Context, RTXPTGpuProfiler::Stage::SuperResolution};
+        if (!History.Upscaler->Execute(Attribs))
+            return RTXPTErrorCode::SuperResolutionExecuteFailed;
+    }
+    ++m_Stats.SuperResolutionExecutes;
+    m_Stats.SuperResolutionResets += History.Reset ? 1u : 0u;
     return RTXPTErrorCode::Ok;
 }
 } // namespace Diligent

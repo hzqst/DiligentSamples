@@ -26,6 +26,11 @@
 
 #include "RTXPTSample.hpp"
 #include "RTXPTCameraBasis.hpp"
+#include "RTXPTNrdConfig.hpp"
+#include "RTXPTSuperResolutionInputs.hpp"
+#include "SuperResolutionFactoryLoader.h"
+// Core's variant IDs are not part of its interface; the super resolution validation checks the fork's copy.
+#include "../../../../DiligentCore/Graphics/SuperResolution/include/SuperResolutionVariants.hpp"
 #include "DebugUtilities.hpp"
 #include "GraphicsAccessories.hpp"
 #include "GraphicsUtilities.h"
@@ -35,6 +40,9 @@
 #include "ArchiverFactoryLoader.h"
 #include "FileWrapper.hpp"
 #include "DataBlobImpl.hpp"
+#include "Float16.hpp"
+#include "ObjectBase.hpp"
+#include "RefCountedObjectImpl.hpp"
 #include "imgui.h"
 #include "CommandLineParser.hpp"
 
@@ -291,9 +299,7 @@ PathTracerCameraData MakePathTracerCameraData(const FirstPersonCamera& Camera,
 
 float ComputeSuperResolutionTexLODBias(Uint32 RenderWidth, Uint32 RenderHeight, Uint32 DisplayWidth, Uint32 DisplayHeight)
 {
-    const float RenderPixels  = static_cast<float>(std::max(RenderWidth, Uint32{1}) * std::max(RenderHeight, Uint32{1}));
-    const float DisplayPixels = static_cast<float>(std::max(DisplayWidth, Uint32{1}) * std::max(DisplayHeight, Uint32{1}));
-    return -std::log2(std::sqrt(DisplayPixels / RenderPixels));
+    return RTXPTSuperResolutionInputs::ComputeTexLODBias(RenderWidth, RenderHeight, DisplayWidth, DisplayHeight);
 }
 
 PathTracerViewData MakePathTracerViewData(const float4x4& View,
@@ -630,7 +636,13 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
     Args.Parse("realtime", m_RealtimeUI.RealtimeMode);
     Args.Parse("realtime_raw", m_RealtimeRawEnabled);
     Args.Parse("realtime_native", m_RealtimeNativeEnabled);
-    Args.Parse("embedded_reference", m_UseEmbeddedReference);
+    Args.Parse("embedded_reference", m_UseEmbeddedView);
+    if (Args.ParseEnum<RTXPTViewMode>("embedded_mode", 0,
+                                      {{"reference", RTXPTViewMode::Reference}, {"raw", RTXPTViewMode::RealtimeRaw}, {"native", RTXPTViewMode::RealtimeNative}, {"dlss_sr", RTXPTViewMode::RealtimeDLSSSR}}, m_EmbeddedMode))
+        m_UseEmbeddedView = true;
+    Args.ParseEnum<RTXPTUpscaleQuality>("sr_quality", 0,
+                                        {{"quality", RTXPTUpscaleQuality::Quality}, {"balanced", RTXPTUpscaleQuality::Balanced}, {"performance", RTXPTUpscaleQuality::Performance}}, m_EmbeddedUpscaleQuality);
+    Args.Parse("sr_validation", m_ValidateSuperResolution);
     Args.Parse("asyncPrefix", m_EnableAsyncPrefix);
     Args.Parse("async_queue", m_CreateAsyncQueue);
     Args.Parse("async_validation", m_ValidateAsyncPrefix);
@@ -692,7 +704,7 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
             LOG_ERROR_MESSAGE("realtime_raw and realtime_native are exclusive");
             return CommandLineStatus::Error;
         }
-        if (m_UseEmbeddedReference || m_ValidateRayReconstruction || m_ValidateSubSampling || m_ValidateAsyncPrefix)
+        if (m_UseEmbeddedView || m_ValidateRayReconstruction || m_ValidateSubSampling || m_ValidateAsyncPrefix)
         {
             LOG_ERROR_MESSAGE("realtime_raw and realtime_native cannot be combined with embedded_reference or advanced validation modes");
             return CommandLineStatus::Error;
@@ -709,9 +721,16 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
         m_EnableVulkanRayReconstruction        = false;
         m_EnableAsyncPrefix = m_CreateAsyncQueue = false;
     }
+    if (m_ValidateSuperResolution &&
+        (IsSharedRealtimeEnabled() || m_UseEmbeddedView || m_ValidateRayReconstruction || m_ValidateSubSampling ||
+         m_ValidateAsyncPrefix || m_ReferenceCapture.Enabled()))
+    {
+        LOG_ERROR_MESSAGE("sr_validation cannot be combined with other realtime, embedded, capture or validation modes");
+        return CommandLineStatus::Error;
+    }
     if (m_ReferenceCapture.Enabled())
     {
-        if (m_RealtimeUI.RealtimeMode || m_UseEmbeddedReference || m_ReferenceCapture.Samples == 0 ||
+        if (m_RealtimeUI.RealtimeMode || m_UseEmbeddedView || m_ReferenceCapture.Samples == 0 ||
             !std::isfinite(m_ReferenceCapture.Time) || m_ReferenceCapture.Time < 0.0)
         {
             LOG_ERROR_MESSAGE("Reference capture needs --realtime false, the Sample reference path, positive samples and finite nonnegative time");
@@ -779,7 +798,7 @@ void RTXPTSample::ResetSceneDependentResources()
         m_pImmediateContext->InvalidateState();
     }
     m_EmbeddedDisplaySRV.Release();
-    m_EmbeddedReference.reset();
+    m_EmbeddedView.reset();
     m_EmbeddedScene.reset();
     m_SharedRealtime.reset();
     m_EmbeddedBlit.Reset();
@@ -2317,55 +2336,85 @@ void RTXPTSample::ReleasePrefixResources(IDeviceContext* Context)
     m_LightsBaker.ReleaseQueueResources(Context);
 }
 
-bool RTXPTSample::RunEmbeddedReference()
+//The embedded renderer's host shader source replaces the passes' own search paths, so it lists NRD's as well.
+void RTXPTSample::CreateEmbeddedShaderSource(IShaderSourceInputStreamFactory** Shaders) const
+{
+    std::string SearchDirs = "shaders;shaders/PathTracer";
+#if RTXPT_HAS_NRD
+    RTXPTAppendNrdShaderSearchDirs(SearchDirs);
+#endif
+    m_pEngineFactory->CreateDefaultShaderSourceStreamFactory(SearchDirs.c_str(), Shaders);
+}
+
+bool RTXPTSample::EnsureEmbeddedScene(IShaderSourceInputStreamFactory* Shaders)
+{
+    // m_pStateCache hashes the shader contents, which expands every include, including those of the optional
+    // algorithms the embedded renderer disables (SHARC is not on this factory's paths). Its cache hashes by name.
+    if (!m_pEmbeddedStateCache)
+        CreateRTXPTEmbeddedStateCache(m_pDevice, &m_pEmbeddedStateCache);
+    if (m_EmbeddedScene)
+        return true;
+    RTXPTEmbeddedSceneCreateInfo SceneCI;
+    SceneCI.Scene     = &m_Scene;
+    SceneCI.Materials = &m_Materials;
+    SceneCI.Shaders   = Shaders;
+    SceneCI.Cache     = m_pEmbeddedStateCache;
+    SceneCI.PSOCache  = m_pPSOCache;
+
+    auto                 Scene     = std::make_unique<RTXPTEmbeddedScene>();
+    const RTXPTErrorCode SceneCode = Scene->Initialize(m_pDevice, m_pImmediateContext, SceneCI);
+    if (SceneCode != RTXPTErrorCode::Ok)
+    {
+        LOG_ERROR_MESSAGE("Embedded scene: ", GetRTXPTErrorCodeString(SceneCode));
+        m_pImmediateContext->WaitForIdle();
+        return false;
+    }
+    m_EmbeddedScene = std::move(Scene);
+    return true;
+}
+
+bool RTXPTSample::RunEmbeddedView()
 {
     const auto& Desc = m_pSwapChain->GetDesc();
     // A new size needs only a new view; the scene keeps its acceleration structures, lights and environment.
-    if (m_EmbeddedReference && (m_EmbeddedReference->GetOutput()->GetDesc().Width != Desc.Width || m_EmbeddedReference->GetOutput()->GetDesc().Height != Desc.Height))
+    if (m_EmbeddedView && (m_EmbeddedView->GetDisplaySize().Width != Desc.Width || m_EmbeddedView->GetDisplaySize().Height != Desc.Height))
     {
         m_pImmediateContext->WaitForIdle();
         m_EmbeddedDisplaySRV.Release();
-        m_EmbeddedReference.reset();
+        m_EmbeddedView.reset();
     }
-    if (!m_EmbeddedReference)
+    if (!m_EmbeddedView)
     {
         RefCntAutoPtr<IShaderSourceInputStreamFactory> Shaders;
-        m_pEngineFactory->CreateDefaultShaderSourceStreamFactory("shaders;shaders/PathTracer", &Shaders);
-        // m_pStateCache hashes the shader contents, which expands every include, including those of the optional
-        // algorithms the embedded renderer disables (SHARC is not on this factory's paths). Its cache hashes by name.
-        if (!m_pEmbeddedStateCache)
-            CreateRTXPTEmbeddedStateCache(m_pDevice, &m_pEmbeddedStateCache);
-        if (!m_EmbeddedScene)
-        {
-            RTXPTEmbeddedSceneCreateInfo SceneCI;
-            SceneCI.Scene     = &m_Scene;
-            SceneCI.Materials = &m_Materials;
-            SceneCI.Shaders   = Shaders;
-            SceneCI.Cache     = m_pEmbeddedStateCache;
-            SceneCI.PSOCache  = m_pPSOCache;
-
-            auto                 Scene     = std::make_unique<RTXPTEmbeddedScene>();
-            const RTXPTErrorCode SceneCode = Scene->Initialize(m_pDevice, m_pImmediateContext, SceneCI);
-            if (SceneCode != RTXPTErrorCode::Ok)
-            {
-                LOG_ERROR_MESSAGE("Embedded reference: ", GetRTXPTErrorCodeString(SceneCode));
-                m_pImmediateContext->WaitForIdle();
-                return false;
-            }
-            m_EmbeddedScene = std::move(Scene);
-        }
+        CreateEmbeddedShaderSource(&Shaders);
+        if (!EnsureEmbeddedScene(Shaders))
+            return false;
         RTXPTEmbeddedViewCreateInfo ViewCI;
-        ViewCI.Scene      = m_EmbeddedScene.get();
-        ViewCI.Shaders    = Shaders;
-        ViewCI.Cache      = m_pEmbeddedStateCache;
-        ViewCI.PSOCache   = m_pPSOCache;
-        ViewCI.RenderSize = ViewCI.DisplaySize = {Desc.Width, Desc.Height};
+        ViewCI.Scene       = m_EmbeddedScene.get();
+        ViewCI.Shaders     = Shaders;
+        ViewCI.Cache       = m_pEmbeddedStateCache;
+        ViewCI.PSOCache    = m_pPSOCache;
+        ViewCI.Mode        = m_EmbeddedMode;
+        ViewCI.DisplaySize = {Desc.Width, Desc.Height};
+        if (m_EmbeddedMode == RTXPTViewMode::RealtimeDLSSSR)
+        {
+            if (!m_EmbeddedSuperResolutionFactory)
+            {
+                SuperResolutionFactoryCreateInfo FactoryCI;
+                FactoryCI.pDevice = m_pDevice;
+                LoadAndCreateSuperResolutionFactory(FactoryCI, &m_EmbeddedSuperResolutionFactory);
+            }
+            ViewCI.SuperResolutionFactory = m_EmbeddedSuperResolutionFactory;
+            ViewCI.UpscaleQuality         = m_EmbeddedUpscaleQuality;
+        }
+        else
+            ViewCI.RenderSize = ViewCI.DisplaySize;
 
         auto                 Renderer = std::make_unique<RTXPTEmbeddedView>();
         const RTXPTErrorCode ViewCode = Renderer->Initialize(m_pDevice, m_pImmediateContext, ViewCI);
         if (ViewCode != RTXPTErrorCode::Ok)
         {
-            LOG_ERROR_MESSAGE("Embedded reference: ", GetRTXPTErrorCodeString(ViewCode));
+            LOG_ERROR_MESSAGE("Embedded view: ", GetRTXPTErrorCodeString(ViewCode));
             m_pImmediateContext->WaitForIdle();
             return false;
         }
@@ -2375,14 +2424,26 @@ bool RTXPTSample::RunEmbeddedReference()
         Renderer->GetOutput()->CreateView(View, &m_EmbeddedDisplaySRV);
         if (!m_EmbeddedDisplaySRV || !m_EmbeddedBlit.Initialize(m_pDevice, m_pEngineFactory, m_pStateCache, m_pSwapChain))
             return false;
-        m_EmbeddedReference = std::move(Renderer);
+        m_EmbeddedView = std::move(Renderer);
     }
-    const auto           Camera     = MakePathTracerCameraData(m_Camera, Desc.Width, Desc.Height, Desc.Width, Desc.Height, 1, 0, {});
-    const auto           View       = MakePathTracerViewData(m_Camera.GetViewMatrix(), m_Camera.GetProjMatrix(), Desc.Width, Desc.Height, {});
-    const RTXPTErrorCode RenderCode = m_EmbeddedReference->Render(Camera, View, m_LastFrameConstants.cameraPositionAndTime.w, m_LastFrameConstants.ptConsts.resetAccumulation != 0);
+    //The realtime views render the frame the embedded scene prepares; Reference keeps its first frame, as before.
+    if (m_EmbeddedMode != RTXPTViewMode::Reference)
+    {
+        const RTXPTErrorCode PrepareCode = m_EmbeddedScene->Prepare(m_pImmediateContext);
+        if (PrepareCode != RTXPTErrorCode::Ok)
+        {
+            LOG_ERROR_MESSAGE("Embedded scene: ", GetRTXPTErrorCodeString(PrepareCode));
+            return false;
+        }
+    }
+    //The camera describes the render size without jitter; RealtimeDLSSSR adds its own.
+    const RTXPTViewSize  Render     = m_EmbeddedView->GetRenderSize();
+    const auto           Camera     = MakePathTracerCameraData(m_Camera, Render.Width, Render.Height, Desc.Width, Desc.Height, 1, 0, {});
+    const auto           View       = MakePathTracerViewData(m_Camera.GetViewMatrix(), m_Camera.GetProjMatrix(), Render.Width, Render.Height, {});
+    const RTXPTErrorCode RenderCode = m_EmbeddedView->Render(Camera, View, m_LastFrameConstants.cameraPositionAndTime.w, m_LastFrameConstants.ptConsts.resetAccumulation != 0);
     if (RenderCode != RTXPTErrorCode::Ok)
     {
-        LOG_ERROR_MESSAGE("Embedded reference: ", GetRTXPTErrorCodeString(RenderCode));
+        LOG_ERROR_MESSAGE("Embedded view: ", GetRTXPTErrorCodeString(RenderCode));
         return false;
     }
     return m_EmbeddedBlit.Render(m_pImmediateContext, m_pSwapChain, m_EmbeddedDisplaySRV);
@@ -2390,9 +2451,22 @@ bool RTXPTSample::RunEmbeddedReference()
 
 void RTXPTSample::Render()
 {
-    if (m_UseEmbeddedReference)
+    if (m_ValidateSuperResolution)
     {
-        m_LastFrameSucceeded = RunEmbeddedReference();
+        if (!m_SuperResolutionValidationDone)
+        {
+            m_SuperResolutionValidationDone = true;
+            RunSuperResolutionValidation();
+#if PLATFORM_WIN32
+            PostQuitMessage(m_SuperResolutionValidationFailures == 0 ? 0 : 1);
+#endif
+        }
+        ClearFallback(float4{0, 0, 0, 1});
+        return;
+    }
+    if (m_UseEmbeddedView)
+    {
+        m_LastFrameSucceeded = RunEmbeddedView();
         if (!m_LastFrameSucceeded) ClearFallback(float4{1, 0, 1, 1});
         return;
     }
@@ -2530,6 +2604,15 @@ void RTXPTSample::Update(double CurrTime, double ElapsedTime, bool DoUpdateUI)
                       << " historyResets=" << Stats.HistoryResets << " nrdInstances=" << Stats.NrdInstances
                       << " dynamicMotionValidated=" << Stats.DynamicMotionValidated << std::endl;
             PostQuitMessage(m_LastFrameSucceeded && Stats.OutputValid ? 0 : 1);
+        }
+        else if (m_UseEmbeddedView && m_EmbeddedView)
+        {
+            const auto& SR = m_EmbeddedView->GetSuperResolutionInfo();
+            if (m_EmbeddedMode == RTXPTViewMode::RealtimeDLSSSR)
+                std::cout << "RealtimeDLSSSR: variant=" << SR.Variant << " render=" << SR.RenderSize.Width << 'x' << SR.RenderSize.Height
+                          << " display=" << SR.DisplaySize.Width << 'x' << SR.DisplaySize.Height << " executes=" << SR.Executes
+                          << " resets=" << SR.Resets << " failures=" << SR.Failures << std::endl;
+            PostQuitMessage(m_LastFrameSucceeded ? 0 : 1);
         }
         else
             PostQuitMessage(0);
@@ -3670,5 +3753,6 @@ void RTXPTSample::InvalidatePreviousFrameConstants()
 #include "../tests/RRSceneValidation.hpp"
 #include "../tests/SubSamplingSceneValidation.hpp"
 #include "../tests/AsyncPrefixSceneValidation.hpp"
+#include "../tests/SRSceneValidation.hpp"
 
 } // namespace Diligent

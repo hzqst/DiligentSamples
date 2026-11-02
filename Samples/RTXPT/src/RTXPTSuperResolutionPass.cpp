@@ -39,39 +39,13 @@ namespace
 {
 constexpr const char*    kSRProviderUnavailableReason = "super resolution provider unavailable";
 constexpr const char*    kSRVariantsUnavailableReason = "super resolution variants unavailable";
-constexpr TEXTURE_FORMAT kSRMotionFormat              = TEX_FORMAT_RG16_FLOAT;
-constexpr Uint32         kSRMotionThreadGroupSize     = 8;
+constexpr TEXTURE_FORMAT kSRMotionFormat              = RTXPTSuperResolutionInputPass::MotionVectorsFormat;
 
 bool ContainsTemporalVariant(const std::vector<SuperResolutionInfo>& Variants)
 {
     return std::any_of(Variants.begin(), Variants.end(), [](const SuperResolutionInfo& Info) {
         return Info.Type == SUPER_RESOLUTION_TYPE_TEMPORAL;
     });
-}
-
-bool SupportsBindFlags(IRenderDevice* pDevice, TEXTURE_FORMAT Format, BIND_FLAGS BindFlags)
-{
-    return pDevice != nullptr && (pDevice->GetTextureFormatInfoExt(Format).BindFlags & BindFlags) == BindFlags;
-}
-
-ITextureView* GetDefaultView(const RefCntAutoPtr<ITexture>& Texture, TEXTURE_VIEW_TYPE ViewType)
-{
-    return Texture ? Texture->GetDefaultView(ViewType) : nullptr;
-}
-
-bool SetDynamicVariable(IShaderResourceBinding* pSRB, const char* Name, IDeviceObject* pObject)
-{
-    IShaderResourceVariable* pVar = pSRB != nullptr ? pSRB->GetVariableByName(SHADER_TYPE_COMPUTE, Name) : nullptr;
-    if (pVar == nullptr)
-    {
-        UNEXPECTED("RTXPT super resolution motion conversion dynamic variable is missing: ", Name);
-        return false;
-    }
-    if (pObject == nullptr)
-        return false;
-
-    pVar->Set(pObject);
-    return true;
 }
 
 bool UpscalerDescMatches(const SuperResolutionDesc& Lhs, const SuperResolutionDesc& Rhs)
@@ -106,7 +80,7 @@ RTXPTSuperResolutionFrameDesc MakeDirectFrameDesc(Uint32                        
     FrameDesc.Dimensions.DisplayHeight         = Height;
     FrameDesc.Dimensions.SuperResolutionActive = false;
     FrameDesc.ColorFormat                      = Formats.SuperResolutionInputColor;
-    FrameDesc.DepthFormat                      = Formats.Depth;
+    FrameDesc.DepthFormat                      = RTXPTSuperResolutionInputPass::DepthFormat;
     FrameDesc.MotionFormat                     = kSRMotionFormat;
     FrameDesc.OutputFormat                     = OutputFormat;
     FrameDesc.ResetHistory                     = ResetHistory;
@@ -129,19 +103,16 @@ void UpdateFrameStats(RTXPTSuperResolutionStats& Stats, const RTXPTSuperResoluti
 void RTXPTSuperResolutionPass::Reset()
 {
     m_Upscaler.Release();
-    m_MotionConversionPSO.Release();
-    m_MotionConversionSRB.Release();
-    m_SRMotionVectors.Release();
+    m_Inputs.Reset();
+    m_InputsReady = false;
     m_Factory.Release();
     m_Device.Release();
     m_Variants.clear();
-    m_Stats          = {};
-    m_UpscalerDesc   = {};
-    m_SRMotionWidth  = 0;
-    m_SRMotionHeight = 0;
+    m_Stats        = {};
+    m_UpscalerDesc = {};
 }
 
-bool RTXPTSuperResolutionPass::Initialize(IRenderDevice* pDevice, IRenderStateCache* pStateCache)
+bool RTXPTSuperResolutionPass::Initialize(IRenderDevice* pDevice, IRenderStateCache* pStateCache, IBuffer* pFrameConstants)
 {
     Reset();
 
@@ -182,8 +153,15 @@ bool RTXPTSuperResolutionPass::Initialize(IRenderDevice* pDevice, IRenderStateCa
     }
 
     const bool HasTemporalVariant = ContainsTemporalVariant(m_Variants);
-    if (HasTemporalVariant && !CreateMotionConversionPipeline(pDevice, pStateCache))
-        return true;
+    if (HasTemporalVariant)
+    {
+        m_InputsReady = m_Inputs.Initialize(pDevice, pDevice->GetEngineFactory(), pStateCache, pFrameConstants);
+        if (!m_InputsReady)
+        {
+            DEV_ERROR("RTXPT super resolution input preparation is unavailable");
+            return true;
+        }
+    }
 
     m_Stats.DisabledReason = HasTemporalVariant ? "" : "temporal super resolution variant unavailable";
     return true;
@@ -201,7 +179,7 @@ const SuperResolutionInfo* RTXPTSuperResolutionPass::GetActiveVariant(const RTXP
 
 bool RTXPTSuperResolutionPass::HasTemporalVariant() const
 {
-    return m_MotionConversionPSO && m_MotionConversionSRB && ContainsTemporalVariant(m_Variants);
+    return m_InputsReady && ContainsTemporalVariant(m_Variants);
 }
 
 bool RTXPTSuperResolutionPass::SupportsSharpness(const SuperResolutionInfo& Info) const
@@ -262,9 +240,9 @@ RTXPTSuperResolutionFrameDesc RTXPTSuperResolutionPass::ResolveFrameDesc(const R
         DEV_ERROR("RTXPT P6 HDR path requires temporal super resolution variant");
         return DirectFrameDesc;
     }
-    if (!m_MotionConversionPSO || !m_MotionConversionSRB)
+    if (!m_InputsReady)
     {
-        DEV_ERROR("RTXPT super resolution motion conversion pipeline is unavailable");
+        DEV_ERROR("RTXPT super resolution input preparation is unavailable");
         return DirectFrameDesc;
     }
 
@@ -369,153 +347,22 @@ bool RTXPTSuperResolutionPass::EnsureUpscaler(const RTXPTSuperResolutionFrameDes
     return true;
 }
 
-bool RTXPTSuperResolutionPass::CreateMotionConversionPipeline(IRenderDevice* pDevice, IRenderStateCache* pStateCache)
-{
-    if (pDevice->GetDeviceInfo().Features.ComputeShaders != DEVICE_FEATURE_STATE_ENABLED)
-    {
-        DEV_ERROR("RTXPT super resolution motion conversion requires compute shader support");
-        return false;
-    }
-
-    if (!SupportsBindFlags(pDevice, kSRMotionFormat, BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS))
-    {
-        DEV_ERROR("RG16F SRV/UAV texture is not supported for RTXPT super resolution motion vectors");
-        return false;
-    }
-
-    IEngineFactory* pEngineFactory = pDevice->GetEngineFactory();
-    if (pEngineFactory == nullptr)
-    {
-        DEV_ERROR("RTXPT super resolution motion conversion requires an engine factory");
-        return false;
-    }
-
-    RefCntAutoPtr<IShaderSourceInputStreamFactory> pShaderSourceFactory;
-    pEngineFactory->CreateDefaultShaderSourceStreamFactory("shaders;shaders\\PostProcessing", &pShaderSourceFactory);
-    if (!pShaderSourceFactory)
-    {
-        DEV_ERROR("Failed to create RTXPT super resolution motion shader source factory");
-        return false;
-    }
-
-    ShaderCreateInfo ShaderCI;
-    ShaderCI.Desc.ShaderType            = SHADER_TYPE_COMPUTE;
-    ShaderCI.Desc.Name                  = "RTXPT super resolution motion conversion";
-    ShaderCI.SourceLanguage             = SHADER_SOURCE_LANGUAGE_HLSL;
-    ShaderCI.ShaderCompiler             = SHADER_COMPILER_DXC;
-    ShaderCI.CompileFlags               = SHADER_COMPILE_FLAG_PACK_MATRIX_ROW_MAJOR;
-    ShaderCI.ShaderOptimizationLevel    = SHADER_OPTIMIZATION_LEVEL_3;
-    ShaderCI.FilePath                   = "PostProcessing/RTXPTSuperResolutionMotion.csh";
-    ShaderCI.EntryPoint                 = "main";
-    ShaderCI.pShaderSourceStreamFactory = pShaderSourceFactory;
-
-    RefCntAutoPtr<IShader> pCS;
-    pStateCache->CreateShader(ShaderCI, &pCS);
-    VERIFY(pCS, "Failed to create RTXPT super resolution motion conversion shader");
-    if (!pCS)
-    {
-        DEV_ERROR("Failed to create RTXPT super resolution motion conversion shader");
-        return false;
-    }
-
-    ComputePipelineStateCreateInfo PSOCreateInfo;
-    PSOCreateInfo.PSODesc.Name         = "RTXPT super resolution motion conversion PSO";
-    PSOCreateInfo.PSODesc.PipelineType = PIPELINE_TYPE_COMPUTE;
-    PSOCreateInfo.pCS                  = pCS;
-
-    PipelineResourceLayoutDescX ResourceLayout;
-    ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE;
-    ResourceLayout
-        .AddVariable(SHADER_TYPE_COMPUTE, "t_RTXPTMotionVectors", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
-        .AddVariable(SHADER_TYPE_COMPUTE, "u_SRMotionVectors", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC);
-    PSOCreateInfo.PSODesc.ResourceLayout = ResourceLayout;
-
-    pStateCache->CreateComputePipelineState(PSOCreateInfo, &m_MotionConversionPSO);
-    VERIFY(m_MotionConversionPSO, "Failed to create RTXPT super resolution motion conversion PSO");
-    if (!m_MotionConversionPSO)
-    {
-        DEV_ERROR("Failed to create RTXPT super resolution motion conversion PSO");
-        return false;
-    }
-
-    m_MotionConversionPSO->CreateShaderResourceBinding(&m_MotionConversionSRB, true);
-    VERIFY(m_MotionConversionSRB, "Failed to create RTXPT super resolution motion conversion SRB");
-    if (!m_MotionConversionSRB)
-    {
-        DEV_ERROR("Failed to create RTXPT super resolution motion conversion SRB");
-        return false;
-    }
-
-    return true;
-}
-
-bool RTXPTSuperResolutionPass::EnsureMotionConversionResources(IRenderDevice* pDevice, const RTXPTRenderTargets& RenderTargets)
+//The depth reconstructs the guides' camera rays with the uploaded constants, so it is exact for guides traced with
+//sampleBaseIndex (one sample per pixel, without sub-sampling); other configurations get the ray of that sample.
+bool RTXPTSuperResolutionPass::PrepareInputs(IDeviceContext* pContext, const RTXPTRenderTargets& RenderTargets)
 {
     const Uint32 Width  = RenderTargets.GetRenderWidth();
     const Uint32 Height = RenderTargets.GetRenderHeight();
-
-    if (Width == 0 || Height == 0)
+    if ((m_Inputs.GetWidth() != Width || m_Inputs.GetHeight() != Height) && !m_Inputs.Resize(m_Device, Width, Height))
     {
-        DEV_ERROR("RTXPT super resolution motion conversion dimensions are invalid");
+        DEV_ERROR("Failed to create RTXPT super resolution inputs");
         return false;
     }
-
-    if (m_SRMotionVectors && m_SRMotionWidth == Width && m_SRMotionHeight == Height)
-        return true;
-
-    m_SRMotionVectors.Release();
-    m_SRMotionWidth  = 0;
-    m_SRMotionHeight = 0;
-
-    TextureDesc MotionDesc;
-    MotionDesc.Name      = "RTXPT SuperResolution motion vectors";
-    MotionDesc.Type      = RESOURCE_DIM_TEX_2D;
-    MotionDesc.Width     = Width;
-    MotionDesc.Height    = Height;
-    MotionDesc.Format    = kSRMotionFormat;
-    MotionDesc.BindFlags = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
-    pDevice->CreateTexture(MotionDesc, nullptr, &m_SRMotionVectors);
-    if (!GetSRMotionSRV() || !GetSRMotionUAV())
+    if (!m_Inputs.Prepare(pContext, RenderTargets.GetDepthSRV(), RenderTargets.GetScreenMotionVectorsSRV()))
     {
-        m_SRMotionVectors.Release();
-        DEV_ERROR("Failed to create RTXPT super resolution motion texture");
+        DEV_ERROR("RTXPT super resolution input preparation failed");
         return false;
     }
-
-    m_SRMotionWidth  = Width;
-    m_SRMotionHeight = Height;
-    return true;
-}
-
-ITextureView* RTXPTSuperResolutionPass::GetSRMotionSRV() const
-{
-    return GetDefaultView(m_SRMotionVectors, TEXTURE_VIEW_SHADER_RESOURCE);
-}
-
-ITextureView* RTXPTSuperResolutionPass::GetSRMotionUAV() const
-{
-    return GetDefaultView(m_SRMotionVectors, TEXTURE_VIEW_UNORDERED_ACCESS);
-}
-
-bool RTXPTSuperResolutionPass::ConvertMotionVectors(IDeviceContext* pContext, const RTXPTRenderTargets& RenderTargets)
-{
-    if (!EnsureMotionConversionResources(m_Device, RenderTargets))
-        return false;
-
-    const bool Bound =
-        SetDynamicVariable(m_MotionConversionSRB, "t_RTXPTMotionVectors", RenderTargets.GetScreenMotionVectorsSRV()) &&
-        SetDynamicVariable(m_MotionConversionSRB, "u_SRMotionVectors", GetSRMotionUAV());
-    if (!Bound)
-    {
-        DEV_ERROR("RTXPT super resolution motion conversion failed to bind resources");
-        return false;
-    }
-
-    pContext->SetPipelineState(m_MotionConversionPSO);
-    pContext->CommitShaderResources(m_MotionConversionSRB, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-    pContext->DispatchCompute(DispatchComputeAttribs{(m_SRMotionWidth + kSRMotionThreadGroupSize - 1u) / kSRMotionThreadGroupSize,
-                                                     (m_SRMotionHeight + kSRMotionThreadGroupSize - 1u) / kSRMotionThreadGroupSize,
-                                                     1u});
     return true;
 }
 
@@ -541,8 +388,6 @@ bool RTXPTSuperResolutionPass::Execute(IDeviceContext* pContext, const RTXPTSupe
     ExecuteSuperResolutionAttribs Attribs;
     Attribs.pContext            = pContext;
     Attribs.pColorTextureSRV    = ExecuteAttribs.pColorSRV != nullptr ? ExecuteAttribs.pColorSRV : RenderTargets.GetSuperResolutionColorSRV();
-    Attribs.pDepthTextureSRV    = RenderTargets.GetDepthSRV();
-    Attribs.pMotionVectorsSRV   = RenderTargets.GetScreenMotionVectorsSRV();
     Attribs.pOutputTextureView  = ExecuteAttribs.pOutputUAV != nullptr ? ExecuteAttribs.pOutputUAV : RenderTargets.GetSuperResolutionOutputUAV();
     Attribs.StateTransitionMode = RESOURCE_STATE_TRANSITION_MODE_TRANSITION;
     Attribs.JitterX             = FrameDesc.Jitter.x;
@@ -570,20 +415,21 @@ bool RTXPTSuperResolutionPass::Execute(IDeviceContext* pContext, const RTXPTSupe
         return FailExecute("super resolution render target dimensions do not match frame desc");
     if (Attribs.pColorTextureSRV == nullptr)
         return FailExecute("super resolution color SRV is null");
-    if (Attribs.pDepthTextureSRV == nullptr)
-        return FailExecute("super resolution depth SRV is null");
+    if (RenderTargets.GetDepthSRV() == nullptr)
+        return FailExecute("super resolution ray distance SRV is null");
     if (RenderTargets.GetScreenMotionVectorsSRV() == nullptr)
         return FailExecute("super resolution motion vectors SRV is null");
     if (Attribs.pOutputTextureView == nullptr)
         return FailExecute("super resolution output UAV is null");
     if (m_Upscaler == nullptr)
         return FailExecute("super resolution upscaler is null");
-    if (!ConvertMotionVectors(pContext, RenderTargets))
+    if (!PrepareInputs(pContext, RenderTargets))
         return false;
 
-    Attribs.pMotionVectorsSRV = GetSRMotionSRV();
-    if (Attribs.pMotionVectorsSRV == nullptr)
-        return FailExecute("super resolution converted motion vectors SRV is null");
+    // Projected depth, not the ray distance of the guides, which DLSS would misread as depth.
+    Attribs.pDepthTextureSRV             = m_Inputs.GetDepthSRV();
+    Attribs.pMotionVectorsSRV            = m_Inputs.GetMotionVectorsSRV();
+    Attribs.pIgnoreHistoryMaskTextureSRV = m_Inputs.GetIgnoreHistoryMaskSRV();
 
     if (!m_Upscaler->Execute(Attribs))
         return FailExecute("super resolution upscaler execute failed");

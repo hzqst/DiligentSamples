@@ -1,6 +1,7 @@
-# Reusable scene and embedded Reference/RealtimeRaw/RealtimeNative renderer. This entry point does not
+# Reusable scene and embedded Reference/RealtimeRaw/RealtimeNative/RealtimeDLSSSR renderer. This entry point does not
 # fetch assets or optional denoising/reconstruction SDKs. Hosts supply Diligent
-# dependencies, either source targets or an interface target for an installed SDK,
+# dependencies, either source targets or an interface target for an installed SDK, whose include directories
+# must cover the super resolution interface (RealtimeDLSSSR calls it; the host creates the factory),
 # and optionally an NRD target (NRD_TARGET, see rtxpt_add_nrd) for the standalone denoiser.
 # D3D_SHADER_REFLECTION states that the dependencies provide ShaderD3D.h when they are not
 # Diligent source targets; NRD needs it to bind its resources by register on D3D.
@@ -30,6 +31,9 @@ function(add_rtxpt_library target)
     target_link_libraries(${target} PUBLIC ${RTXPT_DEPENDENCIES})
     if(TARGET Diligent-GraphicsEngineD3D12Interface)
         target_link_libraries(${target} PUBLIC Diligent-GraphicsEngineD3D12Interface)
+    endif()
+    if(TARGET Diligent-SuperResolutionInterface)
+        target_link_libraries(${target} PUBLIC Diligent-SuperResolutionInterface)
     endif()
     target_compile_definitions(${target} PRIVATE RTXPT_SHARC_SHADER_DIR="${RTXPT_SHARC_SHADER_DIR}")
     if(RTXPT_NO_UI)
