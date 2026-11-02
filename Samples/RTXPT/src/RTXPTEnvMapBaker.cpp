@@ -64,6 +64,7 @@ namespace
 
 constexpr const char* kProceduralSkyPath          = "==PROCEDURAL_SKY==";
 constexpr Uint32      kFallbackCubeSize           = 4;
+constexpr Uint32      kMaxEnvironmentCubeSize     = 2048;
 constexpr Uint32      kMinImportanceMapResolution = 16;
 constexpr Uint32      kImportanceBakerThreads     = 16;
 constexpr Uint32      kImportanceSamplesPerAxis   = 4;
@@ -831,13 +832,13 @@ bool RTXPTEnvMapBaker::BakeHighResEnvironmentCube(IRenderDevice* pDevice, IDevic
     if (pPSO == nullptr || pSRB == nullptr)
         return false;
 
-    // Upstream RTXPT EnvMapBaker bakes a 2048-texel environment cube (1024 for the procedural sky); we
-    // use a fixed 2048 for every source so the cube texture -- and therefore the SRV the path tracer
-    // binds to t_EnvironmentMap as a STATIC resource -- is created once and reused across re-bakes
-    // (e.g. runtime environment swaps), only its contents are re-rendered. This is still 8x the
-    // resolution of the 256-texel prefiltered IBL cube it replaces, which washed out detail seen
-    // through small apertures such as windows.
-    const Uint32 TargetRes = 2048u;
+    // Upstream RTXPT EnvMapBaker bakes a 2048-texel environment cube (1024 for the procedural sky). A cube
+    // source keeps its own face size up to that limit: texels then map one to one, and a small sky (GoldSrc's
+    // 256-texel faces) neither costs a 2048 cube nor blurs through resampling. Equirect and procedural
+    // sources have no face size and use the limit. A changed size recreates the cube; the path tracer binds
+    // t_EnvironmentMap as a mutable variable and rebuilds its bindings when the texture view changes, as does the
+    // importance pass on every dispatch.
+    const Uint32 TargetRes = SourceIsCube ? std::min(m_SourceTexture->GetDesc().Width, kMaxEnvironmentCubeSize) : kMaxEnvironmentCubeSize;
 
     if (!m_EnvironmentCube || m_EnvironmentCubeResolution != TargetRes)
     {

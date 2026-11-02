@@ -55,6 +55,7 @@ constexpr Uint32 kMaxLightCount                     = RTXPT_LIGHTING_MAX_LIGHTS;
 constexpr Uint32 kLocalProxyCount                   = 128u;
 constexpr Uint32 kTileSize                          = 8u;
 constexpr float  kDistantVsLocalImportanceBaseScale = 0.0002f;
+constexpr float  kSphereSolidAngle                  = 4.0f * PI_F;
 constexpr Uint32 kLightingControlHeaderSizeBytes    = 112u;
 constexpr Uint32 kLightsBakerConstantsSizeBytes     = 464u;
 constexpr Uint32 kLightsBakerEnvMapParamsBaseWord   = 88u;
@@ -132,6 +133,13 @@ Uint32 FloatAsUint(float Value)
 }
 
 } // namespace
+
+float ComputeExplicitDistantLightsImportanceScale(Uint32 ImportanceMapResolution)
+{
+    // An environment quad's weight counts its importance-map texels, each 4 pi / resolution^2 steradians.
+    const float Texels = static_cast<float>(ImportanceMapResolution) * static_cast<float>(ImportanceMapResolution);
+    return Texels > 0.0f ? kSphereSolidAngle / (kDistantVsLocalImportanceBaseScale * Texels) : 1.0f;
+}
 
 void RTXPTLightsBaker::Reset()
 {
