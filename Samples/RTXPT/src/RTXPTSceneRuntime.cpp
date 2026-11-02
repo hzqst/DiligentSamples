@@ -212,13 +212,18 @@ const char* GetRTXPTErrorCodeString(RTXPTErrorCode Code)
         case RTXPTErrorCode::TraceFailed: return "the light sampling or path tracing dispatch failed";
         case RTXPTErrorCode::AccumulationFailed: return "the accumulation failed";
         case RTXPTErrorCode::ToneMappingFailed: return "the tone mapping failed";
-        case RTXPTErrorCode::UnsupportedViewConfiguration: return "embedded views require a supported mode, equal render/display sizes and an sRGB RGBA8 output RTV";
+        case RTXPTErrorCode::UnsupportedViewConfiguration: return "embedded views require a supported mode, its render/display sizes and an sRGB RGBA8 output RTV";
         case RTXPTErrorCode::GuidesFailed: return "realtime guides failed";
         case RTXPTErrorCode::RealtimeMergeFailed: return "realtime layer merge failed";
         case RTXPTErrorCode::DenoiserUnavailable: return "this build has no NRD denoiser";
         case RTXPTErrorCode::DenoiserUnsupportedDevice: return "the device lacks compute or a UAV format of the NRD denoiser inputs";
         case RTXPTErrorCode::DenoiserSetupFailed: return "NRD denoiser instances or pipelines could not be created";
         case RTXPTErrorCode::DenoiseFailed: return "realtime NRD denoising failed";
+        case RTXPTErrorCode::SuperResolutionUnavailable: return "no super resolution factory or DLSS variant";
+        case RTXPTErrorCode::SuperResolutionQueryFailed: return "DLSS does not support the quality for the output size";
+        case RTXPTErrorCode::SuperResolutionCreateFailed: return "the DLSS feature could not be created or failed its first execution";
+        case RTXPTErrorCode::SuperResolutionInputsFailed: return "the super resolution inputs could not be prepared";
+        case RTXPTErrorCode::SuperResolutionExecuteFailed: return "the DLSS evaluation failed";
     }
     return "unknown error";
 }

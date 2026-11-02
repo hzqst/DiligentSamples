@@ -2,9 +2,11 @@
 // Licensed under the Apache License, Version 2.0.
 #pragma once
 
+#include <algorithm>
 #include <cmath>
+#include <vector>
 
-#include "../../../../DiligentCore/Graphics/SuperResolution/interface/SuperResolutionFactory.h"
+#include "SuperResolutionFactory.h"
 #include "RTXPTFrameConstants.hpp"
 #include "RTXPTRenderTargets.hpp"
 #include "RTXPTSuperResolutionInputPass.hpp"
@@ -18,6 +20,31 @@ namespace Diligent
 //RTXPTSuperResolutionInputPass, exposure 1, and no pre-exposure, so display exposure stays with tone mapping.
 struct RTXPTSuperResolutionInputs
 {
+    //Core's VariantId_DLSS (SuperResolution/include/SuperResolutionVariants.hpp, which the SDK does not install). The
+    //Sample's super resolution validation checks that the two agree.
+    static constexpr INTERFACE_ID DLSSVariantId = {0x7b3a8d2e, 0x1f4c, 0x4e9a, {0xb5, 0xd0, 0x6c, 0x8e, 0x2f, 0x1a, 0x3b, 0x5d}};
+
+    //The temporal DLSS variant Factory enumerates, identified by the provider's variant ID rather than its name.
+    static bool FindDLSSVariant(ISuperResolutionFactory& Factory, SuperResolutionInfo& Variant)
+    {
+        Variant           = {};
+        Uint32 NumVariant = 0;
+        Factory.EnumerateVariants(NumVariant, nullptr);
+        std::vector<SuperResolutionInfo> Variants(NumVariant);
+        if (NumVariant != 0)
+            Factory.EnumerateVariants(NumVariant, Variants.data());
+        Variants.resize(NumVariant);
+        for (const SuperResolutionInfo& Info : Variants)
+        {
+            if (Info.VariantId == DLSSVariantId && Info.Type == SUPER_RESOLUTION_TYPE_TEMPORAL)
+            {
+                Variant = Info;
+                return true;
+            }
+        }
+        return false;
+    }
+
     //Desc is the upscaler of the queried output and quality at the input size the query returned. Fails on a query
     //result outside the provider's own range, so an unsupported size is never created.
     static bool MakeDesc(const SuperResolutionSourceSettingsAttribs& Query,
@@ -55,6 +82,14 @@ struct RTXPTSuperResolutionInputs
     {
         return {Desc.InputWidth, Desc.InputHeight, Desc.OutputWidth, Desc.OutputHeight,
                 Desc.InputWidth != Desc.OutputWidth || Desc.InputHeight != Desc.OutputHeight};
+    }
+
+    //The texture LOD bias that samples the textures for the output resolution: -log2 of the per-axis upscale factor.
+    static float ComputeTexLODBias(Uint32 RenderWidth, Uint32 RenderHeight, Uint32 DisplayWidth, Uint32 DisplayHeight)
+    {
+        const double RenderPixels  = static_cast<double>(std::max(RenderWidth, 1u)) * std::max(RenderHeight, 1u);
+        const double DisplayPixels = static_cast<double>(std::max(DisplayWidth, 1u)) * std::max(DisplayHeight, 1u);
+        return static_cast<float>(-std::log2(std::sqrt(DisplayPixels / RenderPixels)));
     }
 
     //Injects the upscaler's jitter (render pixels, as GetJitterOffset returns it) into the camera exactly once. The

@@ -19,6 +19,7 @@ struct IRenderStateCache;
 struct IPipelineStateCache;
 struct RTXPTRealtimeStats;
 class RTXPTGpuProfiler;
+struct ISuperResolutionFactory;
 
 enum class RTXPTViewMode
 {
@@ -26,6 +27,17 @@ enum class RTXPTViewMode
     RealtimeRaw,
     //Current-frame layers denoised by RELAX with per-view, per-layer history; needs NRD (RTXPTIsNrdAvailable).
     RealtimeNative,
+    //RealtimeNative at the render size DLSS reports for the display size and quality, then upscaled to the display size
+    //by the view's own DLSS feature and history; needs NRD and a super resolution factory with DLSS.
+    RealtimeDLSSSR,
+};
+
+//The DLSS quality of RealtimeDLSSSR. Each is queried exactly; an unsupported one fails rather than another substituting.
+enum class RTXPTUpscaleQuality
+{
+    Quality,
+    Balanced,
+    Performance,
 };
 
 //The embedded renderer serves hosts with their own window, device, camera and presentation. All scene loading remains
@@ -64,7 +76,7 @@ enum class RTXPTViewOutput
     //Current-frame linear HDR of Reference and Raw. Native never publishes its denoised result as noisy radiance.
     NoisyRadiance,
     AccumulatedRadiance,
-    //Native only: the merged linear HDR of the denoised layers, before tone mapping.
+    //Native and DLSSSR: the merged render-size linear HDR of the denoised layers, before super resolution and tone mapping.
     DenoisedRadiance,
     //Realtime guides: ray distance is NOT view-space Z; RTXPTRealtimeStats::DynamicMotionValidated states the motion scope.
     RayDistance,
@@ -77,6 +89,13 @@ enum class RTXPTViewOutput
     //Native only, per denoising layer (R8 UNORM): the history confidence NRD received, 0 where the layer's path has no
     //valid previous correspondence.
     LayerHistoryConfidence,
+    //DLSSSR only: the display-size linear HDR of the upscaler, before tone mapping.
+    UpscaledRadiance,
+    //DLSSSR only, at render size: the depth (R32F, forward [0,1], far 1), motion (RG16F, current-to-previous render
+    //pixels) and ignore-history mask (R8 UNORM) the upscaler received.
+    SuperResolutionDepth,
+    SuperResolutionMotion,
+    SuperResolutionIgnoreHistoryMask,
 };
 
 enum class RTXPTOutputEncoding
@@ -116,8 +135,29 @@ struct RTXPTViewHistoryInfo
     Uint64                  SkinnedVertexStorageBytes     = 0;
 };
 
-//Sizes are local to the view texture; host viewport offsets belong to final composition only.
-//Every mode currently requires equal nonempty render/display sizes and an sRGB RGBA8 output RTV.
+//The DLSS feature of a RealtimeDLSSSR view; empty for the other modes. Counters cover the view since Initialize.
+struct RTXPTViewSuperResolutionInfo
+{
+    std::string         Variant;
+    RTXPTUpscaleQuality Quality = RTXPTUpscaleQuality::Quality;
+    //The input size the query returned for the display size and quality, and that display size.
+    RTXPTViewSize RenderSize;
+    RTXPTViewSize DisplaySize;
+    //The jitter (render pixels) and history restart of the latest successful Render, whose jitter index is its
+    //FrameIndex - 1: the sequence advances with successful frames only.
+    float2 Jitter    = float2{0, 0};
+    bool   LastReset = false;
+    //Accepted Execute calls, the ones among them that restarted history, and Render calls whose upscaling (input
+    //preparation or Execute) failed.
+    Uint32 Executes = 0;
+    Uint32 Resets   = 0;
+    Uint32 Failures = 0;
+};
+
+//Sizes are local to the view texture; host viewport offsets belong to final composition only. Every mode requires a
+//nonempty display size and an sRGB RGBA8 output RTV. Reference, Raw and Native render at the display size, which
+//RenderSize must equal. RealtimeDLSSSR leaves RenderSize empty: the DLSS query for the display size and quality
+//determines it (GetRenderSize), and the host's camera then describes that size.
 struct RTXPTEmbeddedViewCreateInfo
 {
     const RTXPTEmbeddedScene*        Scene    = nullptr;
@@ -131,6 +171,9 @@ struct RTXPTEmbeddedViewCreateInfo
     bool                             EnableProfiling  = false;
     //Native validation control only: false makes NRD ignore the per-pixel history validity of the layers.
     bool NativeHistoryConfidence = true;
+    //RealtimeDLSSSR only: the device's super resolution factory, which the view keeps, and the quality.
+    ISuperResolutionFactory* SuperResolutionFactory = nullptr;
+    RTXPTUpscaleQuality      UpscaleQuality         = RTXPTUpscaleQuality::Quality;
 };
 
 //The runtime scene of RTXPTScene and RTXPTMaterials and its prepared GPU frame. It keeps the GPU objects of both that
@@ -171,9 +214,10 @@ private:
 };
 
 //Reference or current-frame realtime path tracing of one camera of a ready RTXPTEmbeddedScene. Each view owns its
-//targets; only Reference accumulates radiance across frames. Raw and Native use the shared realtime pipeline and
-//publish debug guides; Native keeps one NRD history per layer and restarts it whenever the camera correspondence of
-//the frame is lost (first frame, cut, missing or failed frame, InvalidateOutput).
+//targets; only Reference accumulates radiance across frames. Raw, Native and DLSSSR use the shared realtime pipeline
+//and publish debug guides; Native and DLSSSR keep one NRD history per layer and restart it whenever the camera
+//correspondence of the frame is lost (first frame, cut, missing or failed frame, InvalidateOutput). DLSSSR restarts
+//its DLSS history at the same points, and injects the DLSS jitter of its successful frame count into the camera.
 class RTXPTEmbeddedView
 {
 public:
@@ -183,7 +227,8 @@ public:
     RTXPTEmbeddedView& operator=(const RTXPTEmbeddedView&) = delete;
     //Creates new targets and history and waits for the GPU. Reinitialization invalidates previous outputs even on failure.
     RTXPTErrorCode Initialize(IRenderDevice* Device, IDeviceContext* Context, const RTXPTEmbeddedViewCreateInfo& CreateInfo);
-    //Exposure is a linear display multiplier in [2^-32, 2^32]; it never rescales accumulated/noisy HDR.
+    //Exposure is a linear display multiplier in [2^-32, 2^32]; it never rescales accumulated/noisy HDR. Camera and View
+    //describe the render size without jitter; DLSSSR adds its own.
     RTXPTErrorCode Render(const PathTracerCameraData& Camera, const PathTracerViewData& View, double Time, bool ResetHistory, float Exposure = 1.0f);
     // Revokes submitted output and temporal history after the host observes an execution failure.
     // Does not wait for the GPU or release resources that submitted commands may still reference.
@@ -192,14 +237,17 @@ public:
     //current only after Render succeeds. Its UNORM SRV copies sRGB-encoded bytes without a second decode/encode cycle.
     ITexture* GetOutput() const;
     //Layer selects the denoising layer of per-layer outputs and must be 0 for the others.
-    RTXPTViewOutputInfo         GetOutputInfo(RTXPTViewOutput Output, Uint32 Layer = 0) const;
-    RTXPTViewMode               GetMode() const;
-    const RTXPTRealtimeStats&   GetRealtimeStats() const;
-    IBuffer*                    GetRealtimeLayerBuffer() const;
-    const RTXPTViewHistoryInfo& GetHistoryInfo() const;
-    Uint32                      GetTraceCount() const;
-    Uint32                      GetAccumulationCount() const;
-    RTXPTGpuProfiler&           GetProfiler();
+    RTXPTViewOutputInfo                 GetOutputInfo(RTXPTViewOutput Output, Uint32 Layer = 0) const;
+    RTXPTViewMode                       GetMode() const;
+    RTXPTViewSize                       GetRenderSize() const;
+    RTXPTViewSize                       GetDisplaySize() const;
+    const RTXPTViewSuperResolutionInfo& GetSuperResolutionInfo() const;
+    const RTXPTRealtimeStats&           GetRealtimeStats() const;
+    IBuffer*                            GetRealtimeLayerBuffer() const;
+    const RTXPTViewHistoryInfo&         GetHistoryInfo() const;
+    Uint32                              GetTraceCount() const;
+    Uint32                              GetAccumulationCount() const;
+    RTXPTGpuProfiler&                   GetProfiler();
 
 private:
     struct Impl;

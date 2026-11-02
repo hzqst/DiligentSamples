@@ -130,6 +130,13 @@ enum class RTXPTErrorCode : Uint32
     DenoiserUnsupportedDevice,
     DenoiserSetupFailed,
     DenoiseFailed,
+
+    // RealtimeDLSSSR super resolution
+    SuperResolutionUnavailable,
+    SuperResolutionQueryFailed,
+    SuperResolutionCreateFailed,
+    SuperResolutionInputsFailed,
+    SuperResolutionExecuteFailed,
 };
 
 const char* GetRTXPTErrorCodeString(RTXPTErrorCode Code);

@@ -71,6 +71,7 @@ set(INCLUDE
     tests/RRSceneValidation.hpp
     tests/HDRValidationCapture.hpp
     tests/SubSamplingSceneValidation.hpp
+    tests/SRSceneValidation.hpp
 )
 
 set(SHADERS

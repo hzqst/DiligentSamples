@@ -40,6 +40,7 @@
 #include "Texture.h"
 
 #include "RTXPTRenderTargets.hpp"
+#include "RTXPTSuperResolutionInputPass.hpp"
 
 namespace Diligent
 {
@@ -101,7 +102,8 @@ class RTXPTSuperResolutionPass
 {
 public:
     void Reset();
-    bool Initialize(IRenderDevice* pDevice, IRenderStateCache* pStateCache);
+    //pFrameConstants holds the SampleConstants the guides were traced with; the depth reconstructs their camera rays.
+    bool Initialize(IRenderDevice* pDevice, IRenderStateCache* pStateCache, IBuffer* pFrameConstants);
 
     RTXPTSuperResolutionFrameDesc ResolveFrameDesc(const RTXPTSuperResolutionSettings& Settings,
                                                    Uint32                              DisplayWidth,
@@ -118,11 +120,7 @@ public:
 
 private:
     const SuperResolutionInfo* GetActiveVariant(const RTXPTSuperResolutionSettings& Settings) const;
-    bool                       CreateMotionConversionPipeline(IRenderDevice* pDevice, IRenderStateCache* pStateCache);
-    bool                       EnsureMotionConversionResources(IRenderDevice* pDevice, const RTXPTRenderTargets& RenderTargets);
-    bool                       ConvertMotionVectors(IDeviceContext* pContext, const RTXPTRenderTargets& RenderTargets);
-    ITextureView*              GetSRMotionSRV() const;
-    ITextureView*              GetSRMotionUAV() const;
+    bool                       PrepareInputs(IDeviceContext* pContext, const RTXPTRenderTargets& RenderTargets);
     bool                       EnsureUpscaler(const RTXPTSuperResolutionFrameDesc& FrameDesc);
     SUPER_RESOLUTION_FLAGS     GetFlags(const SuperResolutionInfo& Variant, float Sharpness) const;
 
@@ -130,14 +128,12 @@ private:
     RefCntAutoPtr<IRenderDevice>           m_Device;
     RefCntAutoPtr<ISuperResolutionFactory> m_Factory;
     RefCntAutoPtr<ISuperResolution>        m_Upscaler;
-    RefCntAutoPtr<IPipelineState>          m_MotionConversionPSO;
-    RefCntAutoPtr<IShaderResourceBinding>  m_MotionConversionSRB;
-    RefCntAutoPtr<ITexture>                m_SRMotionVectors;
-    std::vector<SuperResolutionInfo>       m_Variants;
-    RTXPTSuperResolutionStats              m_Stats;
-    SuperResolutionDesc                    m_UpscalerDesc;
-    Uint32                                 m_SRMotionWidth  = 0;
-    Uint32                                 m_SRMotionHeight = 0;
+    //The render-size depth, motion and ignore-history mask the upscaler receives (shared with RealtimeDLSSSR).
+    RTXPTSuperResolutionInputPass    m_Inputs;
+    bool                             m_InputsReady = false;
+    std::vector<SuperResolutionInfo> m_Variants;
+    RTXPTSuperResolutionStats        m_Stats;
+    SuperResolutionDesc              m_UpscalerDesc;
 };
 
 } // namespace Diligent

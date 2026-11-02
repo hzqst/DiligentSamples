@@ -1452,7 +1452,7 @@ Debug DiligentCore build in `<core-build>`:
 ```bat
 cl /nologo /std:c++17 /EHsc /MDd /D_DEBUG /DDEVELOPMENT /DPLATFORM_WIN32=1 /DNOMINMAX ^
  /IDiligentCore\Platforms\Basic\interface /IDiligentCore\Primitives\interface /IDiligentCore\Common\interface ^
- /IDiligentCore\Graphics\GraphicsEngine\interface /IDiligentCore\Graphics\GraphicsTools\interface /IDiligentCore\Graphics\GraphicsAccessories\interface ^
+ /IDiligentCore\Graphics\SuperResolution\interface /IDiligentCore\Graphics\GraphicsEngine\interface /IDiligentCore\Graphics\GraphicsTools\interface /IDiligentCore\Graphics\GraphicsAccessories\interface ^
  DiligentSamples\Samples\RTXPT\tests\SRPrepareInputsTest.cpp DiligentSamples\Samples\RTXPT\src\RTXPTSuperResolutionInputPass.cpp ^
  /Fo"%TEMP%\\" /Fe"%TEMP%\SRPrepareInputsTest.exe" /link user32.lib ^
  <core-build>\Graphics\GraphicsAccessories\Debug\Diligent-GraphicsAccessories.lib ^
@@ -1473,3 +1473,48 @@ Both passed on RTX 5060 / Windows, Debug, 2026-11-02. Not covered here: alpha-ma
 surfaces and surface replacement through a real BUILD dispatch, the host
 viewport/guard pixels of final composition, and the jitter sign against an actual
 DLSS evaluation; they need the RealtimeDLSSSR view.
+
+## Realtime DLSS super resolution views (M4.3)
+
+`RTXPTViewMode::RealtimeDLSSSR` renders RealtimeNative's RELAX layers at the input
+size DLSS reports for the display size and quality (`RTXPTUpscaleQuality`), prepares
+the upscaler's depth, motion and ignore-history mask (`RTXPTSuperResolutionInputPass`),
+executes the view's own DLSS feature and tone maps at the display size. The host
+passes the device's `ISuperResolutionFactory`, leaves `RenderSize` empty, reads the
+render size from `GetRenderSize` and describes the camera at that size without
+jitter; the view injects the jitter of its successful frame count. Every failure
+invalidates the output and the next frame restarts NRD and DLSS history.
+
+`--sr_validation true` runs S05-S08 once on the Sample's scene and exits with 1 on
+any failure. A test double of the factory forwards to the real DLSS provider,
+records every Execute and injects failures:
+
+- S05: Quality, Balanced and Performance at 1280x720 and Quality at 1281x721 render at
+  exactly the size of an independent query and create one DLSS feature for it; one
+  accepted Execute per frame, only the first restarts history, the jitter follows the
+  successful frame count, inputs are at render size and the output at display size.
+  At display exposures 1, 0.5 and 2 the upscaled HDR keeps the mean luminance of its
+  input within 10%. A missing factory or DLSS variant, a failed or out-of-range query,
+  an unknown quality, a failed creation, a host render size and host jitter are
+  rejected without creating a feature for an unsupported query.
+- S06: static and moving cameras keep history; a cut and a missed host frame restart
+  it; a new size, quality or mode starts a new feature at jitter index 0.
+- S07: two DLSS views and a Native view share one scene preparation per frame; a view
+  that misses a frame restarts alone, and changing the render order changes nothing.
+- S08: a failed first Execute reports SuperResolutionCreateFailed, a later one
+  SuperResolutionExecuteFailed; neither publishes output or advances the frame count,
+  the next frame restarts history with the failed frame's jitter index, and the
+  neighbouring view keeps its history.
+
+```bat
+cd <DiligentEngine>\DiligentSamples\Samples\RTXPT
+RTXPT.exe --mode d3d12 --width 640 --height 360 --sr_validation true
+RTXPT.exe --mode d3d12 --embedded_mode dlss_sr --sr_quality quality --exit_after_frames 300
+```
+
+Both exited 0 on RTX 5060 / Windows, Debug, 2026-11-02; the Vulkan run of
+`--sr_validation` passed as well but reported `VUID-vkCmdDraw-None-09600` for NGX's
+internal `nv.ngx.dlss.resource` images. Not covered: a failure after an accepted
+Execute (tone mapping has no injection point; it shares the failure path above), a
+failed input preparation, image quality against Native and Reference, and the
+host's viewport composition.
