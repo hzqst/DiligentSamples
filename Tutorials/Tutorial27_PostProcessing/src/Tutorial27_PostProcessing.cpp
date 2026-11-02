@@ -353,7 +353,12 @@ void Tutorial27_PostProcessing::Update(double CurrTime, double ElapsedTime, bool
         SRAttribs.OutputFormat     = m_ShaderSettings->IsTemporalUpscaling() ? TEX_FORMAT_R11G11B10_FLOAT : TEX_FORMAT_RGBA8_UNORM_SRGB;
         SRAttribs.Flags            = m_ShaderSettings->IsTemporalUpscaling() ? SUPER_RESOLUTION_FLAG_AUTO_EXPOSURE : SUPER_RESOLUTION_FLAG_NONE;
         SRAttribs.OptimizationType = m_ShaderSettings->SROptimizationType;
-        m_pSRFactory->GetSourceSettings(SRAttribs, SRSettings);
+        if (!m_pSRFactory->GetSourceSettings(SRAttribs, SRSettings))
+        {
+            // The selected optimization type is unavailable for this variant; render at the output resolution.
+            SRSettings.OptimalInputWidth  = SCDesc.Width;
+            SRSettings.OptimalInputHeight = SCDesc.Height;
+        }
     }
     m_PostFXFrameDesc.Width        = SRSettings.OptimalInputWidth;
     m_PostFXFrameDesc.Height       = SRSettings.OptimalInputHeight;
