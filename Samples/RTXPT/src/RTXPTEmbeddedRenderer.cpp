@@ -156,6 +156,7 @@ RTXPTSceneRuntime& RTXPTEmbeddedScene::GetRuntime() { return m_Impl->Runtime; }
 const RTXPTImportedScene& RTXPTEmbeddedScene::GetImportedScene() const { return m_Impl->Imported; }
 
 const RTXPTSceneFrameStats& RTXPTEmbeddedScene::GetFrameStats() const { return m_Impl->Frames.GetStats(); }
+ITextureView*               RTXPTEmbeddedScene::GetEnvironmentMapSRV() const { return m_Impl->Environment.GetEnvironmentMapSRV(); }
 RTXPTPreparedSceneToken     RTXPTEmbeddedScene::GetPreparedToken() const { return m_Impl->Frames.GetFrame().Prepared; }
 RTXPTGpuProfiler&           RTXPTEmbeddedScene::GetProfiler() { return m_Impl->Profiler; }
 
@@ -363,7 +364,9 @@ RTXPTErrorCode RTXPTEmbeddedView::Initialize(IRenderDevice* Device, IDeviceConte
     R.Lighting.EnvMapParams                               = S.Environment.GetLightsBakerParams();
     R.Lighting.pEnvironmentRadianceMap                    = S.Environment.GetRadianceMapSRV();
     R.Lighting.EnvMapImportanceMapResolution              = S.Environment.GetStats().ImportanceResolution;
-    R.Lighting.EnvMapImportanceMapMipCount                = S.Environment.GetStats().ImportanceMipLevels;
+    //Distant lights stay explicit here, so the environment is weighed in their unit (see the function).
+    R.Lighting.DistantVsLocalImportanceScale = ComputeExplicitDistantLightsImportanceScale(R.Lighting.EnvMapImportanceMapResolution);
+    R.Lighting.EnvMapImportanceMapMipCount   = S.Environment.GetStats().ImportanceMipLevels;
     RTXPTLightsBakerCreateInfo LightsBakerCI;
     LightsBakerCI.pEngineFactory   = Factory;
     LightsBakerCI.pStateCache      = R.Cache;

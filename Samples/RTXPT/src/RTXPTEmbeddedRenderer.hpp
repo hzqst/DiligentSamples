@@ -158,8 +158,11 @@ public:
     //The work counters of the frames prepared for the scene since Initialize, its first frame included: each Prepare
     //prepares one frame and builds its TLAS once.
     const RTXPTSceneFrameStats& GetFrameStats() const;
-    RTXPTPreparedSceneToken     GetPreparedToken() const;
-    RTXPTGpuProfiler&           GetProfiler();
+    //The environment cube the views trace (radiance before the scene's radianceScale), baked from the scene's
+    //EnvironmentLight source at its face size (at most 2048), or a black cube without one. Valid once ready.
+    ITextureView*           GetEnvironmentMapSRV() const;
+    RTXPTPreparedSceneToken GetPreparedToken() const;
+    RTXPTGpuProfiler&       GetProfiler();
 
 private:
     friend class RTXPTEmbeddedView;
