@@ -27,6 +27,7 @@
 #pragma once
 
 #include "RTXPTRealtimeSettings.hpp"
+#include <cmath>
 
 #if RTXPT_HAS_NRD
 
@@ -39,6 +40,16 @@
 
 namespace Diligent
 {
+
+// The renderer uses seconds; NRD uses milliseconds and selects internal timing for nonpositive values.
+inline float RTXPTNrdFrameTimeMilliseconds(float Seconds)
+{
+    constexpr float kMillisecondsPerSecond = 1000.0f;
+    if (!std::isfinite(Seconds) || Seconds <= 0.0f)
+        return 0.0f;
+    const float Milliseconds = Seconds * kMillisecondsPerSecond;
+    return std::isfinite(Milliseconds) ? Milliseconds : 0.0f;
+}
 
 const char* RTXPTGetNrdUnavailableReason();
 bool        RTXPTIsNrdAvailable();

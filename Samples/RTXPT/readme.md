@@ -26,6 +26,12 @@ Noisy radiance is current-frame linear RGBA16F; reference accumulation is linear
 
 ## Shared realtime pipeline (RealtimeRaw and RealtimeNative)
 
+NRD frame time is converted from renderer seconds to SDK milliseconds at the adapter
+boundary. `LayerHistoryConfidence` is the current path assessment in **previous-frame
+coordinates**: Prepare clears coverage, reprojects each path to NRD's bilinear footprint,
+then resolves it with rejection winning conflicts and unmapped texels set to zero.
+It is not a current-pixel validity mask. See [NRD input contracts](tests/NRD_INPUT_CONTRACTS.md).
+
 `RTXPTEmbeddedView::Render` accepts an optional linear display exposure multiplier (default 1, range [2^-32, 2^32]). It changes the existing tone mapper's exposure compensation without rescaling HDR or resetting reference accumulation. Invalid exposure invalidates the frame output and returns `InvalidArgument`.
 
 Set `RTXPTEmbeddedViewCreateInfo::Mode = RTXPTViewMode::RealtimeRaw` to use the same `RTXPTRealtimePipeline` as the Sample's `--realtime_raw true` validation preset. Both use one sample per pixel, equal render/display sizes, an ordered graphics context, and manual exposure. Raw does not allocate progressive radiance history or run NRD, TAA, SR, RR, SHARC, Bloom, or auto exposure, and does not need NRD; the core library links NRD only when it is built with `NRD_TARGET`, and never NGX.

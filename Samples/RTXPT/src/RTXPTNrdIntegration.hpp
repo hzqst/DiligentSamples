@@ -59,7 +59,7 @@ struct RTXPTNrdFrameAttribs
     float                        TimeDeltaSeconds = -1.0f;
     bool                         ResetHistory     = false;
     bool                         EnableValidation = false;
-    // Binds the plane's DenoiserHistoryConfidence as NRD's IN_DIFF_CONFIDENCE and IN_SPEC_CONFIDENCE.
+    // Binds the plane's current assessment in previous-frame coordinates to NRD's confidence inputs.
     bool HistoryConfidence = false;
 };
 

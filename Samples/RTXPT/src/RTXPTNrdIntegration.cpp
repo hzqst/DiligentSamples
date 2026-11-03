@@ -768,7 +768,7 @@ void RTXPTNrdIntegration::PopulateCommonSettings(nrd::CommonSettings& Settings, 
     Settings.disocclusionThresholdAlternate      = Realtime.NRDDisocclusionThresholdAlternate;
     Settings.isDisocclusionThresholdMixAvailable = Realtime.NRDUseAlternateDisocclusionThresholdMix;
     Settings.isHistoryConfidenceAvailable        = Attribs.HistoryConfidence;
-    Settings.timeDeltaBetweenFrames              = Attribs.TimeDeltaSeconds;
+    Settings.timeDeltaBetweenFrames              = RTXPTNrdFrameTimeMilliseconds(Attribs.TimeDeltaSeconds);
     Settings.accumulationMode                    = Attribs.ResetHistory ? nrd::AccumulationMode::CLEAR_AND_RESTART : nrd::AccumulationMode::CONTINUE;
     Settings.resourceSize[0]                     = ToNrdDimension(RenderWidth);
     Settings.resourceSize[1]                     = ToNrdDimension(RenderHeight);

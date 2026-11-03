@@ -37,6 +37,7 @@
 
 #include "AsyncPrefix.hpp"
 #include "RTXPTNrdConfig.hpp"
+#include "RTXPTRayTracingPass.hpp"
 
 namespace Diligent
 {
@@ -57,6 +58,8 @@ const char* GetPassName(RTXPTPostProcessPassId Pass)
         case RTXPTPostProcessPassId::ReblurDenoiserFinalMerge: return "ReblurDenoiserFinalMerge";
         case RTXPTPostProcessPassId::NoDenoiserFinalMerge: return "NoDenoiserFinalMerge";
         case RTXPTPostProcessPassId::DLSSRRDenoiserPrepareInputs: return "DLSSRRDenoiserPrepareInputs";
+        case RTXPTPostProcessPassId::NrdConfidenceClear: return "NrdConfidenceClear";
+        case RTXPTPostProcessPassId::NrdConfidenceResolve: return "NrdConfidenceResolve";
         case RTXPTPostProcessPassId::Count: break;
     }
     return "Unknown";
@@ -73,6 +76,8 @@ const char* GetModeMacro(RTXPTPostProcessPassId Pass)
         case RTXPTPostProcessPassId::ReblurDenoiserFinalMerge: return "RTXPT_POST_PROCESS_REBLUR_FINAL_MERGE";
         case RTXPTPostProcessPassId::NoDenoiserFinalMerge: return "RTXPT_POST_PROCESS_NO_DENOISER_FINAL_MERGE";
         case RTXPTPostProcessPassId::DLSSRRDenoiserPrepareInputs: return "RTXPT_POST_PROCESS_DLSS_RR_PREPARE_INPUTS";
+        case RTXPTPostProcessPassId::NrdConfidenceClear: return "RTXPT_POST_PROCESS_NRD_CONFIDENCE_CLEAR";
+        case RTXPTPostProcessPassId::NrdConfidenceResolve: return "RTXPT_POST_PROCESS_NRD_CONFIDENCE_RESOLVE";
         case RTXPTPostProcessPassId::Count: break;
     }
     return "0";
@@ -90,6 +95,11 @@ bool IsDenoiserFinalMergePass(RTXPTPostProcessPassId Pass)
         Pass == RTXPTPostProcessPassId::ReblurDenoiserFinalMerge;
 }
 
+bool IsHistoryConfidencePass(RTXPTPostProcessPassId Pass)
+{
+    return Pass == RTXPTPostProcessPassId::NrdConfidenceClear || Pass == RTXPTPostProcessPassId::NrdConfidenceResolve;
+}
+
 bool IsPassInSet(RTXPTPostProcessPassId Pass, RTXPTPostProcessPassSet PassSet)
 {
     switch (PassSet)
@@ -98,7 +108,7 @@ bool IsPassInSet(RTXPTPostProcessPassId Pass, RTXPTPostProcessPassSet PassSet)
             return Pass == RTXPTPostProcessPassId::NoDenoiserFinalMerge;
         case RTXPTPostProcessPassSet::RealtimeNative:
             return Pass == RTXPTPostProcessPassId::RelaxDenoiserPrepareInputs ||
-                Pass == RTXPTPostProcessPassId::RelaxDenoiserFinalMerge;
+                Pass == RTXPTPostProcessPassId::RelaxDenoiserFinalMerge || IsHistoryConfidencePass(Pass);
         default:
             return true;
     }
@@ -187,6 +197,7 @@ bool BindDispatchResources(IShaderResourceBinding*                pSRB,
     const bool                PreparePass    = IsDenoiserPreparePass(Pass);
     const bool                FinalMergePass = IsDenoiserFinalMergePass(Pass);
     const bool                RRPreparePass  = Pass == RTXPTPostProcessPassId::DLSSRRDenoiserPrepareInputs;
+    const bool                ConfidencePass = IsHistoryConfidencePass(Pass);
     const bool                DenoisingLayersRequired =
         PreparePass || RRPreparePass ||
         Pass == RTXPTPostProcessPassId::DenoisingLayersDebugViz ||
@@ -215,7 +226,7 @@ bool BindDispatchResources(IShaderResourceBinding*                pSRB,
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "t_DenoiserOutValidation", pDenoiserOutValidationSRV, FinalMergePass, Pass, "denoiser validation SRV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "t_DenoiserViewspaceZ", RenderTargets.GetDenoiserViewspaceZSRV(), FinalMergePass, Pass, "denoiser viewspace Z SRV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "t_DenoiserDisocclusionThresholdMix", RenderTargets.GetDenoiserDisocclusionThresholdMixSRV(), false, Pass, "denoiser disocclusion threshold mix SRV") &&
-        SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_OutputColor", Attribs.pMergeOutputUAV, true, Pass, "merge output UAV") &&
+        SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_OutputColor", Attribs.pMergeOutputUAV, !ConfidencePass, Pass, "merge output UAV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_StableRadiance", RenderTargets.GetStableRadianceUAV(), DenoisingLayersRequired, Pass, "stable radiance UAV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_DenoisingLayersHeader", RenderTargets.GetDenoisingLayersHeaderUAV(), DenoisingLayersRequired, Pass, "stable planes header UAV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_DenoisingLayersBuffer", RenderTargets.GetDenoisingLayersBufferUAV(), StableBufferRequired, Pass, "stable planes buffer UAV") &&
@@ -226,7 +237,8 @@ bool BindDispatchResources(IShaderResourceBinding*                pSRB,
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_DenoiserSpecRadianceHitDist", RenderTargets.GetDenoiserSpecRadianceHitDistUAV(), PreparePass, Pass, "denoiser specular radiance hit distance UAV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_DenoiserDisocclusionThresholdMix", RenderTargets.GetDenoiserDisocclusionThresholdMixUAV(), PreparePass, Pass, "denoiser disocclusion threshold mix UAV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_CombinedHistoryClampRelax", RenderTargets.GetCombinedHistoryClampRelaxUAV(), PreparePass, Pass, "combined history clamp relax UAV") &&
-        SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_DenoiserHistoryConfidence", RenderTargets.GetDenoiserHistoryConfidenceUAV(Attribs.PlaneIndex), PreparePass, Pass, "denoiser history confidence UAV");
+        SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_DenoiserHistoryConfidenceCoverage", Attribs.pHistoryConfidenceCoverageUAV, PreparePass || ConfidencePass, Pass, "denoiser history coverage UAV") &&
+        SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_DenoiserHistoryConfidence", RenderTargets.GetDenoiserHistoryConfidenceUAV(Attribs.PlaneIndex), Pass == RTXPTPostProcessPassId::NrdConfidenceResolve, Pass, "denoiser history confidence UAV");
 }
 
 } // namespace
@@ -240,6 +252,8 @@ void RTXPTPostProcessPass::Reset()
     }
     m_FrameConstants.Release();
     m_MiniConstants.Release();
+    m_HistoryConfidenceCoverage.Release();
+    m_Device.Release();
     m_Stats = {};
 }
 
@@ -272,6 +286,7 @@ bool RTXPTPostProcessPass::Initialize(IRenderDevice* pDevice, IEngineFactory* pE
     }
 
     m_FrameConstants = pFrameConstants;
+    m_Device         = pDevice;
 
     std::string ShaderSearchPaths = "shaders;shaders\\PostProcessing;shaders\\PathTracer";
 #if RTXPT_HAS_NRD
@@ -401,7 +416,8 @@ bool RTXPTPostProcessPass::CreatePostProcessPSO(IRenderDevice*          pDevice,
         .AddVariable(SHADER_TYPE_COMPUTE, "u_DenoiserSpecRadianceHitDist", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_DenoiserDisocclusionThresholdMix", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_CombinedHistoryClampRelax", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
-        .AddVariable(SHADER_TYPE_COMPUTE, "u_DenoiserHistoryConfidence", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC);
+        .AddVariable(SHADER_TYPE_COMPUTE, "u_DenoiserHistoryConfidence", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
+        .AddVariable(SHADER_TYPE_COMPUTE, "u_DenoiserHistoryConfidenceCoverage", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC);
     PSOCreateInfo.PSODesc.ResourceLayout = ResourceLayout;
 
     if (pStateCache != nullptr)
@@ -451,6 +467,7 @@ bool RTXPTPostProcessPass::DispatchPass(IDeviceContext*                        p
 
     if (!IsDenoiserPreparePass(Pass) &&
         !IsDenoiserFinalMergePass(Pass) &&
+        !IsHistoryConfidencePass(Pass) &&
         Pass != RTXPTPostProcessPassId::DenoisingLayersDebugViz &&
         Pass != RTXPTPostProcessPassId::DLSSRRDenoiserPrepareInputs &&
         Pass != RTXPTPostProcessPassId::NoDenoiserFinalMerge)
@@ -493,11 +510,48 @@ bool RTXPTPostProcessPass::RunDenoiserPrepare(IDeviceContext* pContext, const RT
 {
     m_Stats.LastDenoiserPrepareExecuted = false;
 
+    if (pContext == nullptr || Attribs.pRenderTargets == nullptr || !m_Device)
+        return false;
+    const Uint32 Width  = Attribs.pRenderTargets->GetRenderWidth();
+    const Uint32 Height = Attribs.pRenderTargets->GetRenderHeight();
+    if (Width == 0 || Height == 0)
+        return false;
+    if (!m_HistoryConfidenceCoverage || m_HistoryConfidenceCoverage->GetDesc().Width != Width ||
+        m_HistoryConfidenceCoverage->GetDesc().Height != Height)
+    {
+        TextureDesc Desc;
+        Desc.Name                 = "RTXPT NRD history confidence coverage";
+        Desc.Type                 = RESOURCE_DIM_TEX_2D;
+        Desc.Width                = Width;
+        Desc.Height               = Height;
+        Desc.Format               = TEX_FORMAT_R32_UINT;
+        Desc.BindFlags            = BIND_UNORDERED_ACCESS;
+        Desc.ImmediateContextMask = kRTXPTImmediateContextMask;
+        RefCntAutoPtr<ITexture> Coverage;
+        m_Device->CreateTexture(Desc, nullptr, &Coverage);
+        if (!Coverage)
+            return false;
+        m_HistoryConfidenceCoverage = std::move(Coverage);
+    }
+
+    RTXPTDenoiserPostProcessAttribs PrepareAttribs = Attribs;
+    PrepareAttribs.pHistoryConfidenceCoverageUAV   = m_HistoryConfidenceCoverage->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS);
+    if (!DispatchPass(pContext, RTXPTPostProcessPassId::NrdConfidenceClear, PrepareAttribs))
+        return false;
+    RTXPTRayTracingPass::InsertUAVBarrier(pContext, PrepareAttribs.pHistoryConfidenceCoverageUAV);
+
     const RTXPTPostProcessPassId Pass =
         Attribs.Method == RTXPTNrdMethod::RELAX ?
         RTXPTPostProcessPassId::RelaxDenoiserPrepareInputs :
         RTXPTPostProcessPassId::ReblurDenoiserPrepareInputs;
-    const bool Executed = DispatchPass(pContext, Pass, Attribs);
+    bool Executed = DispatchPass(pContext, Pass, PrepareAttribs);
+    if (Executed)
+    {
+        RTXPTRayTracingPass::InsertUAVBarrier(pContext, PrepareAttribs.pHistoryConfidenceCoverageUAV);
+        Executed = DispatchPass(pContext, RTXPTPostProcessPassId::NrdConfidenceResolve, PrepareAttribs);
+        // Resolve reads the scratch UAV; the next layer/frame clears the same allocation.
+        RTXPTRayTracingPass::InsertUAVBarrier(pContext, PrepareAttribs.pHistoryConfidenceCoverageUAV);
+    }
     if (Executed)
     {
         m_Stats.LastDenoiserPrepareExecuted = true;
