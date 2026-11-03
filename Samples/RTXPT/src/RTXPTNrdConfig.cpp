@@ -139,9 +139,9 @@ nrd::RelaxSettings RTXPTMakeRelaxSettings(const RTXPTNrdRelaxUiSettings& Ui)
 nrd::ReblurSettings RTXPTMakeReblurSettings(const RTXPTNrdReblurUiSettings& Ui)
 {
     nrd::ReblurSettings Settings;
-    Settings.hitDistanceParameters.A = kRTXPTNrdHitDistanceA;
-    Settings.hitDistanceParameters.B = kRTXPTNrdHitDistanceB;
-    Settings.hitDistanceParameters.C = kRTXPTNrdHitDistanceC;
+    Settings.hitDistanceParameters.A       = kRTXPTNrdHitDistanceA;
+    Settings.hitDistanceParameters.B       = kRTXPTNrdHitDistanceB;
+    Settings.hitDistanceParameters.C       = kRTXPTNrdHitDistanceC;
     Settings.enableAntiFirefly             = Ui.EnableAntiFirefly;
     Settings.hitDistanceReconstructionMode = ToNrdHitDistanceMode(Ui.HitDistanceReconstructionMode);
     Settings.maxAccumulatedFrameNum        = Ui.MaxAccumulatedFrameNum;

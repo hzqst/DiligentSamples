@@ -82,11 +82,11 @@ enum class RTXPTDenoisingGuideDebugView : Uint32
     Disabled                 = 0,
     Depth                    = 1,
     MotionVectors            = 2,
-    SpecularHitT              = 3,
-    AvgLayerRadiance          = 4,
+    SpecularHitT             = 3,
+    AvgLayerRadiance         = 4,
     PrimaryLayer             = 5,
     LayerDiffuseHitDistance  = 6,
-    LayerSpecularHitDistance  = 7,
+    LayerSpecularHitDistance = 7,
     LayerHitDistanceValidity = 8
 };
 
@@ -141,7 +141,7 @@ struct RTXPTNrdReblurUiSettings
 
 struct RTXPTNrdRelaxUiSettings
 {
-    bool                                  EnableAntiFirefly                  = true;
+    bool EnableAntiFirefly = true;
     // FILL selects one BRDF lobe per path; the other lobe has no distance sample.
     RTXPTNrdHitDistanceReconstructionMode HitDistanceReconstructionMode      = RTXPTNrdHitDistanceReconstructionMode::Area5x5;
     float                                 DiffusePrepassBlurRadius           = 15.0f;

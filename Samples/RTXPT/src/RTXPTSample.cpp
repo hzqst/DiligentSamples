@@ -693,14 +693,13 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
     Args.Parse("nrd", m_RealtimeUI.StandaloneDenoiser);
     Args.ParseEnum<RTXPTNrdMethod>("nrd_method", 0, {{"reblur", RTXPTNrdMethod::REBLUR}, {"relax", RTXPTNrdMethod::RELAX}}, m_RealtimeUI.NRDMethod);
     Args.ParseEnum<RTXPTNrdHitDistanceReconstructionMode>("relax_hit_distance_reconstruction", 0,
-        {{"off", RTXPTNrdHitDistanceReconstructionMode::Off}, {"3x3", RTXPTNrdHitDistanceReconstructionMode::Area3x3}, {"5x5", RTXPTNrdHitDistanceReconstructionMode::Area5x5}},
-        m_RealtimeUI.RelaxSettings.HitDistanceReconstructionMode);
+                                                          {{"off", RTXPTNrdHitDistanceReconstructionMode::Off}, {"3x3", RTXPTNrdHitDistanceReconstructionMode::Area3x3}, {"5x5", RTXPTNrdHitDistanceReconstructionMode::Area5x5}},
+                                                          m_RealtimeUI.RelaxSettings.HitDistanceReconstructionMode);
     Args.Parse("relax_diffuse_prepass", m_RealtimeUI.RelaxSettings.DiffusePrepassBlurRadius);
     Args.Parse("relax_specular_prepass", m_RealtimeUI.RelaxSettings.SpecularPrepassBlurRadius);
     Args.ParseEnum<RTXPTDenoisingGuideDebugView>("nrd_guide_debug", 0,
-        {{"off", RTXPTDenoisingGuideDebugView::Disabled}, {"diffuse", RTXPTDenoisingGuideDebugView::LayerDiffuseHitDistance},
-         {"specular", RTXPTDenoisingGuideDebugView::LayerSpecularHitDistance}, {"validity", RTXPTDenoisingGuideDebugView::LayerHitDistanceValidity}},
-        m_RealtimeUI.DenoisingGuideDebugView);
+                                                 {{"off", RTXPTDenoisingGuideDebugView::Disabled}, {"diffuse", RTXPTDenoisingGuideDebugView::LayerDiffuseHitDistance}, {"specular", RTXPTDenoisingGuideDebugView::LayerSpecularHitDistance}, {"validity", RTXPTDenoisingGuideDebugView::LayerHitDistanceValidity}},
+                                                 m_RealtimeUI.DenoisingGuideDebugView);
     Args.Parse("rr_validation", m_ValidateRayReconstruction);
     Args.Parse("vk_rr", m_EnableVulkanRayReconstruction);
     Args.ParseEnum<RTXPTRealtimeAAMode>("aa", 0,
