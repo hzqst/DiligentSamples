@@ -219,6 +219,9 @@ const char* GetDenoisingGuideDebugViewName(RTXPTDenoisingGuideDebugView View)
         case RTXPTDenoisingGuideDebugView::SpecularHitT: return "Specular Hit T";
         case RTXPTDenoisingGuideDebugView::AvgLayerRadiance: return "Average Layer Radiance";
         case RTXPTDenoisingGuideDebugView::PrimaryLayer: return "Primary Layer";
+        case RTXPTDenoisingGuideDebugView::LayerDiffuseHitDistance: return "Layer Diffuse Hit Distance";
+        case RTXPTDenoisingGuideDebugView::LayerSpecularHitDistance: return "Layer Specular Hit Distance";
+        case RTXPTDenoisingGuideDebugView::LayerHitDistanceValidity: return "Layer Hit Distance Validity";
         default: return "Unknown";
     }
 }
@@ -689,6 +692,14 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
     Args.Parse("scene_animations", m_RequestSceneAnimations);
     Args.Parse("nrd", m_RealtimeUI.StandaloneDenoiser);
     Args.ParseEnum<RTXPTNrdMethod>("nrd_method", 0, {{"reblur", RTXPTNrdMethod::REBLUR}, {"relax", RTXPTNrdMethod::RELAX}}, m_RealtimeUI.NRDMethod);
+    Args.ParseEnum<RTXPTNrdHitDistanceReconstructionMode>("relax_hit_distance_reconstruction", 0,
+                                                          {{"off", RTXPTNrdHitDistanceReconstructionMode::Off}, {"3x3", RTXPTNrdHitDistanceReconstructionMode::Area3x3}, {"5x5", RTXPTNrdHitDistanceReconstructionMode::Area5x5}},
+                                                          m_RealtimeUI.RelaxSettings.HitDistanceReconstructionMode);
+    Args.Parse("relax_diffuse_prepass", m_RealtimeUI.RelaxSettings.DiffusePrepassBlurRadius);
+    Args.Parse("relax_specular_prepass", m_RealtimeUI.RelaxSettings.SpecularPrepassBlurRadius);
+    Args.ParseEnum<RTXPTDenoisingGuideDebugView>("nrd_guide_debug", 0,
+                                                 {{"off", RTXPTDenoisingGuideDebugView::Disabled}, {"diffuse", RTXPTDenoisingGuideDebugView::LayerDiffuseHitDistance}, {"specular", RTXPTDenoisingGuideDebugView::LayerSpecularHitDistance}, {"validity", RTXPTDenoisingGuideDebugView::LayerHitDistanceValidity}},
+                                                 m_RealtimeUI.DenoisingGuideDebugView);
     Args.Parse("rr_validation", m_ValidateRayReconstruction);
     Args.Parse("vk_rr", m_EnableVulkanRayReconstruction);
     Args.ParseEnum<RTXPTRealtimeAAMode>("aa", 0,
@@ -1876,6 +1887,9 @@ bool RTXPTSample::PresentRealtimeGuideDebug()
         return false;
     }
 
+    if (m_HDRCapture.Processed)
+        m_HDRCapture.Capture(m_pDevice, m_pImmediateContext, m_RenderTargets.GetProcessedOutputColorSRV()->GetTexture(), m_FrameIndex);
+
     const bool ToneMappingExecuted =
         m_PostProcessPipeline.RunToneMapping(m_pImmediateContext,
                                              m_RenderTargets,
@@ -3046,7 +3060,10 @@ void RTXPTSample::UpdateUI()
                     "Motion Vectors",
                     "Specular Hit T",
                     "Average Layer Radiance",
-                    "Primary Layer"};
+                    "Primary Layer",
+                    "Layer Diffuse Hit Distance",
+                    "Layer Specular Hit Distance",
+                    "Layer Hit Distance Validity"};
                 int GuideDebugView = static_cast<int>(m_RealtimeUI.DenoisingGuideDebugView);
                 if (ImGui::Combo("Denoising guide debug", &GuideDebugView, GuideDebugItems, _countof(GuideDebugItems)))
                 {
@@ -3055,7 +3072,9 @@ void RTXPTSample::UpdateUI()
                     RequestRealtimeReset(RTXPT_REALTIME_RESET_TAA_SR_HISTORY, "Denoising guide debug view changed");
                 }
                 if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Displays guide debug output from the G6 denoising-guides pass when realtime mode is active.");
+                    ImGui::SetTooltip("Layer distance views: top-left = layer 0, top-right = layer 1, bottom-left = layer 2.\n"
+                                      "Distance: black = missing, heat map = log distance.\n"
+                                      "Validity: red = diffuse sample, green = specular sample, blue = environment miss; magenta = invalid.");
             }
 
             if (ImGui::CollapsingHeader("Bloom"))

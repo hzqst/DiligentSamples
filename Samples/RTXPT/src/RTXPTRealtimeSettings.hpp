@@ -79,12 +79,15 @@ enum class RTXPTNrdMethod : Uint32
 
 enum class RTXPTDenoisingGuideDebugView : Uint32
 {
-    Disabled         = 0,
-    Depth            = 1,
-    MotionVectors    = 2,
-    SpecularHitT     = 3,
-    AvgLayerRadiance = 4,
-    PrimaryLayer     = 5
+    Disabled                 = 0,
+    Depth                    = 1,
+    MotionVectors            = 2,
+    SpecularHitT             = 3,
+    AvgLayerRadiance         = 4,
+    PrimaryLayer             = 5,
+    LayerDiffuseHitDistance  = 6,
+    LayerSpecularHitDistance = 7,
+    LayerHitDistanceValidity = 8
 };
 
 enum class RTXPTNrdHitDistanceReconstructionMode : Uint32
@@ -138,10 +141,11 @@ struct RTXPTNrdReblurUiSettings
 
 struct RTXPTNrdRelaxUiSettings
 {
-    bool                                  EnableAntiFirefly                  = true;
-    RTXPTNrdHitDistanceReconstructionMode HitDistanceReconstructionMode      = RTXPTNrdHitDistanceReconstructionMode::Off;
-    float                                 DiffusePrepassBlurRadius           = 0.0f;
-    float                                 SpecularPrepassBlurRadius          = 0.0f;
+    bool EnableAntiFirefly = true;
+    // FILL selects one BRDF lobe per path; the other lobe has no distance sample.
+    RTXPTNrdHitDistanceReconstructionMode HitDistanceReconstructionMode      = RTXPTNrdHitDistanceReconstructionMode::Area5x5;
+    float                                 DiffusePrepassBlurRadius           = 15.0f;
+    float                                 SpecularPrepassBlurRadius          = 40.0f;
     Uint32                                DiffuseMaxAccumulatedFrameNum      = 25;
     Uint32                                SpecularMaxAccumulatedFrameNum     = 40;
     Uint32                                DiffuseMaxFastAccumulatedFrameNum  = 5;
@@ -241,7 +245,7 @@ inline void SanitizeRealtimeSettings(RTXPTRealtimeSettings& Settings)
 
     const Uint32 GuideDebugView      = std::clamp(static_cast<Uint32>(Settings.DenoisingGuideDebugView),
                                              static_cast<Uint32>(RTXPTDenoisingGuideDebugView::Disabled),
-                                             static_cast<Uint32>(RTXPTDenoisingGuideDebugView::PrimaryLayer));
+                                             static_cast<Uint32>(RTXPTDenoisingGuideDebugView::LayerHitDistanceValidity));
     Settings.DenoisingGuideDebugView = static_cast<RTXPTDenoisingGuideDebugView>(GuideDebugView);
 
     Settings.RealtimeFireflyFilterThreshold = std::clamp(Settings.RealtimeFireflyFilterThreshold, 0.00001f, 1000.0f);

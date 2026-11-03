@@ -320,6 +320,15 @@ namespace PathTracer
 
         if (!path.hasFlag(PathFlags::denoisingLayerOnPlane))
             path.incrementCounter(PackedCounters::BouncesFromDenoisingLayer);
+
+        // A delta transition to another retained plane replaces the current surface;
+        // only start a guide when stochastic continuation leaves this layer itself.
+        if (wasOnDenoisingLayer && !path.hasFlag(PathFlags::denoisingLayerOnPlane))
+        {
+            const uint lobe = path.hasFlag(PathFlags::denoisingLayerBaseScatterDiff) ?
+                kDenoisingHitDistanceDiffuse : kDenoisingHitDistanceSpecular;
+            workingContext.DenoisingLayers.BeginHitDistance(path, lobe);
+        }
     }
 #endif
 

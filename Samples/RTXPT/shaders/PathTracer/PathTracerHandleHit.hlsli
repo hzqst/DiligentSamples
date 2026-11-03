@@ -12,6 +12,11 @@ namespace PathTracer
                           const WorkingContext workingContext)
     {
         UpdatePathTravelled(path, rayOrigin, rayDir, rayTCurrent, workingContext);
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_FILL_DENOISING_LAYERS
+        // Accumulate through rejected dielectric boundaries without including the
+        // replayed primary/virtual surface. BeginHitDistance arms only outgoing rays.
+        workingContext.DenoisingLayers.AddHitDistanceSegment(path, rayTCurrent);
+#endif
 
         float volumeAbsorption = 0.0;
 #if RTXPT_NESTED_DIELECTRICS_QUALITY > 0 || defined(__INTELLISENSE__)
@@ -37,6 +42,9 @@ namespace PathTracer
             return;
         }
 
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_FILL_DENOISING_LAYERS
+        workingContext.DenoisingLayers.CompleteHitDistance(path, false);
+#endif
         float3 referenceSurfaceEmission = surfaceEmission;
 #if PATH_TRACER_MODE != PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
         const NEEBSDFMISInfo prevMISInfo = NEEBSDFMISInfo::Unpack16bit(path.GetPackedMISInfo());

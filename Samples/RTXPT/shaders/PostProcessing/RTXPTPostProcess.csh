@@ -200,18 +200,17 @@ void main(uint3 DispatchThreadID : SV_DispatchThreadID)
             RTXPTClampRadiance(DenoiserDiffRadiance, g_Frame.ptConsts.denoiserRadianceClampK * 16.0);
             RTXPTClampRadiance(DenoiserSpecRadiance, g_Frame.ptConsts.denoiserRadianceClampK * 16.0);
 
-            float SpecHitT = 0.0;
-            if (DenoisingLayers.LoadDominantIndex(PixelPos) == DenoisingLayerIndex)
-                SpecHitT = t_SpecularHitT[PixelPos];
+            const float DiffHitT = SP.HitDistance.DiffuseSamples != 0u ? SP.HitDistance.DiffuseDistance : 0.0;
+            const float SpecHitT = SP.HitDistance.SpecularSamples != 0u ? SP.HitDistance.SpecularDistance : 0.0;
 
             u_DenoiserNormalRoughness[PixelPos] = RTXPTDenoiserPackNormalAndRoughness(SP.GetNormal(), FinalRoughness);
 
 #    if RTXPT_POST_PROCESS_MODE == RTXPT_POST_PROCESS_RELAX_PREPARE_INPUTS
-            u_DenoiserDiffRadianceHitDist[PixelPos] = RTXPTDenoiserRelaxPackRadianceHitDist(DenoiserDiffRadiance, 0.0);
+            u_DenoiserDiffRadianceHitDist[PixelPos] = RTXPTDenoiserRelaxPackRadianceHitDist(DenoiserDiffRadiance, DiffHitT);
             u_DenoiserSpecRadianceHitDist[PixelPos] = RTXPTDenoiserRelaxPackRadianceHitDist(DenoiserSpecRadiance, SpecHitT);
 #    else
-            const float DiffNormHitDist = 0.0;
-            const float SpecNormHitDist = RTXPTDenoiserReblurGetNormHitDist(SpecHitT, VirtualViewZ, SP.GetRoughness());
+            const float DiffNormHitDist = RTXPTDenoiserReblurGetNormHitDist(DiffHitT, VirtualViewZ, 1.0);
+            const float SpecNormHitDist = RTXPTDenoiserReblurGetNormHitDist(SpecHitT, VirtualViewZ, FinalRoughness);
             u_DenoiserDiffRadianceHitDist[PixelPos] = RTXPTDenoiserReblurPackRadianceNormHitDist(DenoiserDiffRadiance, DiffNormHitDist);
             u_DenoiserSpecRadianceHitDist[PixelPos] = RTXPTDenoiserReblurPackRadianceNormHitDist(DenoiserSpecRadiance, SpecNormHitDist);
 #    endif

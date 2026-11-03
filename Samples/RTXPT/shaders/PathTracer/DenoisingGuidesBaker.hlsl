@@ -74,6 +74,9 @@ static const int RTXPT_DENOISING_GUIDE_DEBUG_MOTION_VECTORS     = 2;
 static const int RTXPT_DENOISING_GUIDE_DEBUG_SPECULAR_HIT_T     = 3;
 static const int RTXPT_DENOISING_GUIDE_DEBUG_AVG_LAYER_RADIANCE = 4;
 static const int RTXPT_DENOISING_GUIDE_DEBUG_PRIMARY_LAYER      = 5;
+static const int RTXPT_DENOISING_GUIDE_DEBUG_LAYER_DIFFUSE_DISTANCE = 6;
+static const int RTXPT_DENOISING_GUIDE_DEBUG_LAYER_SPECULAR_DISTANCE = 7;
+static const int RTXPT_DENOISING_GUIDE_DEBUG_LAYER_DISTANCE_VALIDITY = 8;
 
 float3 DenoisingGuidesHeatMap(float GreyValue)
 {
@@ -260,6 +263,37 @@ void DebugViz(uint2 DispatchThreadID : SV_DispatchThreadID)
     {
         const uint PrimaryLayer = SelectPrimaryLayer(AvgLayerRadiance);
         Color                   = float4(PrimaryLayer == 0u, PrimaryLayer == 1u, PrimaryLayer == 2u, 1.0);
+    }
+    else if (DebugView >= RTXPT_DENOISING_GUIDE_DEBUG_LAYER_DIFFUSE_DISTANCE &&
+             DebugView <= RTXPT_DENOISING_GUIDE_DEBUG_LAYER_DISTANCE_VALIDITY)
+    {
+        const uint2 Size = g_DenoisingGuidesBakerConstants.RenderResolution;
+        const uint2 QuadrantSize = max((Size + 1u) / 2u, 1u.xx);
+        const uint2 Quadrant = PixelPos / QuadrantSize;
+        const uint Layer = Quadrant.x + Quadrant.y * 2u;
+        const uint2 SourcePixel = min((PixelPos % QuadrantSize) * 2u, Size - 1u);
+        DenoisingLayersContext Layers = DenoisingLayersContext::make(
+            u_DenoisingLayersHeader, u_DenoisingLayersBuffer, u_StableRadiance, g_Const.ptConsts);
+        if (Layer < g_Const.ptConsts.GetActiveDenoisingLayerCount() &&
+            Layers.GetBranchID(SourcePixel, Layer) != cDenoisingLayerInvalidBranchID)
+        {
+            DenoisingHitDistance Distance = Layers.LoadDenoisingLayer(SourcePixel, Layer).HitDistance;
+            if (DebugView == RTXPT_DENOISING_GUIDE_DEBUG_LAYER_DISTANCE_VALIDITY)
+            {
+                const uint MissFlags = kDenoisingHitDistanceDiffuseMiss | kDenoisingHitDistanceSpecularMiss;
+                // Half-intensity blue keeps a valid diffuse miss distinct from invalid magenta.
+                const float MissChannel = (Distance.Flags & MissFlags) != 0u ? 0.5 : 0.0;
+                Color.rgb = float3(Distance.DiffuseSamples != 0u, Distance.SpecularSamples != 0u, MissChannel);
+                if ((Distance.Flags & kDenoisingHitDistanceInvalid) != 0u)
+                    Color.rgb = float3(1, 0, 1);
+            }
+            else
+            {
+                const float HitT = DebugView == RTXPT_DENOISING_GUIDE_DEBUG_LAYER_DIFFUSE_DISTANCE ?
+                    Distance.DiffuseDistance : Distance.SpecularDistance;
+                Color.rgb = HitT > 0.0 ? DenoisingGuidesHeatMap(log2(1.0 + HitT) / log2(1.0 + kDenoisingHitDistanceFar)) : 0.0.xxx;
+            }
+        }
     }
 
     u_DebugOutput[PixelPos] = Color;

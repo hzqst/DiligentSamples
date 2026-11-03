@@ -108,6 +108,19 @@ struct RTXPTRenderTargetDimensions
     }
 };
 
+struct RTXPTDenoisingHitDistanceData
+{
+    float  DiffuseDistance  = 0.0f;
+    float  SpecularDistance = 0.0f;
+    Uint32 DiffuseSamples   = 0;
+    Uint32 SpecularSamples  = 0;
+    float  PendingDistance  = 0.0f;
+    Uint32 PendingLobe      = 0;
+    Uint32 Flags            = 0;
+    Uint32 Padding          = 0;
+};
+static_assert(sizeof(RTXPTDenoisingHitDistanceData) == 32, "Hit distance layout must match DenoisingHitDistance.hlsli");
+
 struct RTXPTDenoisingLayerData
 {
     float3 RayOrigin       = float3{0, 0, 0};
@@ -124,9 +137,11 @@ struct RTXPTDenoisingLayerData
     Uint32 FlagsAndVertexIndex              = 0;
     Uint32 PackedCounters                   = 0;
     // xyz: previous virtual surface; w: valid path correspondence (not a vendor motion mask).
-    float4 PreviousVirtualPosition = {};
+    float4                        PreviousVirtualPosition = {};
+    RTXPTDenoisingHitDistanceData HitDistance;
 };
-static_assert(sizeof(RTXPTDenoisingLayerData) == 96, "RTXPTDenoisingLayerData layout must match PathTracer/DenoisingLayers.hlsli DenoisingLayer");
+static_assert(sizeof(RTXPTDenoisingLayerData) == 128, "RTXPTDenoisingLayerData layout must match PathTracer/DenoisingLayers.hlsli DenoisingLayer");
+static_assert(offsetof(RTXPTDenoisingLayerData, HitDistance) == 96, "Hit distance offset must match DenoisingLayer");
 static_assert(offsetof(RTXPTDenoisingLayerData, PreviousVirtualPosition) == 80, "Previous virtual surface offset must match DenoisingLayer");
 static_assert(offsetof(RTXPTDenoisingLayerData, LastRayTCurrent) == 12, "RTXPTDenoisingLayerData LastRayTCurrent offset must match DenoisingLayer");
 static_assert(offsetof(RTXPTDenoisingLayerData, RayDir) == 16, "RTXPTDenoisingLayerData RayDir offset must match DenoisingLayer");
