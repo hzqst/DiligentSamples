@@ -4,6 +4,7 @@
 
 #include <array>
 #include <fstream>
+#include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <string>
@@ -27,6 +28,15 @@ namespace Diligent
 class RTXPTGpuProfiler
 {
 public:
+    ~RTXPTGpuProfiler()
+    {
+        //Do not wait for the GPU at retirement. Publish every unresolved tail sample explicitly.
+        Collect();
+        for (const Frame& Sample : m_Frames)
+            if (Sample.Pending)
+                WriteUnmeasured(Sample.Number, Sample.SourceFrame, "pending");
+    }
+
     enum class Stage : Uint32
     {
         Total,
@@ -78,7 +88,7 @@ public:
             if (m_Profiler)
                 m_Profiler->End(m_Context, m_Stage);
         }
-        Scope(const Scope&) = delete;
+        Scope(const Scope&)            = delete;
         Scope& operator=(const Scope&) = delete;
 
     private:
@@ -99,8 +109,29 @@ public:
     const Result&      GetLatest() const { return m_Latest; }
     bool               IsAvailable() const { return m_Available; }
     Uint64             GetDroppedCount() const { return m_Dropped; }
+    Uint64             GetAttemptCount() const { return m_FrameNumber; }
     static const char* GetStageName(size_t Index) { return kNames.at(Index); }
     void               Poll() { Collect(); }
+
+    //May be set after Initialize (embedded scenes prepare an initial frame there), before host frame sampling.
+    //The host supplies a unique path. An output failure is observable and does not disable rendering.
+    bool SetOutputFile(const std::filesystem::path& Path)
+    {
+        if (m_CSV.is_open())
+            return false;
+        m_CSV.open(Path);
+        if (!m_CSV)
+            return false;
+        m_CSV << "Frame,SourceFrame,Status,Dropped";
+        for (const char* Name : kNames)
+            m_CSV << ',' << Name << "_ms";
+        for (const char* Name : kNames)
+            m_CSV << ',' << Name << "_queue," << Name << "_begin_s," << Name << "_end_s";
+        m_CSV << '\n'
+              << std::fixed << std::setprecision(9);
+        m_CSV.flush();
+        return bool(m_CSV);
+    }
 
     Scope BeginFrame(IRenderDevice* Device, IDeviceContext* Context, bool Enabled, const std::string& CSVPath, Uint64 SourceFrame = 0)
     {
@@ -114,10 +145,13 @@ public:
             return false;
         if (!m_Initialized)
             Initialize(Device, CSVPath);
-        if (!m_Available)
-            return false;
-        Collect();
         ++m_FrameNumber;
+        if (!m_Available)
+        {
+            WriteUnmeasured(m_FrameNumber, SourceFrame, "unavailable");
+            return false;
+        }
+        Collect();
         for (Uint32 I = 0; I < kBufferedFrames; ++I)
         {
             Frame& Sample = m_Frames[I];
@@ -131,6 +165,7 @@ public:
             }
         }
         ++m_Dropped;
+        WriteUnmeasured(m_FrameNumber, SourceFrame, "dropped");
         return false;
     }
 
@@ -213,21 +248,9 @@ private:
                 if (!Query)
                     return;
             }
-        if (!CSVPath.empty())
+        if (!CSVPath.empty() && !SetOutputFile(CSVPath))
         {
-            m_CSV.open(CSVPath);
-            if (!m_CSV)
-                std::cerr << "Cannot open RTXPT GPU timing CSV: " << CSVPath << '\n';
-            else
-            {
-                m_CSV << "Frame";
-                for (const char* Name : kNames)
-                    m_CSV << ',' << Name << "_ms";
-                for (const char* Name : kNames)
-                    m_CSV << ',' << Name << "_queue," << Name << "_begin_s," << Name << "_end_s";
-                m_CSV << '\n'
-                      << std::fixed << std::setprecision(9);
-            }
+            std::cerr << "Cannot open RTXPT GPU timing CSV: " << CSVPath << '\n';
         }
         m_Available = true;
     }
@@ -245,7 +268,7 @@ private:
             if (!Ready)
                 continue;
             if (m_CSV)
-                m_CSV << Sample.Number;
+                m_CSV << Sample.Number << ',' << Sample.SourceFrame << ",complete," << m_Dropped;
             std::array<double, kStageCount> Starts{}, Stops{};
             Result                          Completed;
             Completed.FrameNumber = Sample.Number;
@@ -302,6 +325,18 @@ private:
                     m_CSV.flush();
             }
         }
+    }
+
+    void WriteUnmeasured(Uint64 Number, Uint64 SourceFrame, const char* Status)
+    {
+        if (!m_CSV.is_open() || !m_CSV)
+            return;
+        m_CSV << Number << ',' << SourceFrame << ',' << Status << ',' << m_Dropped;
+        for (size_t I = 0; I < kStageCount; ++I)
+            m_CSV << ",-1";
+        for (size_t I = 0; I < kStageCount; ++I)
+            m_CSV << ",-1,-1,-1";
+        m_CSV << '\n';
     }
 
     std::array<Frame, kBufferedFrames> m_Frames;

@@ -86,7 +86,7 @@ enum class RTXPTViewOutput
     SpecularHitDistance,
     AverageLayerRadiance,
     LayerHeader,
-    //Native only, per denoising layer (R8 UNORM): the history confidence NRD received, 0 where the layer's path has no
+    //Native and DLSSSR, per denoising layer (R8 UNORM): the history confidence NRD received, 0 where the layer's path has no
     //valid previous correspondence.
     LayerHistoryConfidence,
     //DLSSSR only: the display-size linear HDR of the upscaler, before tone mapping.
@@ -185,7 +185,7 @@ class RTXPTEmbeddedScene
 public:
     RTXPTEmbeddedScene();
     ~RTXPTEmbeddedScene();
-    RTXPTEmbeddedScene(const RTXPTEmbeddedScene&) = delete;
+    RTXPTEmbeddedScene(const RTXPTEmbeddedScene&)            = delete;
     RTXPTEmbeddedScene& operator=(const RTXPTEmbeddedScene&) = delete;
     //Imports the scene, prepares its first frame and waits for the GPU.
     RTXPTErrorCode Initialize(IRenderDevice* Device, IDeviceContext* Context, const RTXPTEmbeddedSceneCreateInfo& CreateInfo);
@@ -223,7 +223,7 @@ class RTXPTEmbeddedView
 public:
     RTXPTEmbeddedView();
     ~RTXPTEmbeddedView();
-    RTXPTEmbeddedView(const RTXPTEmbeddedView&) = delete;
+    RTXPTEmbeddedView(const RTXPTEmbeddedView&)            = delete;
     RTXPTEmbeddedView& operator=(const RTXPTEmbeddedView&) = delete;
     //Creates new targets and history and waits for the GPU. Reinitialization invalidates previous outputs even on failure.
     RTXPTErrorCode Initialize(IRenderDevice* Device, IDeviceContext* Context, const RTXPTEmbeddedViewCreateInfo& CreateInfo);

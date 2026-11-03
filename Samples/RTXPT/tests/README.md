@@ -96,6 +96,26 @@ and TLAS is separate. Nested intervals must not be summed with Total/ScenePrepar
 NRD, TAA, SR, RR and Bloom are not active in Raw. Total GPU allocation is unavailable;
 the manifest does not pass readback byte counts off as VRAM residency.
 
+Schema 2 also supports `RealtimeDLSSSR`: render-size denoised HDR, `sr_depth` (R32F,
+forward projected [0,1], far=1), `sr_motion` (RG16F, current-to-previous render pixels,
+without jitter), `sr_ignore_history` (R8 UNORM), display-size `upscaled_radiance` and
+tone-mapped display. It records each resource's successful frame index, actual extents,
+jitter and SR provider/quality/counters. `validate_realtime_capture.py` accepts legacy
+schema 1 and validates schema 2 SR extents/formats/depth range, then exports upscaled HDR
+to PFM. Run `python -m unittest discover -s tests -p test_validate_realtime_capture.py`
+for independent malformed-input/dual-resolution fixtures. Readback is still synchronous;
+the embedding host schedules captures and owns wall-clock/host-frame metadata.
+
+`RTXPTGpuProfiler::SetOutputFile` lets embedded hosts enable per-frame CSV output without
+readback; the host also enables profiling when creating scenes/views. Each row records
+Frame (attempt), SourceFrame (owner's logical frame), Status and cumulative Dropped before
+the stage columns. `complete` rows can still contain unmeasured stages (-1). Full rings
+emit `dropped`, disabled timestamp support emits `unavailable`, and retirement polls once
+without a GPU wait and emits unresolved tails as `pending`. Rows can arrive out of order.
+The host must join separate scene/view/composite streams, reject failed frames and missing
+required stages, discard warmup and retain at least 300 completed samples for a performance
+report. The existing 120-frame console mean is not a median/P95 report.
+
 ## Prepared surface history
 
 `SceneRuntimeTest.cpp` exercises the production `RTXPTSceneHistory` with stable

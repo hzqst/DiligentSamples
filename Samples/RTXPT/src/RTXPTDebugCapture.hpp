@@ -10,11 +10,12 @@
 #include "RTXPTRealtimeSettings.hpp"
 #include "GraphicsAccessories.hpp"
 #include "RTXPTGpuProfiler.hpp"
+#include "json.hpp"
 
 namespace Diligent
 {
 //Explicit development readback. The caller supplies a NEW directory and may add host metadata there afterwards.
-//Only a successful current Raw or Native output can be captured. No manifest is published for an incomplete readback/write.
+//Only a successful current realtime output can be captured. No manifest is published for an incomplete readback/write.
 //Texture bytes are tightly packed, little endian, top row first, array slices in ascending order. No color conversion.
 //The layer buffer retains the shader's packed representation; inactive records/padding are not valid surface guides.
 class RTXPTDebugCapture
@@ -22,7 +23,8 @@ class RTXPTDebugCapture
 public:
     static bool Capture(IRenderDevice* Device, IDeviceContext* Context, RTXPTEmbeddedView& View, const std::filesystem::path& Directory)
     {
-        const bool bNative = View.GetMode() == RTXPTViewMode::RealtimeNative;
+        const bool bSR     = View.GetMode() == RTXPTViewMode::RealtimeDLSSSR;
+        const bool bNative = View.GetMode() == RTXPTViewMode::RealtimeNative || bSR;
         const auto Color   = View.GetOutputInfo(bNative ? RTXPTViewOutput::DenoisedRadiance : RTXPTViewOutput::NoisyRadiance);
         if (!Device || !Context || !Color.Valid || !View.GetRealtimeLayerBuffer())
             return false;
@@ -31,14 +33,18 @@ public:
             if (!std::filesystem::create_directories(Directory))
                 return false;
             std::ofstream Manifest{Directory / "manifest.json.pending"};
-            const auto&   History = View.GetHistoryInfo();
-            const auto&   Stats   = View.GetRealtimeStats();
+            const auto&   History     = View.GetHistoryInfo();
+            const auto&   Stats       = View.GetRealtimeStats();
+            const auto    DisplaySize = View.GetDisplaySize();
+            const auto&   SR          = View.GetSuperResolutionInfo();
             Manifest << std::setprecision(17)
-                     << "{\n\"schema\":1,\"mode\":\"" << (bNative ? "RealtimeNative" : "RealtimeRaw") << "\",\"frame_index\":" << Color.FrameIndex
+                     << "{\n\"schema\":2,\"mode\":\"" << (bSR ? "RealtimeDLSSSR" : bNative ? "RealtimeNative" :
+                                                                                             "RealtimeRaw")
+                     << "\",\"frame_index\":" << Color.FrameIndex
                      << ",\"render_size\":[" << Color.Size.Width << ',' << Color.Size.Height
-                     << "],\"display_size\":[" << Color.Size.Width << ',' << Color.Size.Height
+                     << "],\"display_size\":[" << DisplaySize.Width << ',' << DisplaySize.Height
                      << "],\"spp\":1,\"sample_base_index\":" << Color.FrameIndex - 1
-                     << ",\"jitter\":[0,0],\"dynamic_motion_validated\":" << (Stats.DynamicMotionValidated ? "true" : "false")
+                     << ",\"jitter\":[" << SR.Jitter.x << ',' << SR.Jitter.y << "],\"dynamic_motion_validated\":" << (Stats.DynamicMotionValidated ? "true" : "false")
                      << ",\"previous_surface_storage_bytes\":" << History.PreviousTransformStorageBytes + History.PreviousSkinnedRangeBytes
                      << ",\"previous_skinned_range_bytes\":" << History.PreviousSkinnedRangeBytes
                      << ",\"skinned_arena_storage_bytes\":" << History.SkinnedVertexStorageBytes
@@ -58,7 +64,17 @@ public:
                         "\"byte_order\":\"little\",\"row_order\":\"top_to_bottom\","
                         "\"primary_motion_convention\":\"current_to_previous; xy=render_local_pixels_without_jitter; z=previous_clip_w-current_clip_w; w=exported_surface_and_all_retained_paths_valid\","
                         "\"specular_motion_convention\":\"current_to_previous; xy=render_local_pixels_without_jitter; z=previous_clip_w-current_clip_w; w=one_reflected_path_with_valid_history\","
-                        "\"virtual_motion_convention\":\"packed layer world-space current_to_previous\",\"resources\":[\n";
+                        "\"virtual_motion_convention\":\"packed layer world-space current_to_previous\",";
+            if (bSR)
+            {
+                const char*          Quality  = SR.Quality == RTXPTUpscaleQuality::Quality ? "Quality" :
+                    SR.Quality == RTXPTUpscaleQuality::Balanced                            ? "Balanced" :
+                                                                                             "Performance";
+                const nlohmann::json Metadata = {
+                    {"provider", SR.Variant}, {"quality", Quality}, {"executes", SR.Executes}, {"resets", SR.Resets}, {"failures", SR.Failures}, {"last_reset", SR.LastReset}, {"depth_encoding", "forward_projection_0_1_far_1"}, {"motion_convention", "current_to_previous_render_pixels_without_jitter"}, {"exposure_policy", "explicit_1_preexposure_1_scale_1"}};
+                Manifest << "\"super_resolution\":" << Metadata.dump() << ',';
+            }
+            Manifest << "\"resources\":[\n";
             struct Output
             {
                 RTXPTViewOutput Kind;
@@ -80,6 +96,13 @@ public:
                 for (Uint32 Layer = 0; Layer < kRTXPTDenoisingLayerCount; ++Layer)
                     Outputs.push_back({RTXPTViewOutput::LayerHistoryConfidence, ConfidenceNames[Layer], Layer});
             }
+            if (bSR)
+            {
+                Outputs.push_back({RTXPTViewOutput::UpscaledRadiance, "upscaled_radiance"});
+                Outputs.push_back({RTXPTViewOutput::SuperResolutionDepth, "sr_depth"});
+                Outputs.push_back({RTXPTViewOutput::SuperResolutionMotion, "sr_motion"});
+                Outputs.push_back({RTXPTViewOutput::SuperResolutionIgnoreHistoryMask, "sr_ignore_history"});
+            }
             bool First = true;
             for (const auto& Output : Outputs)
             {
@@ -98,7 +121,7 @@ public:
                          << ",\"height\":" << Desc.Height << ",\"slices\":" << Desc.ArraySize
                          << ",\"row_bytes\":" << RowBytes << ",\"bytes\":" << RowBytes * Desc.Height * Desc.ArraySize
                          << ",\"encoding\":\"" << (Info.Encoding == RTXPTOutputEncoding::SRGB ? "sRGB" : "linear_or_packed")
-                         << "\",\"valid\":true}";
+                         << "\",\"frame_index\":" << Info.FrameIndex << ",\"valid\":true}";
             }
             auto* Buffer = View.GetRealtimeLayerBuffer();
             if (!WriteBuffer(Device, Context, Buffer, Directory / "layers.bin"))
@@ -111,7 +134,7 @@ public:
                         "\"validity\":\"layer header and VertexIndexAndRoughness high 16 bits; PreviousVirtualPosition.w is path history validity; inactive/padding undefined\"},\n";
             View.GetProfiler().Poll();
             WriteTiming(Manifest, View.GetProfiler());
-            Manifest << ",\"unavailable_stages\":[" << (bNative ? "" : "\"NRD\",") << "\"TAA\",\"SR\",\"RR\",\"Bloom\"]\n}\n";
+            Manifest << ",\"unavailable_stages\":[" << (bNative ? "" : "\"NRD\",") << (bSR ? "" : "\"SR\",") << "\"TAA\",\"RR\",\"Bloom\"]\n}\n";
             Manifest.flush();
             if (!Manifest) return false;
             Manifest.close();

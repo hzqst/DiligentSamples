@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate a Raw or Native readback, hash all resources and convert its color to PFM.
+"""Validate a realtime readback, hash all resources and convert its color to PFM.
 
 Raw exports its noisy current-frame HDR, Native its denoised HDR and each layer's history confidence.
 
@@ -18,13 +18,14 @@ import struct
 MODES = {
     "RealtimeRaw": ("noisy_radiance", ("BUILD", "FILL", "Guides", "Merge", "ToneMapping"), None),
     "RealtimeNative": ("denoised_radiance", ("BUILD", "FILL", "Guides", "NRD", "ToneMapping"), "NRD_RELAX"),
+    "RealtimeDLSSSR": ("upscaled_radiance", ("BUILD", "FILL", "Guides", "NRD", "SRInputs", "SR", "ToneMapping"), "NRD_RELAX"),
 }
 NATIVE_LAYER_COUNT = 3
 
 
 def validate(directory: Path, require_host=False):
     manifest = json.loads((directory / "manifest.json").read_text())
-    if manifest["schema"] != 1 or manifest["mode"] not in MODES:
+    if manifest["schema"] not in (1, 2) or manifest["mode"] not in MODES:
         raise ValueError("Unsupported capture schema/mode")
     mode = manifest["mode"]
     color_name, timing_stages, denoiser = MODES[mode]
@@ -35,6 +36,28 @@ def validate(directory: Path, require_host=False):
     if manifest.get("denoiser") != denoiser:
         raise ValueError(f"{mode} capture must state denoiser {denoiser}")
     names = {resource["name"] for resource in manifest["resources"]}
+    if len(names) != len(manifest['resources']):
+        raise ValueError('Duplicate resource name')
+    sr_formats = {'denoised_radiance': 'TEX_FORMAT_RGBA16_FLOAT',
+                  'upscaled_radiance': 'TEX_FORMAT_RGBA16_FLOAT',
+                  'sr_depth': 'TEX_FORMAT_R32_FLOAT', 'sr_motion': 'TEX_FORMAT_RG16_FLOAT',
+                  'sr_ignore_history': 'TEX_FORMAT_R8_UNORM', 'display': 'TEX_FORMAT_RGBA8_TYPELESS'}
+    if mode == 'RealtimeDLSSSR':
+        if manifest['schema'] != 2:
+            raise ValueError('SR requires schema 2')
+        if not sr_formats.keys() <= names:
+            raise ValueError('Missing SR resource')
+        if manifest['frame_index'] < 1 or manifest['sample_base_index'] != manifest['frame_index'] - 1:
+            raise ValueError('Invalid successful frame/jitter index')
+        if len(manifest['jitter']) != 2 or not all(math.isfinite(v) for v in manifest['jitter']):
+            raise ValueError('Invalid SR jitter')
+        sr = manifest['super_resolution']
+        if not sr['provider'] or sr['quality'] not in ('Quality', 'Balanced', 'Performance'):
+            raise ValueError('Invalid SR provider/quality')
+        if (sr['depth_encoding'] != 'forward_projection_0_1_far_1' or
+                sr['motion_convention'] != 'current_to_previous_render_pixels_without_jitter' or
+                sr['exposure_policy'] != 'explicit_1_preexposure_1_scale_1'):
+            raise ValueError('Unexpected SR input semantics')
     if denoiser:
         confidence = {f"history_confidence_layer{layer}" for layer in range(NATIVE_LAYER_COUNT)}
         if not confidence <= names or "noisy_radiance" in names:
@@ -54,11 +77,29 @@ def validate(directory: Path, require_host=False):
         if len(data) != resource["row_bytes"] * resource["height"] * resource["slices"]:
             raise ValueError(f"Invalid row/slice layout: {path.name}")
         fmt = resource["format"]
-        if fmt in ("TEX_FORMAT_RGBA16_FLOAT", "TEX_FORMAT_R32_FLOAT"):
+        if not resource.get('valid', False):
+            raise ValueError('Invalid current-frame resource')
+        if manifest['schema'] == 2 and resource.get('frame_index') != manifest['frame_index']:
+            raise ValueError('Resource refers to another frame')
+        if mode == 'RealtimeDLSSSR' and resource['name'] in sr_formats:
+            name = resource['name']
+            if fmt != sr_formats[name]:
+                raise ValueError(f'Unexpected SR format: {name}')
+            extent = manifest['display_size' if name in ('display', 'upscaled_radiance') else 'render_size']
+            if [resource['width'], resource['height']] != extent or resource['slices'] != 1:
+                raise ValueError(f'Invalid SR extent: {name}')
+            pixel_bytes = {'TEX_FORMAT_RGBA16_FLOAT': 8, 'TEX_FORMAT_R32_FLOAT': 4,
+                           'TEX_FORMAT_RG16_FLOAT': 4, 'TEX_FORMAT_R8_UNORM': 1,
+                           'TEX_FORMAT_RGBA8_TYPELESS': 4}[fmt]
+            if resource['row_bytes'] != resource['width'] * pixel_bytes:
+                raise ValueError(f'Invalid SR row format: {name}')
+        if fmt in ("TEX_FORMAT_RGBA16_FLOAT", "TEX_FORMAT_RG16_FLOAT", "TEX_FORMAT_R32_FLOAT"):
             values = [v[0] for v in struct.iter_unpack("<e" if "16" in fmt else "<f", data)]
             if not all(math.isfinite(v) for v in values):
                 raise ValueError(f"Nonfinite current-frame signal: {path.name}")
             files[path.name].update(min=min(values), max=max(values))
+            if resource['name'] == 'sr_depth' and not all(0 <= v <= 1 for v in values):
+                raise ValueError('SR depth outside forward projection range')
             if resource["name"] == color_name:
                 color = (resource, values)
     if color is None:
@@ -72,6 +113,8 @@ def validate(directory: Path, require_host=False):
                 raise ValueError(f"Missing {mode} timing: {stage}")
     if require_host:
         host = json.loads((directory / "host.json").read_text())
+        if manifest['schema'] == 2 and host.get('view_frame_index') != manifest['frame_index']:
+            raise ValueError('Host metadata refers to another view frame')
         if host["effective"] != mode or host["last_result"] != "ok" or host["reference_samples"] != 0:
             raise ValueError(f"Host did not execute {mode} successfully")
         if host["scene_execution_frame"] != host["executed_frame"]:
