@@ -2133,11 +2133,12 @@ bool RTXPTSample::Denoise()
     const Int32 LayerCount = std::clamp(m_RealtimeUI.DenoisingLayersActiveCount, Int32{1}, static_cast<Int32>(kRTXPTDenoisingLayerCount));
 
     RTXPTNrdDenoiserFrameAttribs Attribs;
-    Attribs.pFrameConstants  = &m_LastFrameConstants;
-    Attribs.pRealtime        = &m_RealtimeUI;
-    Attribs.LayerCount       = static_cast<Uint32>(LayerCount);
-    Attribs.FrameIndex       = m_FrameIndex;
-    Attribs.TimeDeltaSeconds = m_LastElapsedTimeSeconds > 0.0f ? m_LastElapsedTimeSeconds : -1.0f;
+    Attribs.pFrameConstants   = &m_LastFrameConstants;
+    Attribs.pRealtime         = &m_RealtimeUI;
+    Attribs.LayerCount        = static_cast<Uint32>(LayerCount);
+    Attribs.FrameIndex        = m_FrameIndex;
+    Attribs.TimeDeltaSeconds  = m_LastElapsedTimeSeconds > 0.0f ? m_LastElapsedTimeSeconds : -1.0f;
+    Attribs.HistoryConfidence = true;
     Attribs.ResetHistory =
         HasRealtimeResetFlag(m_CurrentFrameRealtimeReset, RTXPT_REALTIME_RESET_NRD_HISTORY) ||
         HasRealtimeResetFlag(m_CurrentFrameRealtimeReset, RTXPT_REALTIME_RESET_REALTIME_CACHES);
