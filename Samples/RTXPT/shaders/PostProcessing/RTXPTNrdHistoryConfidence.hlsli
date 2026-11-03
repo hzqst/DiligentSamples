@@ -8,13 +8,16 @@ VK_IMAGE_FORMAT("r8") RWTexture2D<float> u_DenoiserHistoryConfidence;
 static const uint kRTXPTConfidenceValid = 1u;
 static const uint kRTXPTConfidenceReject = 2u;
 
-// NRD samples confidence at previous UV with a linear clamp sampler. Mark every tap with
-// positive weight, using the same FP16 motion NRD consumes. Rejection wins collisions;
+// NRD samples confidence at previous UV with a linear clamp sampler. Mark every in-bounds
+// history tap with positive weight, using the same FP16 motion NRD consumes. Rejection wins collisions;
 // unmapped texels stay zero. This conservative mask can reject extra neighboring history.
 void RTXPTScatterHistoryConfidence(float2 PreviousPixel, uint2 ImageSize, bool Valid)
 {
-    if (!all(isfinite(PreviousPixel)) || any(PreviousPixel < -0.5.xx) ||
-        any(PreviousPixel >= float2(ImageSize) - 0.5.xx))
+    // NRD validates individual history taps. An off-screen center can still reuse
+    // history if its bilinear footprint has a positive-weight in-bounds tap.
+    const float kBilinearSupport = 1.0;
+    if (!all(isfinite(PreviousPixel)) || any(PreviousPixel <= -kBilinearSupport) ||
+        any(PreviousPixel >= float2(ImageSize)))
         return;
 
     const int2 Base = int2(floor(PreviousPixel));
@@ -28,9 +31,9 @@ void RTXPTScatterHistoryConfidence(float2 PreviousPixel, uint2 ImageSize, bool V
         {
             const float2 Weight = float2(X == 0 ? 1.0 - Fraction.x : Fraction.x,
                                          Y == 0 ? 1.0 - Fraction.y : Fraction.y);
-            if (all(Weight > 0.0))
+            const int2 Tap = Base + int2(X, Y);
+            if (all(Weight > 0.0) && all(Tap >= 0) && all(Tap < int2(ImageSize)))
             {
-                const int2 Tap = clamp(Base + int2(X, Y), int2(0, 0), int2(ImageSize) - 1);
                 InterlockedOr(u_DenoiserHistoryConfidenceCoverage[Tap], State);
             }
         }
