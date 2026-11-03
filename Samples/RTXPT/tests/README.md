@@ -1,5 +1,8 @@
 # RR input and resource contract GPU regression
 
+Per-layer NRD distance collection, Prepare GPU regression and debug views are
+documented in [NRD_HIT_DISTANCE.md](NRD_HIT_DISTANCE.md).
+
 ## Vulkan RGB10A2 UAV status
 
 hzqst/DiligentCore#8 (`2fab46b3`, 2026-10-29) maps the RGB10A2 formats to Vulkan's

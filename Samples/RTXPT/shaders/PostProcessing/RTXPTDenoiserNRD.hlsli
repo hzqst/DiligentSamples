@@ -2,6 +2,7 @@
 #define __RTXPT_DENOISER_NRD_HLSLI__
 
 #include "../PathTracer/PathTracerHelpers.hlsli"
+#include "RTXPTNrdParameters.h"
 
 #ifndef RTXPT_HAS_NRD_HEADERS
 #define RTXPT_HAS_NRD_HEADERS 0
@@ -51,9 +52,11 @@ float4 RTXPTDenoiserReblurPackRadianceNormHitDist(float3 Radiance, float NormHit
 
 float RTXPTDenoiserReblurGetNormHitDist(float HitDist, float ViewZ, float Roughness)
 {
+    // NRD's normalization clamps to epsilon: bypass it for genuinely missing lobes.
+    if (!isfinite(HitDist) || HitDist <= 0.0)
+        return 0.0;
 #if RTXPT_HAS_NRD_HEADERS
-    // G8 replaces the fallback hit params with NRD CommonSettings-derived constants.
-    const float3 HitParams = float3(3.0, 0.1, 20.0);
+    const float3 HitParams = float3(kRTXPTNrdHitDistanceA, kRTXPTNrdHitDistanceB, kRTXPTNrdHitDistanceC);
     return REBLUR_FrontEnd_GetNormHitDist(HitDist, ViewZ, HitParams, Roughness);
 #else
     return HitDist > 0.0 ? saturate(HitDist / max(abs(ViewZ), 1.0)) : 0.0;

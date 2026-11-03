@@ -366,8 +366,8 @@ bool RTXPTDenoisingGuidesBaker::DispatchPass(IDeviceContext*              pConte
         // Stable radiance is carried by DenoisingLayersContext, but this baker does not read it.
         // Some shader compilers optimize the UAV out of reflection for these entry points.
         SetVariable("u_StableRadiance", RenderTargets.GetStableRadianceUAV(), false) &&
-        SetVariable("u_DenoisingLayersHeader", RenderTargets.GetDenoisingLayersHeaderUAV(), NeedsAvgLayer || NeedsSpecularMotion) &&
-        SetVariable("u_DenoisingLayersBuffer", RenderTargets.GetDenoisingLayersBufferUAV(), NeedsAvgLayer || NeedsSpecularMotion) &&
+        SetVariable("u_DenoisingLayersHeader", RenderTargets.GetDenoisingLayersHeaderUAV(), NeedsAvgLayer || NeedsSpecularMotion || NeedsDebugViz) &&
+        SetVariable("u_DenoisingLayersBuffer", RenderTargets.GetDenoisingLayersBufferUAV(), NeedsAvgLayer || NeedsSpecularMotion || NeedsDebugViz) &&
         SetVariable("u_DenoiserAvgLayerRadianceHalfRes", RenderTargets.GetDenoiserAvgLayerRadianceHalfResUAV(), NeedsAvgLayer || NeedsDebugViz) &&
         SetVariable("u_DebugOutput", RenderTargets.GetProcessedOutputColorUAV(), NeedsDebugViz);
     if (!Bound)

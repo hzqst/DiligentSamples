@@ -647,6 +647,7 @@ namespace PathTracer
         UpdatePathTravelled(path, rayOrigin, rayDir, rayTCurrent, workingContext);
 
 #if PATH_TRACER_MODE == PATH_TRACER_MODE_FILL_DENOISING_LAYERS
+        workingContext.DenoisingLayers.CompleteHitDistance(path, true);
         if (path.hasFlag(PathFlags::exportSpecHitTQueued))
         {
             Bridge::ExportSpecHitTStop(path);

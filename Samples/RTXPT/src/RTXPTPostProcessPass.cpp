@@ -209,7 +209,7 @@ bool BindDispatchResources(IShaderResourceBinding*                pSRB,
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_RRSpecMotionVectors", RenderTargets.GetRRSpecMotionVectorsUAV(), RRPreparePass, Pass, "RR specular pixel motion UAV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "t_Depth", RenderTargets.GetDepthSRV(), RRPreparePass, Pass, "depth SRV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "t_MotionVectors", RenderTargets.GetScreenMotionVectorsSRV(), RRPreparePass, Pass, "motion vectors SRV") &&
-        SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "t_SpecularHitT", RenderTargets.GetSpecularHitTSRV(), PreparePass, Pass, "specular hit T SRV") &&
+        SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "t_SpecularHitT", RenderTargets.GetSpecularHitTSRV(), false, Pass, "specular hit T SRV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "t_DenoiserOutDiffRadianceHitDist", pDenoiserOutDiffRadianceHitDistSRV, FinalMergePass, Pass, "denoiser output diffuse radiance hit distance SRV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "t_DenoiserOutSpecRadianceHitDist", RenderTargets.GetDenoiserOutSpecRadianceHitDistSRV(Attribs.PlaneIndex), FinalMergePass, Pass, "denoiser output specular radiance hit distance SRV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "t_DenoiserOutValidation", pDenoiserOutValidationSRV, FinalMergePass, Pass, "denoiser validation SRV") &&

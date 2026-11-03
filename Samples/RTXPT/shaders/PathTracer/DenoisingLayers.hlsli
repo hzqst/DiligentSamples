@@ -3,6 +3,7 @@
 
 #include "Config.h"
 #include "PathTracerShared.h"
+#include "DenoisingHitDistance.hlsli"
 
 #if !defined(__cplusplus)
 #    include "PathState.hlsli"
@@ -41,6 +42,7 @@ struct DenoisingLayer
     // Final layer: xyz is the previous virtual surface, w is path correspondence validity.
     // Enqueued exploration: stores the extra Build payload containing the previous reflection plane.
     float4 PreviousVirtualPosition;
+    DenoisingHitDistance HitDistance;
 
 #if !defined(__cplusplus)
     bool IsEmpty() { return (VertexIndexAndRoughness >> 16) == 0; }
@@ -244,6 +246,7 @@ struct DenoisingLayersContext
         sp.FlagsAndVertexIndex           = flagsAndVertexIndex;
         sp.PackedCounters                = packedCounters;
         sp.PreviousVirtualPosition        = previousVirtualPosition;
+        sp.HitDistance                    = (DenoisingHitDistance)0;
         DenoisingLayersUAV[address]         = sp;
         SetBranchID(pixelPos, planeIndex, stableBranchID);
 
@@ -256,6 +259,7 @@ struct DenoisingLayersContext
         uint address = PixelToAddress(pixelPos, planeIndex);
         DenoisingLayer sp;
         sp.PackCustomPayload(pathPayload);
+        sp.HitDistance = (DenoisingHitDistance)0;
         DenoisingLayersUAV[address] = sp;
         SetBranchID(pixelPos, planeIndex, cDenoisingLayerEnqueuedBranchID);
     }
@@ -292,10 +296,50 @@ struct DenoisingLayersContext
         DenoisingLayersHeaderUAV[uint3(pixelPos, 0)] = cDenoisingLayerInvalidBranchID;
         DenoisingLayersHeaderUAV[uint3(pixelPos, 1)] = cDenoisingLayerInvalidBranchID;
         DenoisingLayersHeaderUAV[uint3(pixelPos, 2)] = cDenoisingLayerInvalidBranchID;
+#elif PATH_TRACER_MODE == PATH_TRACER_MODE_FILL_DENOISING_LAYERS
+        // Samples are dispatched serially. Keep aggregates, but discard any continuation
+        // cancelled by roulette/termination in the preceding sample.
+        for (uint planeIndex = 0; planeIndex < min(PTConstants.GetActiveDenoisingLayerCount(), cDenoisingLayerCount); ++planeIndex)
+        {
+            if (GetBranchID(pixelPos, planeIndex) == cDenoisingLayerInvalidBranchID)
+                continue;
+            const uint address = PixelToAddress(pixelPos, planeIndex);
+            DenoisingHitDistance distance = DenoisingLayersUAV[address].HitDistance;
+            distance.Begin(0u);
+            DenoisingLayersUAV[address].HitDistance = distance;
+        }
 #endif
     }
 
 #if PATH_TRACER_MODE == PATH_TRACER_MODE_FILL_DENOISING_LAYERS
+    void BeginHitDistance(const PathState path, uint lobe)
+    {
+        const uint address = PixelToAddress(path.GetPixelPos(), path.getDenoisingLayerIndex());
+        DenoisingHitDistance distance = DenoisingLayersUAV[address].HitDistance;
+        distance.Begin(lobe);
+        DenoisingLayersUAV[address].HitDistance = distance;
+    }
+
+    void AddHitDistanceSegment(const PathState path, float rayTCurrent)
+    {
+        const uint address = PixelToAddress(path.GetPixelPos(), path.getDenoisingLayerIndex());
+        DenoisingHitDistance distance = DenoisingLayersUAV[address].HitDistance;
+        if (distance.PendingLobe == 0u)
+            return;
+        distance.AddSegment(rayTCurrent);
+        DenoisingLayersUAV[address].HitDistance = distance;
+    }
+
+    void CompleteHitDistance(const PathState path, bool environmentMiss)
+    {
+        const uint address = PixelToAddress(path.GetPixelPos(), path.getDenoisingLayerIndex());
+        DenoisingHitDistance distance = DenoisingLayersUAV[address].HitDistance;
+        if (distance.PendingLobe == 0u)
+            return;
+        distance.Complete(environmentMiss);
+        DenoisingLayersUAV[address].HitDistance = distance;
+    }
+
     void CommitDenoiserRadiance(inout PathState path)
     {
         const uint2 pixelPos       = path.GetPixelPos();
