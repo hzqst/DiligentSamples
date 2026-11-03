@@ -214,7 +214,7 @@ TEXTURE_FORMAT ToDiligentFormat(nrd::Format Format)
             TEX_FORMAT_RGB10A2_UINT,
             TEX_FORMAT_R11G11B10_FLOAT,
             TEX_FORMAT_RGB9E5_SHAREDEXP,
-    };
+        };
 
     const auto Index = static_cast<std::size_t>(Format);
     return Index < FormatMap.size() ? FormatMap[Index] : TEX_FORMAT_UNKNOWN;
@@ -346,7 +346,7 @@ bool RTXPTNrdIntegration::CreateInstance(RTXPTNrdMethod Method)
     const nrd::DenoiserDesc DenoiserDescs[] =
         {
             {m_Identifier, RTXPTToNrdDenoiser(Method)},
-    };
+        };
 
     nrd::InstanceCreationDesc Desc = {};
     Desc.denoisers                 = DenoiserDescs;

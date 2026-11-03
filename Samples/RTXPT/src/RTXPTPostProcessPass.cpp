@@ -603,8 +603,8 @@ bool RTXPTPostProcessPass::RunDLSSRRDenoiserPrepareInputs(IDeviceContext* pConte
     // Reject missing/stale/aliased outputs before touching the SRB.
     // The subsequent IRayReconstruction dispatch belongs to the frame scheduler.
     const std::array<ITextureView*, 7>  Outputs = {{Attribs.pMergeOutputUAV, Attribs.pRRDiffuseAlbedoUAV,
-                                                    Attribs.pRRSpecAlbedoUAV, Attribs.pRRNormalsAndRoughnessUAV, Attribs.pRRDepthUAV, Attribs.pRRMotionVectorsUAV,
-                                                    Attribs.pRenderTargets->GetRRSpecMotionVectorsUAV()}};
+                                                   Attribs.pRRSpecAlbedoUAV, Attribs.pRRNormalsAndRoughnessUAV, Attribs.pRRDepthUAV, Attribs.pRRMotionVectorsUAV,
+                                                   Attribs.pRenderTargets->GetRRSpecMotionVectorsUAV()}};
     const std::array<TEXTURE_FORMAT, 7> Formats = {{TEX_FORMAT_RGBA16_FLOAT, TEX_FORMAT_RGBA16_FLOAT,
                                                     TEX_FORMAT_RGBA16_FLOAT, TEX_FORMAT_RGBA16_FLOAT, TEX_FORMAT_R32_FLOAT, TEX_FORMAT_RG16_FLOAT, TEX_FORMAT_RG16_FLOAT}};
     for (size_t Index = 0; Index < Outputs.size(); ++Index)
