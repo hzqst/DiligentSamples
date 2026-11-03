@@ -86,7 +86,7 @@ enum class RTXPTViewOutput
     SpecularHitDistance,
     AverageLayerRadiance,
     LayerHeader,
-    //Native only, per denoising layer (R8 UNORM): the history confidence NRD received, 0 where the layer's path has no
+    //Native and DLSSSR, per denoising layer (R8 UNORM): the history confidence NRD received, 0 where the layer's path has no
     //valid previous correspondence.
     LayerHistoryConfidence,
     //DLSSSR only: the display-size linear HDR of the upscaler, before tone mapping.
