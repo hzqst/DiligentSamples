@@ -66,6 +66,8 @@ enum class RTXPTPostProcessPassId : Uint32
     ReblurDenoiserFinalMerge,
     NoDenoiserFinalMerge,
     DLSSRRDenoiserPrepareInputs,
+    NrdConfidenceClear,
+    NrdConfidenceResolve,
     Count
 };
 
@@ -78,6 +80,8 @@ struct RTXPTDenoiserPostProcessAttribs
     Uint32                    PlaneIndex      = 0;
     bool                      InitOutput      = false;
     bool                      HasValidation   = false;
+    // Internal scratch for the clear -> prepare/scatter -> resolve sequence.
+    ITextureView* pHistoryConfidenceCoverageUAV = nullptr;
     // RR prepare only: distinct render-size UAVs, owned by the caller.
     // Albedos/normal+roughness are RGBA16F; depth is R32F and motion is RG16F.
     ITextureView* pRRDiffuseAlbedoUAV       = nullptr;
@@ -133,6 +137,8 @@ private:
     std::array<PassState, static_cast<std::size_t>(RTXPTPostProcessPassId::Count)> m_Passes;
     RefCntAutoPtr<IBuffer>                                                         m_FrameConstants;
     RefCntAutoPtr<IBuffer>                                                         m_MiniConstants;
+    RefCntAutoPtr<IRenderDevice>                                                   m_Device;
+    RefCntAutoPtr<ITexture>                                                        m_HistoryConfidenceCoverage;
     RTXPTPostProcessPassStats                                                      m_Stats;
 };
 

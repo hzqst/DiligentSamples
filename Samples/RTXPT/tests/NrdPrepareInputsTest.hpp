@@ -6,12 +6,13 @@ static void RunNrdPrepareInputsTest(IRenderDevice* Device, IDeviceContext* Conte
 {
     auto MakeTexture = [&](TEXTURE_FORMAT Format, Uint32 ArraySize = 1u) {
         TextureDesc D;
-        D.Name  = "NRD prepare regression texture";
-        D.Type  = ArraySize == 1u ? RESOURCE_DIM_TEX_2D : RESOURCE_DIM_TEX_2D_ARRAY;
-        D.Width = D.Height = 1;
-        D.ArraySize        = ArraySize;
-        D.Format           = Format;
-        D.BindFlags        = BIND_UNORDERED_ACCESS | BIND_SHADER_RESOURCE;
+        D.Name      = "NRD prepare regression texture";
+        D.Type      = ArraySize == 1u ? RESOURCE_DIM_TEX_2D : RESOURCE_DIM_TEX_2D_ARRAY;
+        D.Width     = 2;
+        D.Height    = 1;
+        D.ArraySize = ArraySize;
+        D.Format    = Format;
+        D.BindFlags = BIND_UNORDERED_ACCESS | BIND_SHADER_RESOURCE;
         RefCntAutoPtr<ITexture> T;
         Device->CreateTexture(D, nullptr, &T);
         Require(T != nullptr, "prepare texture");
@@ -40,9 +41,13 @@ static void RunNrdPrepareInputsTest(IRenderDevice* Device, IDeviceContext* Conte
 RWStructuredBuffer<float4> u_TestResult;
 [numthreads(1,1,1)] void main()
 {
+    u_DenoiserHistoryConfidenceCoverage[uint2(0,0)] = 0u;
+    u_DenoiserHistoryConfidenceCoverage[uint2(1,0)] = 0u;
     PrepareInputs(uint3(0,0,0));
     u_TestResult[0] = u_DenoiserDiffRadianceHitDist[uint2(0,0)];
+    u_TestResult[0].x = u_DenoiserHistoryConfidenceCoverage[uint2(1,0)];
     u_TestResult[1] = u_DenoiserSpecRadianceHitDist[uint2(0,0)];
+    u_TestResult[1].x = u_DenoiserHistoryConfidenceCoverage[uint2(0,0)];
 })";
     for (bool Reblur : {false, true})
     {
@@ -77,6 +82,7 @@ RWStructuredBuffer<float4> u_TestResult;
         auto         Normal       = MakeTexture(TEX_FORMAT_RGB10A2_UNORM);
         auto         ViewZ        = MakeTexture(TEX_FORMAT_R32_FLOAT);
         auto         Confidence   = MakeTexture(TEX_FORMAT_R8_UNORM);
+        auto         Coverage     = MakeTexture(TEX_FORMAT_R32_UINT);
         auto         Disocclusion = MakeTexture(TEX_FORMAT_R8_UNORM);
         auto         Combined     = MakeTexture(TEX_FORMAT_R8_UNORM);
         auto         LegacySpec   = MakeTexture(TEX_FORMAT_R32_FLOAT);
@@ -93,22 +99,25 @@ RWStructuredBuffer<float4> u_TestResult;
             for (bool Missing : {false, true})
             {
                 SampleConstants Frame{};
-                Frame.ptConsts.imageWidth = Frame.ptConsts.imageHeight = 1;
-                Frame.ptConsts.camera.ViewportWidth = Frame.ptConsts.camera.ViewportHeight = 1;
-                Frame.ptConsts.camera.CameraW                                              = float3{0, 0, 1};
-                Frame.ptConsts._activeDenoisingLayerCount                                  = 3;
-                Frame.ptConsts.genericTSLineStride                                         = 8;
-                Frame.ptConsts.genericTSPlaneStride                                        = 64;
-                Frame.view.MatWorldToView                                                  = float4x4::Identity();
-                Frame.view.MatWorldToClipNoOffset                                          = float4x4::Identity();
-                Frame.previousView                                                         = Frame.view;
+                Frame.ptConsts.imageWidth = Frame.ptConsts.camera.ViewportWidth = 2;
+                Frame.ptConsts.imageHeight = Frame.ptConsts.camera.ViewportHeight = 1;
+                Frame.ptConsts.camera.CameraW                                     = float3{0, 0, 1};
+                Frame.ptConsts.camera.CameraU = Frame.ptConsts.camera.CameraV = float3{0, 0, 0};
+                Frame.ptConsts._activeDenoisingLayerCount                     = 3;
+                Frame.ptConsts.genericTSLineStride                            = 8;
+                Frame.ptConsts.genericTSPlaneStride                           = 64;
+                Frame.view.MatWorldToView                                     = float4x4::Identity();
+                Frame.view.MatWorldToClipNoOffset                             = float4x4::Identity();
+                Frame.previousView                                            = Frame.view;
+                Frame.view.ClipToWindowScale                                  = float2{1.0f, -0.5f};
+                Frame.previousView.MatWorldToClipNoOffset._41                 = 1.0f; // previous - current = +1 pixel
                 SampleMiniConstants Mini{};
                 Mini.params = uint4{Layer, 1, 0, 0};
                 std::vector<RTXPTDenoisingLayerData> Layers(192);
                 auto&                                L = Layers[Layer * Frame.ptConsts.genericTSPlaneStride];
                 L.SceneLength                          = 10;
                 L.VertexIndexAndRoughness              = (1u << 16) | 0x3c00u; // roughness 1
-                L.PreviousVirtualPosition.w            = 1;
+                L.PreviousVirtualPosition.w            = Missing ? 0.0f : 1.0f;
                 // Counts, not stale numeric contents, decide whether the lobe was sampled.
                 L.HitDistance.DiffuseDistance  = Missing ? 99.0f : 1.0f;
                 L.HitDistance.SpecularDistance = Missing ? 99.0f : 2.0f;
@@ -133,6 +142,7 @@ RWStructuredBuffer<float4> u_TestResult;
                 Bind("u_DenoiserNormalRoughness", Normal->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
                 Bind("u_DenoiserViewspaceZ", ViewZ->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
                 Bind("u_DenoiserHistoryConfidence", Confidence->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
+                Bind("u_DenoiserHistoryConfidenceCoverage", Coverage->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
                 Bind("u_DenoiserDisocclusionThresholdMix", Disocclusion->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
                 Bind("u_CombinedHistoryClampRelax", Combined->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
                 Bind("t_SpecularHitT", LegacySpec->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
@@ -158,6 +168,11 @@ RWStructuredBuffer<float4> u_TestResult;
                 Context->UnmapBuffer(Readback, MAP_READ);
                 const float ExpectedDiff = Missing ? 0.0f : (Reblur ? 0.25f : 1.0f);
                 const float ExpectedSpec = Missing ? 0.0f : (Reblur ? 0.5f : 2.0f);
+                Require((Missing ? 2.0f : 1.0f) == R[0], "production prepare scatters path validity");
+                Require(0.0f == R[4], "production prepare leaves the current coordinate unmapped");
+                if (std::abs(ExpectedDiff - R[3]) >= 0.001f || std::abs(ExpectedSpec - R[7]) >= 0.001f)
+                    std::cerr << "Prepare layer " << Layer << ", reblur " << Reblur << ", missing " << Missing
+                              << ": alpha " << R[3] << ", " << R[7] << '\n';
                 Require(std::abs(ExpectedDiff - R[3]) < 0.001f, "production diffuse prepare alpha");
                 Require(std::abs(ExpectedSpec - R[7]) < 0.001f, "production non-dominant specular prepare alpha");
             }

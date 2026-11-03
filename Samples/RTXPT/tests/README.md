@@ -1,5 +1,9 @@
 # RR input and resource contract GPU regression
 
+NRD time units and previous-frame confidence coordinates are documented in
+[NRD_INPUT_CONTRACTS.md](NRD_INPUT_CONTRACTS.md), including the conservative footprint
+policy and the regression commands.
+
 Per-layer NRD distance collection, Prepare GPU regression and debug views are
 documented in [NRD_HIT_DISTANCE.md](NRD_HIT_DISTANCE.md).
 

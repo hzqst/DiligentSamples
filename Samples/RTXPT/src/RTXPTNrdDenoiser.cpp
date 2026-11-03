@@ -112,7 +112,8 @@ bool RTXPTNrdDenoiser::Prepare(IRenderDevice* pDevice, const RTXPTNrdIntegration
 
 /* Denoises the active layers from the deepest to the primary one. For each layer:
  * 1. Prepare writes the layer's demodulated radiance, view Z, motion and normal/roughness into the denoiser
- *    inputs. The first (deepest) prepare also initializes the merge output with the stable radiance.
+ *    inputs. Its clear/scatter/resolve sequence computes current path validity in previous-frame confidence
+ *    coordinates, with rejection winning conflicts. The first prepare also initializes the merge output.
  * 2. That layer's NRD instance denoises the inputs with its own history.
  * 3. The final merge remodulates the denoised radiance and adds it to the merge output.
  * The merge output is linear HDR. Attribs.PostProcess supplies the render targets and the merge output UAV.

@@ -214,7 +214,7 @@ TEXTURE_FORMAT ToDiligentFormat(nrd::Format Format)
             TEX_FORMAT_RGB10A2_UINT,
             TEX_FORMAT_R11G11B10_FLOAT,
             TEX_FORMAT_RGB9E5_SHAREDEXP,
-        };
+    };
 
     const auto Index = static_cast<std::size_t>(Format);
     return Index < FormatMap.size() ? FormatMap[Index] : TEX_FORMAT_UNKNOWN;
@@ -346,7 +346,7 @@ bool RTXPTNrdIntegration::CreateInstance(RTXPTNrdMethod Method)
     const nrd::DenoiserDesc DenoiserDescs[] =
         {
             {m_Identifier, RTXPTToNrdDenoiser(Method)},
-        };
+    };
 
     nrd::InstanceCreationDesc Desc = {};
     Desc.denoisers                 = DenoiserDescs;
@@ -768,7 +768,7 @@ void RTXPTNrdIntegration::PopulateCommonSettings(nrd::CommonSettings& Settings, 
     Settings.disocclusionThresholdAlternate      = Realtime.NRDDisocclusionThresholdAlternate;
     Settings.isDisocclusionThresholdMixAvailable = Realtime.NRDUseAlternateDisocclusionThresholdMix;
     Settings.isHistoryConfidenceAvailable        = Attribs.HistoryConfidence;
-    Settings.timeDeltaBetweenFrames              = Attribs.TimeDeltaSeconds;
+    Settings.timeDeltaBetweenFrames              = RTXPTNrdFrameTimeMilliseconds(Attribs.TimeDeltaSeconds);
     Settings.accumulationMode                    = Attribs.ResetHistory ? nrd::AccumulationMode::CLEAR_AND_RESTART : nrd::AccumulationMode::CONTINUE;
     Settings.resourceSize[0]                     = ToNrdDimension(RenderWidth);
     Settings.resourceSize[1]                     = ToNrdDimension(RenderHeight);

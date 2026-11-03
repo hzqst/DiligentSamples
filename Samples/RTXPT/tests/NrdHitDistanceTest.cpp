@@ -2,6 +2,7 @@
 // GPU regression for per-layer first-segment guides and NRD missing-sample packing.
 #include <Windows.h>
 #include <atomic>
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <iostream>
@@ -27,6 +28,7 @@ static void Require(bool OK, const char* Text)
 }
 
 #include "NrdPrepareInputsTest.hpp"
+#include "NrdHistoryConfidenceTest.hpp"
 
 int main(int argc, char** argv)
 try
@@ -64,6 +66,8 @@ try
     Require(Device && Context, "device creation");
     RefCntAutoPtr<IShaderSourceInputStreamFactory> Source;
     Factory->CreateDefaultShaderSourceStreamFactory(argv[3], &Source);
+    RunNrdFrameTimeTest();
+    RunNrdHistoryConfidenceTest(Device, Context, Source);
     const char*      Code = R"(
 #define RTXPT_HAS_NRD_HEADERS 1
 #define NRD_NORMAL_ENCODING 2
