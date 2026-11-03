@@ -38,8 +38,7 @@ public:
             const auto    DisplaySize = View.GetDisplaySize();
             const auto&   SR          = View.GetSuperResolutionInfo();
             Manifest << std::setprecision(17)
-                     << "{\n\"schema\":2,\"mode\":\"" << (bSR ? "RealtimeDLSSSR" : bNative ? "RealtimeNative" :
-                                                                                             "RealtimeRaw")
+                     << "{\n\"schema\":2,\"mode\":\"" << (bSR ? "RealtimeDLSSSR" : bNative ? "RealtimeNative" : "RealtimeRaw")
                      << "\",\"frame_index\":" << Color.FrameIndex
                      << ",\"render_size\":[" << Color.Size.Width << ',' << Color.Size.Height
                      << "],\"display_size\":[" << DisplaySize.Width << ',' << DisplaySize.Height
@@ -67,9 +66,9 @@ public:
                         "\"virtual_motion_convention\":\"packed layer world-space current_to_previous\",";
             if (bSR)
             {
-                const char*          Quality  = SR.Quality == RTXPTUpscaleQuality::Quality ? "Quality" :
-                    SR.Quality == RTXPTUpscaleQuality::Balanced                            ? "Balanced" :
-                                                                                             "Performance";
+                const char* Quality = SR.Quality == RTXPTUpscaleQuality::Quality ? "Quality" :
+                                                                                   SR.Quality == RTXPTUpscaleQuality::Balanced ? "Balanced" :
+                                                                                                                                 "Performance";
                 const nlohmann::json Metadata = {
                     {"provider", SR.Variant}, {"quality", Quality}, {"executes", SR.Executes}, {"resets", SR.Resets}, {"failures", SR.Failures}, {"last_reset", SR.LastReset}, {"depth_encoding", "forward_projection_0_1_far_1"}, {"motion_convention", "current_to_previous_render_pixels_without_jitter"}, {"exposure_policy", "explicit_1_preexposure_1_scale_1"}};
                 Manifest << "\"super_resolution\":" << Metadata.dump() << ',';

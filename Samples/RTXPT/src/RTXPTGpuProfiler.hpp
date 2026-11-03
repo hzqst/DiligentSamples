@@ -88,7 +88,7 @@ public:
             if (m_Profiler)
                 m_Profiler->End(m_Context, m_Stage);
         }
-        Scope(const Scope&)            = delete;
+        Scope(const Scope&) = delete;
         Scope& operator=(const Scope&) = delete;
 
     private:
