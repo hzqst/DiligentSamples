@@ -414,6 +414,7 @@ struct RTXPTEmbeddedView::Impl
         Height                        = Desc.InputHeight;
         RayReconstruction.Variant     = Variant.Name;
         RayReconstruction.Quality     = Quality;
+        RayReconstruction.Preset      = RTXPTRayReconstructionInputs::GetDLSSPresetName(Desc.DLSSPreset);
         RayReconstruction.RenderSize  = {Width, Height};
         RayReconstruction.DisplaySize = {DisplayWidth, DisplayHeight};
         return RTXPTErrorCode::Ok;
@@ -686,11 +687,12 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
         }
         if (R.IsReconstructed())
         {
-            R.RayReconstruction.Jitter    = Jitter;
-            R.RayReconstruction.LastReset = ResetHistory;
-            R.RayReconstruction.Exposure  = Stats.RayReconstructionExposure;
-            R.RayReconstruction.Executes  = Stats.RayReconstructionExecutes;
-            R.RayReconstruction.Resets    = Stats.RayReconstructionResets;
+            R.RayReconstruction.Jitter      = Jitter;
+            R.RayReconstruction.LastReset   = ResetHistory;
+            R.RayReconstruction.Exposure    = Stats.RayReconstructionExposure;
+            R.RayReconstruction.ForwardSign = Stats.RayReconstructionForwardSign;
+            R.RayReconstruction.Executes    = Stats.RayReconstructionExecutes;
+            R.RayReconstruction.Resets      = Stats.RayReconstructionResets;
         }
         R.AcceptFrame(FrameCamera, FrameView, Time, 0, Frame.Snapshot->ContentRevision, Frame.Prepared);
         return RTXPTErrorCode::Ok;

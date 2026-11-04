@@ -48,6 +48,19 @@ struct RTXPTRayReconstructionInputs
         return false;
     }
 
+    // The letter of a DLSS RR preset, as the Sample's --rr_preset spells it.
+    static const char* GetDLSSPresetName(RAY_RECONSTRUCTION_DLSS_PRESET Preset)
+    {
+        switch (Preset)
+        {
+            case RAY_RECONSTRUCTION_DLSS_PRESET_DEFAULT: return "default";
+            case RAY_RECONSTRUCTION_DLSS_PRESET_D: return "D";
+            case RAY_RECONSTRUCTION_DLSS_PRESET_E: return "E";
+            case RAY_RECONSTRUCTION_DLSS_PRESET_F: return "F";
+            default: return "unknown";
+        }
+    }
+
     static bool MakeDesc(const RayReconstructionSourceSettingsAttribs& Query,
                          const RayReconstructionSourceSettings&        Source,
                          RayReconstructionDesc&                        Desc,

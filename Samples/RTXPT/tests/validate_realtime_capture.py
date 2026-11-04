@@ -2,8 +2,10 @@
 """Validate a realtime readback, hash all resources and convert its color to PFM.
 
 Raw exports its noisy current-frame HDR, Native its denoised HDR and each layer's history confidence.
+DLSSRR exports the inputs ray reconstruction received and its display-size HDR, and no NRD or SR work.
 
 This checks storage/finite values and frame provenance, not temporal correctness.
+RR inputs are also checked against the value ranges of their contract (the frozen D6 input checks).
 Packed surface records remain shader-version-specific; inactive records are undefined.
 """
 import argparse
@@ -19,8 +21,87 @@ MODES = {
     "RealtimeRaw": ("noisy_radiance", ("BUILD", "FILL", "Guides", "Merge", "ToneMapping"), None),
     "RealtimeNative": ("denoised_radiance", ("BUILD", "FILL", "Guides", "NRD", "ToneMapping"), "NRD_RELAX"),
     "RealtimeDLSSSR": ("upscaled_radiance", ("BUILD", "FILL", "Guides", "NRD", "SRInputs", "SR", "ToneMapping"), "NRD_RELAX"),
+    "RealtimeDLSSRR": ("reconstructed_radiance", ("BUILD", "FILL", "Guides", "RRPrepare", "RR", "ToneMapping"), None),
 }
 NATIVE_LAYER_COUNT = 3
+PIXEL_BYTES = {'TEX_FORMAT_RGBA16_FLOAT': 8, 'TEX_FORMAT_R32_FLOAT': 4, 'TEX_FORMAT_RG16_FLOAT': 4,
+               'TEX_FORMAT_R8_UNORM': 1, 'TEX_FORMAT_RGBA8_TYPELESS': 4}
+SR_FORMATS = {'denoised_radiance': 'TEX_FORMAT_RGBA16_FLOAT',
+              'upscaled_radiance': 'TEX_FORMAT_RGBA16_FLOAT',
+              'sr_depth': 'TEX_FORMAT_R32_FLOAT', 'sr_motion': 'TEX_FORMAT_RG16_FLOAT',
+              'sr_ignore_history': 'TEX_FORMAT_R8_UNORM', 'display': 'TEX_FORMAT_RGBA8_TYPELESS'}
+RR_FORMATS = {'rr_color': 'TEX_FORMAT_RGBA16_FLOAT', 'reconstructed_radiance': 'TEX_FORMAT_RGBA16_FLOAT',
+              'rr_depth': 'TEX_FORMAT_R32_FLOAT', 'rr_motion': 'TEX_FORMAT_RG16_FLOAT',
+              'rr_specular_motion': 'TEX_FORMAT_RG16_FLOAT', 'rr_normal_roughness': 'TEX_FORMAT_RGBA16_FLOAT',
+              'rr_diffuse_albedo': 'TEX_FORMAT_RGBA16_FLOAT', 'rr_specular_albedo': 'TEX_FORMAT_RGBA16_FLOAT',
+              'rr_exposure': 'TEX_FORMAT_R32_FLOAT', 'display': 'TEX_FORMAT_RGBA8_TYPELESS'}
+# Per upscaling mode: the name its errors use, its resource formats and the display-size resources among them. The
+# others are render-size, except RR's exposure, a single texel.
+UPSCALING = {'RealtimeDLSSSR': ('SR', SR_FORMATS, ('display', 'upscaled_radiance')),
+             'RealtimeDLSSRR': ('RR', RR_FORMATS, ('display', 'reconstructed_radiance'))}
+RR_EXPOSURE = 'rr_exposure'
+RR_ALBEDOS = ('rr_diffuse_albedo', 'rr_specular_albedo')
+RR_QUALITIES = ('Native', 'Quality', 'Balanced', 'Performance')
+# 1 for a left-handed view, -1 for a right-handed one (forward = -Z).
+RR_FORWARD_SIGNS = (-1, 1)
+# The RR depth of sky and invalid paths (kEnvironmentMapSceneDistance), and the normal length tolerance of D6.
+RR_SKY_DEPTH = 5000000.0
+RR_NORMAL_LENGTH_TOLERANCE = 2e-3
+RR_NORMAL_ROUGHNESS_COMPONENTS = 4
+
+
+def validate_frame_jitter(manifest, label):
+    if manifest['frame_index'] < 1 or manifest['sample_base_index'] != manifest['frame_index'] - 1:
+        raise ValueError('Invalid successful frame/jitter index')
+    if len(manifest['jitter']) != 2 or not all(math.isfinite(v) for v in manifest['jitter']):
+        raise ValueError(f'Invalid {label} jitter')
+
+
+def validate_rr_metadata(manifest, names):
+    rr = manifest['ray_reconstruction']
+    if not rr['provider'] or rr['quality'] not in RR_QUALITIES or not rr['preset']:
+        raise ValueError('Invalid RR provider/quality/preset')
+    exposure = rr['exposure']
+    if (rr['depth_encoding'] != 'forward_positive_linear_view_depth_sky_5000000' or
+            rr['motion_convention'] != 'current_to_previous_render_pixels_without_jitter' or
+            rr['exposure_policy'] != 'explicit_exposure_texture_preexposure_1_scale_1' or
+            rr['micro_jitter'] != 0 or rr['view_forward_sign'] not in RR_FORWARD_SIGNS or
+            not math.isfinite(exposure) or exposure <= 0):
+        raise ValueError('Unexpected RR input semantics')
+    if manifest['nrd_instances'] != 0 or any(name.startswith(('history_confidence', 'sr_')) for name in names):
+        raise ValueError('RR capture must contain no NRD or super resolution work')
+    unavailable = set(manifest['unavailable_stages'])
+    if 'RR' in unavailable or not {'NRD', 'SR'} <= unavailable:
+        raise ValueError('RR capture reports the wrong unavailable stages')
+
+
+def validate_layout(manifest, resource, label, formats, display_names):
+    name, fmt = resource['name'], resource['format']
+    if fmt != formats[name]:
+        raise ValueError(f'Unexpected {label} format: {name}')
+    if name == RR_EXPOSURE:
+        extent = [1, 1]
+    else:
+        extent = manifest['display_size' if name in display_names else 'render_size']
+    if [resource['width'], resource['height']] != extent or resource['slices'] != 1:
+        raise ValueError(f'Invalid {label} extent: {name}')
+    if resource['row_bytes'] != resource['width'] * PIXEL_BYTES[fmt]:
+        raise ValueError(f'Invalid {label} row format: {name}')
+
+
+def validate_rr_values(name, values, rr):
+    if name == 'rr_depth' and not all(0 < v <= RR_SKY_DEPTH for v in values):
+        raise ValueError('RR depth must be positive and at most the sky depth')
+    if name == 'rr_normal_roughness':
+        for x, y, z, roughness in zip(*[iter(values)] * RR_NORMAL_ROUGHNESS_COMPONENTS):
+            if abs(math.sqrt(x * x + y * y + z * z) - 1) > RR_NORMAL_LENGTH_TOLERANCE:
+                raise ValueError('RR normal is not a unit vector')
+            if not 0 <= roughness <= 1:
+                raise ValueError('RR roughness outside [0,1]')
+    if name in RR_ALBEDOS and not all(0 <= v <= 1 for v in values):
+        raise ValueError(f'RR albedo outside [0,1]: {name}')
+    if name == RR_EXPOSURE and values != [rr['exposure']]:
+        raise ValueError('RR exposure texture differs from the reported exposure')
 
 
 def validate(directory: Path, require_host=False):
@@ -38,19 +119,16 @@ def validate(directory: Path, require_host=False):
     names = {resource["name"] for resource in manifest["resources"]}
     if len(names) != len(manifest['resources']):
         raise ValueError('Duplicate resource name')
-    sr_formats = {'denoised_radiance': 'TEX_FORMAT_RGBA16_FLOAT',
-                  'upscaled_radiance': 'TEX_FORMAT_RGBA16_FLOAT',
-                  'sr_depth': 'TEX_FORMAT_R32_FLOAT', 'sr_motion': 'TEX_FORMAT_RG16_FLOAT',
-                  'sr_ignore_history': 'TEX_FORMAT_R8_UNORM', 'display': 'TEX_FORMAT_RGBA8_TYPELESS'}
-    if mode == 'RealtimeDLSSSR':
+    if mode in UPSCALING:
+        label, formats, _ = UPSCALING[mode]
         if manifest['schema'] != 2:
-            raise ValueError('SR requires schema 2')
-        if not sr_formats.keys() <= names:
-            raise ValueError('Missing SR resource')
-        if manifest['frame_index'] < 1 or manifest['sample_base_index'] != manifest['frame_index'] - 1:
-            raise ValueError('Invalid successful frame/jitter index')
-        if len(manifest['jitter']) != 2 or not all(math.isfinite(v) for v in manifest['jitter']):
-            raise ValueError('Invalid SR jitter')
+            raise ValueError(f'{label} requires schema 2')
+        if not formats.keys() <= names:
+            raise ValueError(f'Missing {label} resource')
+        validate_frame_jitter(manifest, label)
+    if mode == 'RealtimeDLSSRR':
+        validate_rr_metadata(manifest, names)
+    if mode == 'RealtimeDLSSSR':
         sr = manifest['super_resolution']
         if not sr['provider'] or sr['quality'] not in ('Quality', 'Balanced', 'Performance'):
             raise ValueError('Invalid SR provider/quality')
@@ -81,18 +159,8 @@ def validate(directory: Path, require_host=False):
             raise ValueError('Invalid current-frame resource')
         if manifest['schema'] == 2 and resource.get('frame_index') != manifest['frame_index']:
             raise ValueError('Resource refers to another frame')
-        if mode == 'RealtimeDLSSSR' and resource['name'] in sr_formats:
-            name = resource['name']
-            if fmt != sr_formats[name]:
-                raise ValueError(f'Unexpected SR format: {name}')
-            extent = manifest['display_size' if name in ('display', 'upscaled_radiance') else 'render_size']
-            if [resource['width'], resource['height']] != extent or resource['slices'] != 1:
-                raise ValueError(f'Invalid SR extent: {name}')
-            pixel_bytes = {'TEX_FORMAT_RGBA16_FLOAT': 8, 'TEX_FORMAT_R32_FLOAT': 4,
-                           'TEX_FORMAT_RG16_FLOAT': 4, 'TEX_FORMAT_R8_UNORM': 1,
-                           'TEX_FORMAT_RGBA8_TYPELESS': 4}[fmt]
-            if resource['row_bytes'] != resource['width'] * pixel_bytes:
-                raise ValueError(f'Invalid SR row format: {name}')
+        if mode in UPSCALING and resource['name'] in UPSCALING[mode][1]:
+            validate_layout(manifest, resource, *UPSCALING[mode])
         if fmt in ("TEX_FORMAT_RGBA16_FLOAT", "TEX_FORMAT_RG16_FLOAT", "TEX_FORMAT_R32_FLOAT"):
             values = [v[0] for v in struct.iter_unpack("<e" if "16" in fmt else "<f", data)]
             if not all(math.isfinite(v) for v in values):
@@ -100,6 +168,8 @@ def validate(directory: Path, require_host=False):
             files[path.name].update(min=min(values), max=max(values))
             if resource['name'] == 'sr_depth' and not all(0 <= v <= 1 for v in values):
                 raise ValueError('SR depth outside forward projection range')
+            if mode == 'RealtimeDLSSRR':
+                validate_rr_values(resource['name'], values, manifest['ray_reconstruction'])
             if resource["name"] == color_name:
                 color = (resource, values)
     if color is None:

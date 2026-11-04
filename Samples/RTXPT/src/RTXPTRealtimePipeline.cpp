@@ -396,6 +396,10 @@ RTXPTErrorCode RTXPTRealtimePipeline::Reconstruct(IDeviceContext* Context, const
                                RESOURCE_STATE_TRANSITION_MODE_TRANSITION, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
         m_ReconstructionExposureValue = Exposure;
     }
+    //The forward sign MakeExecuteAttribs hands RR the depth basis with; a projection without one fails both.
+    float ForwardSign = 0;
+    if (!RTXPTRayReconstructionInputs::GetViewForwardSign(Constants.view.MatViewToClip, ForwardSign))
+        return RTXPTErrorCode::RayReconstructionInputsFailed;
     ExecuteRayReconstructionAttribs Attribs;
     if (!RTXPTRayReconstructionInputs::MakeExecuteAttribsWithoutMicroJitter(Context, m_Targets, History.Reconstruction->GetDesc(), Constants, History.Reset,
                                                                             m_ReconstructionExposure->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE), Attribs))
@@ -407,7 +411,8 @@ RTXPTErrorCode RTXPTRealtimePipeline::Reconstruct(IDeviceContext* Context, const
     }
     ++m_Stats.RayReconstructionExecutes;
     m_Stats.RayReconstructionResets += History.Reset ? 1u : 0u;
-    m_Stats.RayReconstructionExposure = Exposure;
+    m_Stats.RayReconstructionExposure    = Exposure;
+    m_Stats.RayReconstructionForwardSign = ForwardSign;
     return RTXPTErrorCode::Ok;
 #else
     //Initialize rejects DLSSRR when the library has no ray reconstruction interface.

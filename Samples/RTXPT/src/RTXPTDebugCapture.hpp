@@ -18,14 +18,20 @@ namespace Diligent
 //Only a successful current realtime output can be captured. No manifest is published for an incomplete readback/write.
 //Texture bytes are tightly packed, little endian, top row first, array slices in ascending order. No color conversion.
 //The layer buffer retains the shader's packed representation; inactive records/padding are not valid surface guides.
+//RealtimeDLSSRR exports the render-size inputs ray reconstruction received, its exposure texture and its display-size
+//HDR; it has no denoised or upscaled HDR.
 class RTXPTDebugCapture
 {
 public:
     static bool Capture(IRenderDevice* Device, IDeviceContext* Context, RTXPTEmbeddedView& View, const std::filesystem::path& Directory)
     {
         const bool bSR     = View.GetMode() == RTXPTViewMode::RealtimeDLSSSR;
+        const bool bRR     = View.GetMode() == RTXPTViewMode::RealtimeDLSSRR;
         const bool bNative = View.GetMode() == RTXPTViewMode::RealtimeNative || bSR;
-        const auto Color   = View.GetOutputInfo(bNative ? RTXPTViewOutput::DenoisedRadiance : RTXPTViewOutput::NoisyRadiance);
+        //The render-size HDR of the frame: RR's noisy input, the denoised layers of Native and SR, or Raw's noisy HDR.
+        const auto  ColorOutput = bRR ? RTXPTViewOutput::RayReconstructionColor : bNative ? RTXPTViewOutput::DenoisedRadiance : RTXPTViewOutput::NoisyRadiance;
+        const char* ColorName   = bRR ? "rr_color" : bNative ? "denoised_radiance" : "noisy_radiance";
+        const auto  Color       = View.GetOutputInfo(ColorOutput);
         if (!Device || !Context || !Color.Valid || !View.GetRealtimeLayerBuffer())
             return false;
         try
@@ -37,13 +43,15 @@ public:
             const auto&   Stats       = View.GetRealtimeStats();
             const auto    DisplaySize = View.GetDisplaySize();
             const auto&   SR          = View.GetSuperResolutionInfo();
+            const auto&   RR          = View.GetRayReconstructionInfo();
+            const float2  Jitter      = bRR ? RR.Jitter : SR.Jitter;
             Manifest << std::setprecision(17)
-                     << "{\n\"schema\":2,\"mode\":\"" << (bSR ? "RealtimeDLSSSR" : bNative ? "RealtimeNative" : "RealtimeRaw")
+                     << "{\n\"schema\":2,\"mode\":\"" << (bRR ? "RealtimeDLSSRR" : bSR ? "RealtimeDLSSSR" : bNative ? "RealtimeNative" : "RealtimeRaw")
                      << "\",\"frame_index\":" << Color.FrameIndex
                      << ",\"render_size\":[" << Color.Size.Width << ',' << Color.Size.Height
                      << "],\"display_size\":[" << DisplaySize.Width << ',' << DisplaySize.Height
                      << "],\"spp\":1,\"sample_base_index\":" << Color.FrameIndex - 1
-                     << ",\"jitter\":[" << SR.Jitter.x << ',' << SR.Jitter.y << "],\"dynamic_motion_validated\":" << (Stats.DynamicMotionValidated ? "true" : "false")
+                     << ",\"jitter\":[" << Jitter.x << ',' << Jitter.y << "],\"dynamic_motion_validated\":" << (Stats.DynamicMotionValidated ? "true" : "false")
                      << ",\"previous_surface_storage_bytes\":" << History.PreviousTransformStorageBytes + History.PreviousSkinnedRangeBytes
                      << ",\"previous_skinned_range_bytes\":" << History.PreviousSkinnedRangeBytes
                      << ",\"skinned_arena_storage_bytes\":" << History.SkinnedVertexStorageBytes
@@ -73,6 +81,13 @@ public:
                     {"provider", SR.Variant}, {"quality", Quality}, {"executes", SR.Executes}, {"resets", SR.Resets}, {"failures", SR.Failures}, {"last_reset", SR.LastReset}, {"depth_encoding", "forward_projection_0_1_far_1"}, {"motion_convention", "current_to_previous_render_pixels_without_jitter"}, {"exposure_policy", "explicit_1_preexposure_1_scale_1"}};
                 Manifest << "\"super_resolution\":" << Metadata.dump() << ',';
             }
+            if (bRR)
+            {
+                //The embedded realtime pipeline traces RR's camera jitter alone (D5), so there is no micro-jitter.
+                const nlohmann::json Metadata = {
+                    {"provider", RR.Variant}, {"quality", GetQualityName(RR.Quality)}, {"preset", RR.Preset}, {"executes", RR.Executes}, {"resets", RR.Resets}, {"failures", RR.Failures}, {"last_reset", RR.LastReset}, {"exposure", RR.Exposure}, {"view_forward_sign", RR.ForwardSign}, {"micro_jitter", 0}, {"depth_encoding", "forward_positive_linear_view_depth_sky_5000000"}, {"motion_convention", "current_to_previous_render_pixels_without_jitter"}, {"exposure_policy", "explicit_exposure_texture_preexposure_1_scale_1"}};
+                Manifest << "\"ray_reconstruction\":" << Metadata.dump() << ',';
+            }
             Manifest << "\"resources\":[\n";
             struct Output
             {
@@ -81,7 +96,7 @@ public:
                 Uint32          Layer = 0;
             };
             std::vector<Output> Outputs = {
-                bNative ? Output{RTXPTViewOutput::DenoisedRadiance, "denoised_radiance"} : Output{RTXPTViewOutput::NoisyRadiance, "noisy_radiance"},
+                {ColorOutput, ColorName},
                 {RTXPTViewOutput::Display, "display"},
                 {RTXPTViewOutput::RayDistance, "ray_distance_not_view_z"},
                 {RTXPTViewOutput::PrimaryMotion, "primary_motion"},
@@ -101,6 +116,17 @@ public:
                 Outputs.push_back({RTXPTViewOutput::SuperResolutionDepth, "sr_depth"});
                 Outputs.push_back({RTXPTViewOutput::SuperResolutionMotion, "sr_motion"});
                 Outputs.push_back({RTXPTViewOutput::SuperResolutionIgnoreHistoryMask, "sr_ignore_history"});
+            }
+            if (bRR)
+            {
+                Outputs.push_back({RTXPTViewOutput::ReconstructedRadiance, "reconstructed_radiance"});
+                Outputs.push_back({RTXPTViewOutput::RayReconstructionDepth, "rr_depth"});
+                Outputs.push_back({RTXPTViewOutput::RayReconstructionMotion, "rr_motion"});
+                Outputs.push_back({RTXPTViewOutput::RayReconstructionSpecularMotion, "rr_specular_motion"});
+                Outputs.push_back({RTXPTViewOutput::RayReconstructionNormalRoughness, "rr_normal_roughness"});
+                Outputs.push_back({RTXPTViewOutput::RayReconstructionDiffuseAlbedo, "rr_diffuse_albedo"});
+                Outputs.push_back({RTXPTViewOutput::RayReconstructionSpecularAlbedo, "rr_specular_albedo"});
+                Outputs.push_back({RTXPTViewOutput::RayReconstructionExposure, "rr_exposure"});
             }
             bool First = true;
             for (const auto& Output : Outputs)
@@ -133,7 +159,7 @@ public:
                         "\"validity\":\"layer header and VertexIndexAndRoughness high 16 bits; PreviousVirtualPosition.w is path history validity; inactive/padding undefined\"},\n";
             View.GetProfiler().Poll();
             WriteTiming(Manifest, View.GetProfiler());
-            Manifest << ",\"unavailable_stages\":[" << (bNative ? "" : "\"NRD\",") << (bSR ? "" : "\"SR\",") << "\"TAA\",\"RR\",\"Bloom\"]\n}\n";
+            Manifest << ",\"unavailable_stages\":[" << (bNative ? "" : "\"NRD\",") << (bSR ? "" : "\"SR\",") << "\"TAA\"," << (bRR ? "" : "\"RR\",") << "\"Bloom\"]\n}\n";
             Manifest.flush();
             if (!Manifest) return false;
             Manifest.close();
@@ -164,6 +190,18 @@ public:
     }
 
 private:
+    static const char* GetQualityName(RTXPTRayReconstructionQuality Quality)
+    {
+        switch (Quality)
+        {
+            case RTXPTRayReconstructionQuality::Native: return "Native";
+            case RTXPTRayReconstructionQuality::Quality: return "Quality";
+            case RTXPTRayReconstructionQuality::Balanced: return "Balanced";
+            case RTXPTRayReconstructionQuality::Performance: return "Performance";
+        }
+        return "unknown";
+    }
+
     static bool WriteTexture(IRenderDevice* Device, IDeviceContext* Context, ITexture* Texture, const std::filesystem::path& Path, Uint64 RowBytes)
     {
         auto Desc = Texture->GetDesc();

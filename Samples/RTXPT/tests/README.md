@@ -1696,3 +1696,40 @@ validation, which grows memory by itself), initialization without NRD (Initializ
 RR path does not reach NRD; the RR prepare pass alone runs in RRPrepareInputsTest,
 which is built without it), a fault of tone mapping itself, a scene change, and image
 quality against Native and Reference.
+
+## Realtime DLSS ray reconstruction debug capture (M5.4)
+
+`RTXPTDebugCapture` describes RealtimeDLSSRR views: it exports the render-size inputs
+RR received (`rr_color`, `rr_depth`, `rr_motion`, `rr_specular_motion`,
+`rr_normal_roughness`, `rr_diffuse_albedo`, `rr_specular_albedo`), the 1x1
+`rr_exposure` texture it read and the display-size `reconstructed_radiance`, next to
+the tone-mapped display, the realtime guides and the layers every realtime capture has.
+It exports no denoised, upscaled or noisy radiance and no history confidence, and
+reports NRD and SR, not RR, as unavailable. The `ray_reconstruction` object records the
+provider, quality, preset, Execute/reset/failure counts, the exposure RR received, the
+forward sign of the view basis (1 left-handed, -1 right-handed), micro-jitter 0, and the
+depth, motion and exposure conventions. `RTXPTViewRayReconstructionInfo` gains the
+preset and forward sign this needs; the Backend's diagnostics print them as well.
+
+`validate_realtime_capture.py` checks the RR formats and extents (render size, display
+size for the reconstruction and the display, one texel for the exposure), the frame and
+jitter index, and the value ranges of the inputs, the frozen D6 input checks a capture can
+carry: depth positive and at most the sky's 5,000,000, normals of unit length within
+2e-3, roughness and albedos in [0,1], and the exposure texture equal to the reported
+exposure. Its unit tests cover each rejection with independent fixtures.
+
+- RR01 also checks that every feature reports preset F.
+- RR03 also checks that the left- and right-handed views report forward signs 1 and -1.
+- RR11 captures an RR Balanced view at 1280x720 after four frames at c1a0's display
+  exposure 0.15 into a new temporary directory, which it keeps and logs for
+  `validate_realtime_capture.py`. The manifest must describe the view's mode, sizes,
+  jitter, feature, exposure and handedness, export every RR input and output at the size,
+  format and frame of the view's output, hold the received exposure in `rr_exposure`, and
+  contain no NRD or SR result.
+
+The validation exited 0 on RTX 5060 / Windows, Debug, 2026-11-04 (D3D12 in 499 s). RR11's
+capture of the 742x418 to 1280x720 view passed `validate_realtime_capture.py`: preset F,
+exposure 0.15000002 (0.15 in float32) in the metadata and the texture, forward sign 1,
+depth from 6.02 to the sky's 5,000,000, unit normals, and roughness and albedos within
+[0,1]. The Sample does not profile its embedded views, so the capture carries no GPU
+timing; the Backend's captures do. Not covered: a Vulkan run of RR11.
