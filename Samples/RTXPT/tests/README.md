@@ -1637,3 +1637,62 @@ beyond one 300-frame Balanced run, a render size below the display size in the
 validation, resize and mode or quality switches, more views than RR05's pair, a
 failure after an accepted Execute, initialization without NRD, and image quality
 against Native and Reference.
+
+## Realtime DLSS ray reconstruction qualities and lifecycle (M5.2)
+
+`--rr_embedded_validation true` also covers every RR quality, render sizes below the
+display size, reinitialization, several views and failures after an accepted Execute.
+These checks need no change to the view, the realtime pipeline or the adapter of
+M5.1; the test double additionally records the motion vector scale of each Execute,
+can let an Execute reach the real reconstruction and still fail, and reports which
+features a view still holds:
+
+- RR01 runs RR Native, Quality, Balanced and Performance at 1280x720 and 1281x721.
+  Each view creates its feature for the Core quality it was asked for and renders at
+  exactly the optimal size of an independent query, within the query's range (RR
+  Native at the display size); RR receives its motion in render pixels (scale 1). The
+  reconstruction keeps the mean luminance of its render-size input within 10% (R06),
+  and tone mapping, which runs after Execute flushed and invalidated the context,
+  wrote every display pixel within one 8-bit step of a CPU evaluation of the view's
+  Reinhard tone mapping and sRGB encoding of the reconstructed HDR.
+- RR06: RR Native and RR Performance (640x360) views of a 1280x720 display. A static
+  frame changes only the jitter, which the motion excludes, so the motion is zero;
+  after a move by Step along the camera's right axis, the RR motion of every
+  foreground pixel equals Step * P00 * RenderWidth / (2 z) render pixels within 0.25
+  pixels, where z is its RR depth.
+- RR07: one view is reinitialized in 20 cycles through RR Quality, RR Quality at
+  1281x721, RR Performance, RealtimeNative and RR Balanced, three frames each.
+  Reinitialization revokes the previous output and the view drops the previous
+  feature; a reconstruction creates exactly one feature and the other modes none.
+  Each configuration starts its own history: one restart at jitter index 0, kept
+  while the camera moves. A failed reinitialization releases the feature as well, and
+  the view reports NotInitialized until the next one.
+- RR08: an RR Quality view, an RR Performance view and a half-size RealtimeNative view
+  share one scene preparation and TLAS build per host frame; the view that misses a
+  frame restarts alone, and another render order or a moving camera restarts nothing.
+- RR09: a frame whose reconstruction ran but which still fails publishes no output
+  and counts no success; the next frame restarts the history RR advanced, with the
+  failed frame's jitter index. After the host revokes a successful frame with
+  `InvalidateOutput`, the next frame restarts history at the following jitter index.
+  The neighbouring view keeps its history. A failure of tone mapping itself has no
+  injection point; it returns through the same failure path.
+- RR10: 300 frames of RR Balanced create no other feature, execute once each and
+  restart history only at the first frame; tone mapping after the last Execute still
+  matches its CPU evaluation.
+
+The validation exited 0 on RTX 5060 / Windows, Debug, 2026-11-04 (D3D12 in 457 s), and
+failed, as it should, against each of four source changes: tone mapping of the RR
+branch reading the noisy render-size input instead of the reconstruction (9 checks),
+a reinitialization that keeps the previous configuration and its feature alive (2),
+Balanced requesting Core's Performance quality (8), and an RR prepare that doubles the
+render-pixel motion (2). The device supports every quality at both sizes: Quality,
+Balanced and Performance render at 853x480, 742x418 and 640x360 for 1280x720, and at
+854x481, 743x418 and 641x361 for 1281x721. Tone mapping after Execute matched its CPU
+evaluation within 0.60/255; RR06's motion was within 0.25 pixels at every foreground
+pixel (median error 0.002 pixels). The Vulkan run passed as well, with the
+`VUID-vkCmdDraw-None-09600` messages for `nv.ngx.dlssd.resource` reported in M5.1. Not
+covered: device memory across reinitializations (the Debug Sample enables GPU-based
+validation, which grows memory by itself), initialization without NRD (Initialize's
+RR path does not reach NRD; the RR prepare pass alone runs in RRPrepareInputsTest,
+which is built without it), a fault of tone mapping itself, a scene change, and image
+quality against Native and Reference.
