@@ -224,6 +224,11 @@ const char* GetRTXPTErrorCodeString(RTXPTErrorCode Code)
         case RTXPTErrorCode::SuperResolutionCreateFailed: return "the DLSS feature could not be created or failed its first execution";
         case RTXPTErrorCode::SuperResolutionInputsFailed: return "the super resolution inputs could not be prepared";
         case RTXPTErrorCode::SuperResolutionExecuteFailed: return "the DLSS evaluation failed";
+        case RTXPTErrorCode::RayReconstructionUnavailable: return "no ray reconstruction factory or DLSS RR variant";
+        case RTXPTErrorCode::RayReconstructionQueryFailed: return "DLSS RR does not support the quality for the output size";
+        case RTXPTErrorCode::RayReconstructionCreateFailed: return "the DLSS RR feature could not be created or failed its first execution";
+        case RTXPTErrorCode::RayReconstructionInputsFailed: return "the ray reconstruction inputs could not be prepared";
+        case RTXPTErrorCode::RayReconstructionExecuteFailed: return "the DLSS RR evaluation failed";
     }
     return "unknown error";
 }

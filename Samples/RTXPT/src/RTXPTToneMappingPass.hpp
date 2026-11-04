@@ -113,6 +113,9 @@ public:
     bool Render(IDeviceContext* pContext, const RTXPTToneMappingRenderAttribs& Attribs);
 
     float ComputePreExposedGrayLuminance(const RTXPTToneMappingParameters& Params, bool Enabled) const;
+    //The linear multiplier manual exposure applies to the HDR source before the tone mapping operator (white balance
+    //aside); 1 with auto exposure, which is measured on the GPU.
+    float ComputeExposureScale(const RTXPTToneMappingParameters& Params) const;
 
     bool                             IsReady() const { return m_Stats.Ready; }
     const RTXPTToneMappingPassStats& GetStats() const { return m_Stats; }

@@ -3,7 +3,6 @@
  */
 #include "RTXPTRayReconstructionPass.hpp"
 
-#include <vector>
 #include "DebugUtilities.hpp"
 #if RTXPT_HAS_RAY_RECONSTRUCTION
 #    include "RayReconstructionFactoryLoader.h"
@@ -41,14 +40,8 @@ void RTXPTRayReconstructionPass::Initialize(IRenderDevice* pDevice)
     Reset();
 #if RTXPT_HAS_RAY_RECONSTRUCTION
     LoadAndCreateRayReconstructionFactory(pDevice, &m_Factory);
-    Uint32 Count = 0;
-    if (m_Factory)
-        m_Factory->EnumerateVariants(Count, nullptr);
-    std::vector<RayReconstructionInfo> Variants(Count);
-    if (Count != 0)
-        m_Factory->EnumerateVariants(Count, Variants.data());
-    for (Uint32 Index = 0; Index < Count; ++Index)
-        m_Stats.Available |= Variants[Index].VariantId == RayReconstructionVariant_DLSS;
+    RayReconstructionInfo Variant;
+    m_Stats.Available = m_Factory && RTXPTRayReconstructionInputs::FindDLSSVariant(*m_Factory, Variant);
     if (!m_Stats.Available)
     {
         Fail(RTXPTRayReconstructionStatus::Unavailable,

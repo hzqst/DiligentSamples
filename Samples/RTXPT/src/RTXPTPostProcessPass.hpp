@@ -55,6 +55,8 @@ enum class RTXPTPostProcessPassSet
     RealtimeRaw,
     // The RELAX prepare and merge passes of RealtimeNative.
     RealtimeNative,
+    // The DLSS RR input preparation of RealtimeDLSSRR.
+    RealtimeRR,
 };
 
 enum class RTXPTPostProcessPassId : Uint32

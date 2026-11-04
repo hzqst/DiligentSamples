@@ -137,6 +137,13 @@ enum class RTXPTErrorCode : Uint32
     SuperResolutionCreateFailed,
     SuperResolutionInputsFailed,
     SuperResolutionExecuteFailed,
+
+    // RealtimeDLSSRR ray reconstruction
+    RayReconstructionUnavailable,
+    RayReconstructionQueryFailed,
+    RayReconstructionCreateFailed,
+    RayReconstructionInputsFailed,
+    RayReconstructionExecuteFailed,
 };
 
 const char* GetRTXPTErrorCodeString(RTXPTErrorCode Code);
