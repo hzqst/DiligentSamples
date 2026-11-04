@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 // Standalone GPU regression test. See README.md for build/run instructions.
 #include <Windows.h>
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -71,6 +72,177 @@ Plane Surface(float Roughness, float Radiance)
     Data.PackedNormal                     = 0x80008000;               // oct-encoded +Z
     Data.PackedNoisyRadianceAndSpecAvg[0] = Pack(Radiance, Radiance);
     Data.PackedNoisyRadianceAndSpecAvg[1] = Pack(Radiance, 0);
+    return Data;
+}
+
+// RG16F outputs are compared with unquantized expectations within one half-precision ULP.
+constexpr int   kHalfMantissaBits = 10;
+constexpr float kHalfMinNormal    = 6.103515625e-5f;
+
+void NearHalf(float Expected, float Actual)
+{
+    const float Ulp = std::ldexp(1.0f, std::ilogb(std::max(std::abs(Expected), kHalfMinNormal)) - kHalfMantissaBits);
+    if (std::abs(Expected - Actual) > Ulp)
+        std::cerr << "Expected " << Expected << ", got " << Actual << '\n';
+    Require(std::abs(Expected - Actual) <= Ulp, "Unexpected half-precision GPU output");
+}
+
+constexpr float kTestNearZ = 0.1f;
+
+// Cases from kFirstPerspectiveCase use a static scene seen by a 1280x720 render view (motion is in render pixels) with
+// a 1 rad horizontal FOV. The camera moved from x = -0.05 to the origin; before the failed-projection case it instead
+// stood at z = 3.5 facing -Z. The jitter moves the single test pixel's sample onto the optical axis.
+constexpr int    kFirstPerspectiveCase          = 14;
+constexpr int    kDirectSurfaceCase             = 14; // layer 0 at vertex 1
+constexpr int    kPrimarySurfaceReplacementCase = 15; // issue #288: layer 0 at vertex 2 behind a mirror
+constexpr int    kDominantLayerCase             = 16; // dominant layer 1; layer 0 deliberately differs
+constexpr int    kBlockedAnchorCase             = 17; // depth stops at an earlier motion-blocking surface
+constexpr int    kFailedProjectionCase          = 18; // the specular image is behind the previous camera
+constexpr Uint32 kRigWidth                      = 1280;
+constexpr Uint32 kRigHeight                     = 720;
+constexpr float  kRigHorizontalFovRadians       = 1.0f;
+constexpr float  kRigPreviousCameraX            = -0.05f;
+constexpr float  kRigReversedCameraZ            = 3.5f;
+constexpr float  kRigRoughness                  = 0.1f; // below the 0.25 planar-reflector gate
+constexpr float  kRigRadiance                   = 4.0f;
+
+void SetPerspectiveRig(SampleConstants& Frame, bool bRightHanded, bool bPreviousCameraReversed)
+{
+    const float           AspectRatio = static_cast<float>(kRigWidth) / static_cast<float>(kRigHeight);
+    const float           TanHalfFovX = std::tan(kRigHorizontalFovRadians * 0.5f);
+    PathTracerCameraData& Camera      = Frame.ptConsts.camera;
+    Camera.CameraU                    = float3{TanHalfFovX, 0, 0};
+    Camera.CameraV                    = float3{0, TanHalfFovX / AspectRatio, 0};
+    Camera.CameraW                    = float3{0, 0, 1};
+    Camera.AspectRatio                = AspectRatio;
+    Camera.ViewportWidth              = kRigWidth;
+    Camera.ViewportHeight             = kRigHeight;
+    Camera.Jitter                     = float2{0.5f - kRigWidth * 0.5f, kRigHeight * 0.5f - 0.5f};
+
+    // float4x4::Projection takes the vertical FOV. The motion helper reads MatWorldToClipNoOffset, so every clip
+    // matrix is the product of the view and projection the depth conversion reads.
+    const float    VerticalFov    = 2.0f * std::atan(TanHalfFovX / AspectRatio);
+    const float4x4 Projection     = float4x4::Projection(VerticalFov, AspectRatio, Camera.NearZ, Camera.FarZ, false);
+    const float4x4 FlipZ          = float4x4::Scale(1, 1, -1);
+    const float4x4 ViewBasis      = bRightHanded ? FlipZ : float4x4::Identity();
+    const float4x4 ViewToClip     = bRightHanded ? FlipZ * Projection : Projection;
+    const float4x4 PreviousCamera = bPreviousCameraReversed ?
+        float4x4::Translation(0, 0, -kRigReversedCameraZ) * float4x4::Scale(-1, 1, -1) :
+        float4x4::Translation(-kRigPreviousCameraX, 0, 0);
+
+    const auto SetView = [&](PathTracerViewData& View, const float4x4& WorldToView) {
+        View.MatWorldToView         = WorldToView;
+        View.MatViewToClip          = ViewToClip;
+        View.MatWorldToClip         = WorldToView * ViewToClip;
+        View.MatWorldToClipNoOffset = View.MatWorldToClip;
+        View.ViewportSize           = float2{static_cast<float>(kRigWidth), static_cast<float>(kRigHeight)};
+        View.ClipToWindowScale      = float2{kRigWidth * 0.5f, -(kRigHeight * 0.5f)};
+    };
+    SetView(Frame.view, ViewBasis);
+    SetView(Frame.previousView, PreviousCamera * ViewBasis);
+}
+
+// Surface motion as BUILD exports it, for a point that projects in both frames.
+float2 SurfaceMotion(const SampleConstants& Frame, const float3& Pos, const float3& PreviousPos)
+{
+    const float4 Clip         = float4{Pos, 1} * Frame.view.MatWorldToClipNoOffset;
+    const float4 PreviousClip = float4{PreviousPos, 1} * Frame.previousView.MatWorldToClipNoOffset;
+    Require(Clip.w > 0 && PreviousClip.w > 0, "Perspective rig surface must project in both frames");
+    return float2{(PreviousClip.x / PreviousClip.w - Clip.x / Clip.w) * Frame.view.ClipToWindowScale.x,
+                  (PreviousClip.y / PreviousClip.w - Clip.y / Clip.w) * Frame.view.ClipToWindowScale.y};
+}
+
+// Independent of the rig matrices: the pixel motion of an on-axis point at view depth Z that moved by MotionX.
+float AxisMotionX(float Z, float MotionX)
+{
+    return kRigWidth * 0.5f * (MotionX - kRigPreviousCameraX) / (Z * std::tan(kRigHorizontalFovRadians * 0.5f));
+}
+
+// A layer as BUILD stores it: its last physical ray, the length accumulated from the near plane and the motion of
+// its virtual point.
+struct RigLayer
+{
+    Uint32 VertexIndex = 0;
+    float3 RayOrigin   = {};
+    float3 RayDir      = {};
+    float  LastRayT    = 0;
+    float  SceneLength = 0;
+    float3 WorldMotion = {};
+};
+
+struct PerspectiveCase
+{
+    RigLayer Layer0;
+    RigLayer Layer1;
+    Uint32   DominantIndex  = 0;
+    float    ExportedDepth  = 0; // the dominant ray distance, or the earlier blocking surface's
+    float    HitT           = 0;
+    bool     bSpecularImage = false; // otherwise the surface motion must be kept
+};
+
+PerspectiveCase GetPerspectiveCase(int Test)
+{
+    // Issue #288: the primary ray meets a mirror at z = 2 and reflects towards a surface at (1, 0, 1).
+    const float    Sqrt2          = std::sqrt(2.0f);
+    const float3   MirrorPoint    = float3{0, 0, 2};
+    const float3   ReflectedDir   = float3{1, 0, -1} / Sqrt2;
+    const float    MirrorDistance = MirrorPoint.z - kTestNearZ;
+    const float3   AxisOrigin     = float3{0, 0, kTestNearZ};
+    const float3   AxisDir        = float3{0, 0, 1};
+    const float    WallDistance   = 2.9f; // a wall at z = 3
+    const RigLayer Mirrored       = {2, MirrorPoint, ReflectedDir, Sqrt2, MirrorDistance + Sqrt2, float3{0, 0, 0}};
+
+    PerspectiveCase Case;
+    Case.HitT = 1.0f;
+    switch (Test)
+    {
+        case kDirectSurfaceCase:
+            Case.Layer0         = {1, AxisOrigin, AxisDir, WallDistance, WallDistance, float3{0.25f, 0, 0}};
+            Case.ExportedDepth  = WallDistance;
+            Case.bSpecularImage = true;
+            break;
+
+        case kPrimarySurfaceReplacementCase:
+            Case.Layer0         = Mirrored;
+            Case.ExportedDepth  = Mirrored.SceneLength;
+            Case.bSpecularImage = true;
+            break;
+
+        case kDominantLayerCase:
+            Case.Layer0         = {1, AxisOrigin, AxisDir, 1.4f, 1.4f, float3{1.5f, 0, 0}};
+            Case.Layer1         = {2, MirrorPoint, ReflectedDir, 0.5f, MirrorDistance + 0.5f, float3{-0.125f, 0, 0}};
+            Case.DominantIndex  = 1;
+            Case.ExportedDepth  = Case.Layer1.SceneLength;
+            Case.HitT           = 0.75f;
+            Case.bSpecularImage = true;
+            break;
+
+        case kBlockedAnchorCase:
+            // Layer 0 is the blocking surface itself, so its distance matches the exported depth.
+            Case.Layer0        = {1, AxisOrigin, AxisDir, MirrorDistance, MirrorDistance, float3{0, 0, 0}};
+            Case.Layer1        = Mirrored;
+            Case.DominantIndex = 1;
+            Case.ExportedDepth = MirrorDistance;
+            break;
+
+        default:
+            Require(Test == kFailedProjectionCase, "Unknown perspective case");
+            Case.Layer0        = {1, AxisOrigin, AxisDir, WallDistance, WallDistance, float3{0.125f, 0, 0}};
+            Case.ExportedDepth = WallDistance;
+            break;
+    }
+    return Case;
+}
+
+Plane MakeRigLayer(const RigLayer& Layer)
+{
+    Plane Data                   = Surface(kRigRoughness, kRigRadiance);
+    Data.RayOrigin               = Layer.RayOrigin;
+    Data.RayDir                  = Layer.RayDir;
+    Data.LastRayTCurrent         = Layer.LastRayT;
+    Data.SceneLength             = Layer.SceneLength;
+    Data.VertexIndexAndRoughness = (Layer.VertexIndex << 16) | Float16{kRigRoughness}.Raw();
+    Data.PackedThpAndMVs         = uint3{Pack(Layer.WorldMotion.x, 1), Pack(Layer.WorldMotion.y, 1), Pack(Layer.WorldMotion.z, 1)};
     return Data;
 }
 } // namespace
@@ -171,13 +343,14 @@ void main(uint3 tid : SV_DispatchThreadID)
     // Every case runs twice: with the Sample's left-handed view (forward = +Z) and with the game's right-handed view
     // (forward = -Z), the same world, rays and clip space expressed as View * FlipZ and FlipZ * Projection. RR depth is
     // the forward distance in both, so the expectations do not depend on the convention.
-    constexpr int   kInputCaseCount  = 15;
+    constexpr int   kInputCaseCount  = 19;
     constexpr float kTestFovRadians  = 1.0f;
     constexpr float kTestAspectRatio = 1.0f;
     for (int Run = 0; Run < 2 * kInputCaseCount; ++Run)
     {
         const int       Test         = Run % kInputCaseCount;
         const bool      bRightHanded = Run >= kInputCaseCount;
+        const bool      bPerspective = Test >= kFirstPerspectiveCase;
         const char*     Convention   = bRightHanded ? " (right-handed view)" : " (left-handed view)";
         SampleConstants Frame        = {};
         Frame.ptConsts.imageWidth = Frame.ptConsts.imageHeight = 1;
@@ -186,10 +359,10 @@ void main(uint3 tid : SV_DispatchThreadID)
         Frame.ptConsts.genericTSPlaneStride                    = 64;
         Frame.ptConsts.DLSSRRBrightnessClampK                  = Test == 3 ? 2.0f : 0.0f;
         Frame.ptConsts.camera.CameraW                          = float3{0, 0, 1};
-        Frame.ptConsts.camera.NearZ                            = 0.1f;
+        Frame.ptConsts.camera.NearZ                            = kTestNearZ;
         Frame.ptConsts.camera.FarZ                             = 100;
         Frame.ptConsts.perPixelJitterAAScale                   = 0;
-        if (Test >= 10)
+        if (Test >= 10 && !bPerspective)
         {
             Frame.ptConsts.camera.Jitter = float2{0.25f, -0.125f};
             if (Test >= 11)
@@ -208,6 +381,9 @@ void main(uint3 tid : SV_DispatchThreadID)
         const float4x4 FlipZ      = float4x4::Scale(1, 1, -1);
         Frame.view.MatWorldToView = bRightHanded ? FlipZ : float4x4::Identity();
         Frame.view.MatViewToClip  = bRightHanded ? FlipZ * Projection : Projection;
+        const PerspectiveCase Rig = bPerspective ? GetPerspectiveCase(Test) : PerspectiveCase{};
+        if (bPerspective)
+            SetPerspectiveRig(Frame, bRightHanded, Test == kFailedProjectionCase);
         BufferDesc CBDesc;
         CBDesc.Name      = "RR test constants";
         CBDesc.Size      = sizeof(Frame);
@@ -219,11 +395,10 @@ void main(uint3 tid : SV_DispatchThreadID)
         std::array<Plane, 192> Planes = {};
         Planes[0]                     = Surface(Test == 5 ? 0.0f : 0.5f, 4.0f);
         Planes[64]                    = Surface(1.0f, 2.0f);
-        if (Test == 14)
+        if (bPerspective)
         {
-            Planes[0]                    = Surface(0.0f, 4.0f);
-            Planes[0].RayDir             = float3{0, 0, 1};
-            Planes[0].PackedThpAndMVs[0] = Pack(1.0f, 1.0f);
+            Planes[0]  = MakeRigLayer(Rig.Layer0);
+            Planes[64] = MakeRigLayer(Rig.Layer1);
         }
         if (Test == 6)
         {
@@ -253,6 +428,8 @@ void main(uint3 tid : SV_DispatchThreadID)
             Header[1] = 1;
         if (Test == 7)
             Header = {{0xffffffffu, 1u, 0xffffffffu, 3u}}; // missing primary and invalid dominant
+        if (bPerspective)
+            Header = {{1u, Rig.DominantIndex == 1 ? 1u : 0xffffffffu, 0xffffffffu, Rig.DominantIndex}};
         std::array<TextureSubResData, 4> HeaderData;
         for (size_t Layer = 0; Layer < Header.size(); ++Layer)
             HeaderData[Layer] = TextureSubResData{&Header[Layer], sizeof(Uint32)};
@@ -282,20 +459,34 @@ void main(uint3 tid : SV_DispatchThreadID)
             TexDesc.Format = Index < 4 ? TEX_FORMAT_RGBA16_FLOAT : Index == 4 ? TEX_FORMAT_R32_FLOAT : TEX_FORMAT_RG16_FLOAT;
             Device->CreateTexture(TexDesc, nullptr, &Outputs[Index]);
         }
-        const float       RawDepth = Test == 0 ? 0.0f : Test == 1 ? std::numeric_limits<float>::infinity() : 2.0f;
-        TextureSubResData DepthData{&RawDepth, sizeof(RawDepth)};
-        TextureData       DepthInit{&DepthData, 1};
-        TexDesc.Format    = TEX_FORMAT_R32_FLOAT;
-        TexDesc.BindFlags = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
+        const float RawDepth   = bPerspective ? Rig.ExportedDepth : Test == 0 ? 0.0f : Test == 1 ? std::numeric_limits<float>::infinity() : 2.0f;
+        const float RawHitT    = bPerspective ? Rig.HitT : RawDepth;
+        const auto  CreateR32F = [&](const float& Value, RefCntAutoPtr<ITexture>& pTexture) {
+            TextureSubResData Data{&Value, sizeof(Value)};
+            TextureData       Init{&Data, 1};
+            TexDesc.Format    = TEX_FORMAT_R32_FLOAT;
+            TexDesc.BindFlags = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
+            Device->CreateTexture(TexDesc, &Init, &pTexture);
+        };
         RefCntAutoPtr<ITexture> Depth;
-        Device->CreateTexture(TexDesc, &DepthInit, &Depth);
-        const std::array<Uint16, 4> Motion = {{Float16{2.0f}.Raw(), Float16{-3.0f}.Raw(), 0, 0}};
+        RefCntAutoPtr<ITexture> HitT;
+        CreateR32F(RawDepth, Depth);
+        CreateR32F(RawHitT, HitT);
+        // A perspective case exports the dominant layer's virtual motion at the depth's virtual point.
+        float2 SurfaceMotionInput = float2{2.0f, -3.0f};
+        if (bPerspective)
+        {
+            const RigLayer& Dominant        = Rig.DominantIndex == 0 ? Rig.Layer0 : Rig.Layer1;
+            const float3    VirtualWorldPos = float3{0, 0, kTestNearZ + Rig.ExportedDepth};
+            SurfaceMotionInput              = SurfaceMotion(Frame, VirtualWorldPos, VirtualWorldPos + Dominant.WorldMotion);
+        }
+        const std::array<Uint16, 4> Motion = {{Float16{SurfaceMotionInput.x}.Raw(), Float16{SurfaceMotionInput.y}.Raw(), 0, 0}};
         TextureSubResData           MotionData{Motion.data(), sizeof(Motion)};
         TextureData                 MotionInit{&MotionData, 1};
         TexDesc.Format = TEX_FORMAT_RGBA16_FLOAT;
         RefCntAutoPtr<ITexture> MotionTexture;
         Device->CreateTexture(TexDesc, &MotionInit, &MotionTexture);
-        if (Test >= 10)
+        if (Test >= 10 && !bPerspective)
         {
             RefCntAutoPtr<IShaderResourceBinding> SceneSRB;
             ScenePSO->CreateShaderResourceBinding(&SceneSRB, true);
@@ -320,7 +511,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         Bind("u_DenoisingLayersHeader", HeaderTexture->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
         Bind("u_StableRadiance", StableRadiance->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
         Bind("t_Depth", Depth->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
-        Bind("t_SpecularHitT", Depth->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
+        Bind("t_SpecularHitT", HitT->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
         Bind("t_MotionVectors", MotionTexture->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
         const char* Names[] = {"u_OutputColor", "u_RRDiffuseAlbedo", "u_RRSpecAlbedo", "u_RRNormalsAndRoughness", "u_RRDepth", "u_RRMotionVectors", "u_RRSpecMotionVectors"};
         for (size_t Index = 0; Index < Outputs.size(); ++Index)
@@ -358,12 +549,32 @@ void main(uint3 tid : SV_DispatchThreadID)
         const auto& Normal = Results[3];
         std::cout << "RR motion case " << Test << Convention << ": " << Results[5][0] << ", " << Results[5][1]
                   << "; specular " << Results[6][0] << ", " << Results[6][1] << '\n';
-        NearRelative(Test < 2 ? 5000000.0f : Test < 10 ? 2.1f : 3.0f, Results[4][0], kRRDepthRelativeTolerance,
-                     "RR depth is not the forward view distance");
-        Near(Test < 10 ? 2.0f : Test == 10 ? 0.25f : Test == 12 ? 0.0f : -0.75f, Results[5][0]);
-        Near(Test < 10 ? -3.0f : Test == 10 || Test == 12 ? 0.0f : -2.0f, Results[5][1]);
-        Near(Test == 14 ? -0.5f : Results[5][0], Results[6][0]);
-        Near(Test == 14 ? -2.0f : Results[5][1], Results[6][1]);
+        const float ExpectedDepth = bPerspective ? kTestNearZ + Rig.ExportedDepth : Test < 2 ? 5000000.0f : Test < 10 ? 2.1f : 3.0f;
+        NearRelative(ExpectedDepth, Results[4][0], kRRDepthRelativeTolerance, "RR depth is not the forward view distance");
+        if (bPerspective)
+        {
+            NearHalf(SurfaceMotionInput.x, Results[5][0]);
+            NearHalf(SurfaceMotionInput.y, Results[5][1]);
+            if (Rig.bSpecularImage)
+            {
+                // The specular image lies hitT beyond the depth's virtual point on the optical axis.
+                const RigLayer& Dominant   = Rig.DominantIndex == 0 ? Rig.Layer0 : Rig.Layer1;
+                const float     ImageDepth = kTestNearZ + Rig.ExportedDepth + Rig.HitT;
+                NearHalf(AxisMotionX(ImageDepth, Dominant.WorldMotion.x), Results[6][0]);
+                Near(0, Results[6][1]);
+            }
+            else
+            {
+                Require(Results[6][0] == Results[5][0] && Results[6][1] == Results[5][1], "Specular motion must keep the surface motion");
+            }
+        }
+        else
+        {
+            Near(Test < 10 ? 2.0f : Test == 10 ? 0.25f : Test == 12 ? 0.0f : -0.75f, Results[5][0]);
+            Near(Test < 10 ? -3.0f : Test == 10 || Test == 12 ? 0.0f : -2.0f, Results[5][1]);
+            Near(Results[5][0], Results[6][0]);
+            Near(Results[5][1], Results[6][1]);
+        }
         Require(std::abs(1 - std::sqrt(Normal[0] * Normal[0] + Normal[1] * Normal[1] + Normal[2] * Normal[2])) <= kRRNormalLengthTolerance,
                 "RR normal is not unit length");
         Require(Normal[3] >= 0 && Normal[3] <= 1, "Roughness outside [0,1]");

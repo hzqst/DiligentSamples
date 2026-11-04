@@ -122,22 +122,33 @@ void DLSSRRDenoiserPrepareInputs(uint2 pixelPos)
     u_RRSpecAlbedo[pixelPos] = float4(saturate(specAlbedo), 1);
     u_RRNormalsAndRoughness[pixelPos] = float4(guideNormals, saturate(roughness));
 #if RTXPT_PREPARE_DLSS_RR
-    // v1.9 planar-reflector guide. The orthonormal reflector-basis construction
-    // preserves reflection-ray length, so its mirrored image lies this far
-    // along the primary ray. Keep Diligent's current-to-previous pixel units.
+    // v1.9 planar-reflector guide. Planar reflections unfold into the camera ray,
+    // so the specular image lies the (spatially filtered) hitT beyond the virtual
+    // point depth reconstructs, and moves with the dominant layer's virtual motion.
+    // The layer's RayOrigin/RayDir are its last physical ray, not that space.
+    // Keep Diligent's current-to-previous pixel units; otherwise keep surface motion.
     float2 specularMotion = all(isfinite(motion)) ? motion : 0.0.xx;
-    if (activeCount > 0u && available.x != 0.0)
+    if (dominantIndex < activeCount && available[dominantIndex] != 0.0)
     {
-        DenoisingLayer primary = denoisingLayers.LoadDenoisingLayer(pixelPos, 0);
+        DenoisingLayer dominant = denoisingLayers.LoadDenoisingLayer(pixelPos, dominantIndex);
         const float hitT = t_SpecularHitT[pixelPos];
-        if (isfinite(primary.SceneLength) && isfinite(primary.GetRoughness()) && all(isfinite(primary.RayDir)) &&
-            dot(primary.RayDir, primary.RayDir) > 0.5 && isfinite(hitT) && hitT > 1e-3 && roughness < 0.25)
+        // BUILD exports the dominant layer's float32 SceneLength unchanged as R32F depth,
+        // unless motion was blocked at an earlier surface. Only that anchor mismatch is
+        // rejected here: a layer blocked at its own surface exports the same distance.
+        const bool distanceMatchesExportedDepth = isfinite(rayDistance) && rayDistance > 0.0 && dominant.SceneLength == rayDistance;
+        if (distanceMatchesExportedDepth && isfinite(dominant.GetRoughness()) && isfinite(hitT) && hitT > 1e-3 && roughness < 0.25)
         {
-            const float3 reflectionRay = reflect(primary.RayDir, primary.GetNormal()) * hitT;
-            const float z = abs(dot(primary.GetNormal(), reflectionRay));
-            const float imageDistance = sqrt(max(0.0, dot(reflectionRay, reflectionRay) - z * z) + max(z, 1e-5) * max(z, 1e-5));
-            const float3 imageWorld = primary.RayOrigin + primary.RayDir * (primary.SceneLength + imageDistance);
-            specularMotion = ComputePathTracerMotionVector(imageWorld, imageWorld + primary.GetWorldMotionVector(), g_Frame.view, g_Frame.previousView).xy;
+            const float3 imageWorld = virtualWorldPos + cameraRay.dir * hitT;
+            const float3 previousImageWorld = imageWorld + dominant.GetWorldMotionVector();
+            const float4 imageClip = mul(float4(imageWorld, 1.0), g_Frame.view.MatWorldToClipNoOffset);
+            const float4 previousImageClip = mul(float4(previousImageWorld, 1.0), g_Frame.previousView.MatWorldToClipNoOffset);
+            // ComputePathTracerMotionVector reports a failed projection as zero motion.
+            if (all(isfinite(imageClip)) && all(isfinite(previousImageClip)) && imageClip.w > 0.0 && previousImageClip.w > 0.0)
+            {
+                const float2 imageMotion = ComputePathTracerMotionVector(imageWorld, previousImageWorld, g_Frame.view, g_Frame.previousView).xy;
+                if (all(isfinite(imageMotion)))
+                    specularMotion = imageMotion;
+            }
         }
     }
     u_RRSpecMotionVectors[pixelPos] = all(isfinite(specularMotion)) ? clamp(specularMotion, -HLF_MAX, HLF_MAX) : 0.0.xx;
