@@ -1,7 +1,11 @@
 #include "RTXPTRealtimePipeline.hpp"
+#include "AsyncPrefix.hpp"
 #include "MapHelper.hpp"
 #include "RTXPTNrdConfig.hpp"
 #include "RTXPTSuperResolutionInputs.hpp"
+#if RTXPT_HAS_RAY_RECONSTRUCTION
+#    include "RTXPTRayReconstructionInputs.hpp"
+#endif
 #include "../shaders/PathTracer/SubSampling.h"
 #include <cmath>
 #include <limits>
@@ -11,7 +15,8 @@ namespace Diligent
 namespace
 {
 //RealtimeNative traces and prepares its layers with the Sample's realtime defaults (RTXPTRealtimeSettings), the
-//configuration whose RELAX output the M3.0 baseline thresholds were measured on.
+//configuration whose RELAX output the M3.0 baseline thresholds were measured on. RealtimeDLSSRR conditions its layers
+//the same way (D5).
 constexpr float  kNativeFireflyFilterThreshold         = 0.10f;
 constexpr float  kFireflyFilterThresholdScale          = 1000.0f;
 constexpr float  kNativeDenoiserRadianceClampK         = 8.0f;
@@ -19,6 +24,9 @@ constexpr float  kNativeSuppressPrimaryIndirectSpecK   = 0.6f;
 constexpr float  kNativeAntiAliasingFallthrough        = 0.6f;
 constexpr Uint32 kNativeAllowPrimarySurfaceReplacement = 1;
 constexpr Uint32 kMaxLayerVertexDepth                  = 9;
+//RealtimeDLSSRR clamps the noisy radiance RR receives to this multiple of the pre-exposed gray luminance, the Sample's
+//default (RTXPTRealtimeSettings::DLSSRRBrightnessClampK, D5).
+constexpr float kReconstructionBrightnessClampK = 4096.0f;
 
 //Every denoiser input and output the NRD layers read or write must be a UAV format of the device.
 bool SupportsNrdInputs(IRenderDevice* Device, const RTXPTRenderTargetFormats& Formats)
@@ -45,20 +53,33 @@ RTXPTErrorCode RTXPTRealtimePipeline::Initialize(const RTXPTRealtimePipelineCrea
     m_Nrd.Reset();
     m_SuperResolutionInputs.Reset();
     m_PixelList.Release();
-    m_Constants         = CreateInfo.Constants;
-    m_DisplayFormat     = CreateInfo.DisplayFormat;
-    m_Denoiser          = CreateInfo.Denoiser;
-    m_SuperResolution   = CreateInfo.SuperResolution;
-    auto* const  Device = CreateInfo.Device;
-    auto* const  Cache  = CreateInfo.Cache;
+    m_ReconstructionExposure.Release();
+    m_Constants                     = CreateInfo.Constants;
+    m_DisplayFormat                 = CreateInfo.DisplayFormat;
+    m_Denoiser                      = CreateInfo.Denoiser;
+    m_Reconstructor                 = CreateInfo.Reconstructor;
+    m_ReconstructionDisplayExposure = CreateInfo.ReconstructionDisplayExposure;
+    m_ReconstructionExposureValue   = 0;
+    m_SuperResolution               = CreateInfo.SuperResolution;
+    auto* const  Device             = CreateInfo.Device;
+    auto* const  Cache              = CreateInfo.Cache;
     const Uint32 Width = CreateInfo.Width, Height = CreateInfo.Height;
-    const Uint32 DisplayWidth  = m_SuperResolution ? CreateInfo.DisplayWidth : Width;
-    const Uint32 DisplayHeight = m_SuperResolution ? CreateInfo.DisplayHeight : Height;
+    const bool   bReconstruction  = m_Reconstructor == RTXPTRealtimeReconstructor::DLSSRR;
+    const bool   bDisplaySize     = m_SuperResolution || bReconstruction;
+    const Uint32 DisplayWidth     = bDisplaySize ? CreateInfo.DisplayWidth : Width;
+    const Uint32 DisplayHeight    = bDisplaySize ? CreateInfo.DisplayHeight : Height;
+    const bool   bReconstructorOk = m_Reconstructor == RTXPTRealtimeReconstructor::None ||
+        (bReconstruction && m_Denoiser == RTXPTRealtimeDenoiser::None && !m_SuperResolution);
     if (!Device || !Cache || !CreateInfo.Constants || !Width || !Height || CreateInfo.DisplayFormat == TEX_FORMAT_UNKNOWN ||
         ComputeRTXPTLayerPlaneStride(Width, Height) > std::numeric_limits<Uint32>::max() ||
-        DisplayWidth < Width || DisplayHeight < Height ||
-        (!m_SuperResolution && (CreateInfo.DisplayWidth != 0 || CreateInfo.DisplayHeight != 0)))
+        DisplayWidth < Width || DisplayHeight < Height || !bReconstructorOk ||
+        (!bDisplaySize && (CreateInfo.DisplayWidth != 0 || CreateInfo.DisplayHeight != 0)))
         return RTXPTErrorCode::InvalidArgument;
+#if !RTXPT_HAS_RAY_RECONSTRUCTION
+    //The library was built without the ray reconstruction interface (add_rtxpt_library).
+    if (bReconstruction)
+        return RTXPTErrorCode::RayReconstructionUnavailable;
+#endif
     const bool bNative = m_Denoiser == RTXPTRealtimeDenoiser::NrdRelax;
     if (bNative && !RTXPTIsNrdAvailable())
         return RTXPTErrorCode::DenoiserUnavailable;
@@ -66,8 +87,12 @@ RTXPTErrorCode RTXPTRealtimePipeline::Initialize(const RTXPTRealtimePipelineCrea
     if (bNative && !SupportsNrdInputs(Device, Targets.Formats))
         return RTXPTErrorCode::DenoiserUnsupportedDevice;
 
-    Targets.Dimensions              = {Width, Height, DisplayWidth, DisplayHeight, m_SuperResolution};
-    Targets.CreateRealtimeResources = true;
+    //Ray reconstruction's targets are those of RTXPTRayReconstructionInputs::MakeRenderTargetCreateInfo: the display
+    //size is distinct exactly when the render size is smaller, and the NRD targets are not allocated.
+    const bool bUpscaled                     = m_SuperResolution || (bReconstruction && (DisplayWidth != Width || DisplayHeight != Height));
+    Targets.Dimensions                       = {Width, Height, DisplayWidth, DisplayHeight, bUpscaled};
+    Targets.CreateRealtimeResources          = true;
+    Targets.CreateRayReconstructionResources = bReconstruction;
     if (!m_Targets.Resize(Device, Targets))
         return RTXPTErrorCode::FrameTargetsFailed;
     //The full-rate shader still declares the compaction list; with a 1x1 pattern it never reads entries.
@@ -79,9 +104,32 @@ RTXPTErrorCode RTXPTRealtimePipeline::Initialize(const RTXPTRealtimePipelineCrea
     Device->CreateBuffer(List, nullptr, &m_PixelList);
     if (!m_PixelList)
         return RTXPTErrorCode::FrameTargetsFailed;
-    auto* Factory = Device->GetEngineFactory();
+    if (bReconstruction)
+    {
+        //RR reads the exposure of its scene-linear input from this texture (D4); R32F holds every display exposure a
+        //view accepts. Render writes the exposure of each frame before Execute.
+        const float       InitialExposure = 1.0f;
+        TextureSubResData ExposureData{&InitialExposure, sizeof(InitialExposure)};
+        TextureData       ExposureInit{&ExposureData, 1};
+        TextureDesc       ExposureDesc;
+        ExposureDesc.Name                 = "RTXPT ray reconstruction exposure";
+        ExposureDesc.Type                 = RESOURCE_DIM_TEX_2D;
+        ExposureDesc.Width                = 1;
+        ExposureDesc.Height               = 1;
+        ExposureDesc.Format               = TEX_FORMAT_R32_FLOAT;
+        ExposureDesc.Usage                = USAGE_DEFAULT;
+        ExposureDesc.BindFlags            = BIND_SHADER_RESOURCE;
+        ExposureDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
+        Device->CreateTexture(ExposureDesc, &ExposureInit, &m_ReconstructionExposure);
+        if (!m_ReconstructionExposure)
+            return RTXPTErrorCode::FrameTargetsFailed;
+        m_ReconstructionExposureValue = InitialExposure;
+    }
+    auto*      Factory = Device->GetEngineFactory();
+    const auto PassSet = bReconstruction ? RTXPTPostProcessPassSet::RealtimeRR :
+                                           (bNative ? RTXPTPostProcessPassSet::RealtimeNative : RTXPTPostProcessPassSet::RealtimeRaw);
     if (!m_Guides.Initialize(Device, Factory, Cache, m_Constants, true) ||
-        !m_Merge.Initialize(Device, Factory, Cache, m_Constants, true, bNative ? RTXPTPostProcessPassSet::RealtimeNative : RTXPTPostProcessPassSet::RealtimeRaw) ||
+        !m_Merge.Initialize(Device, Factory, Cache, m_Constants, true, PassSet) ||
         !m_ToneMapping.Initialize(Device, Factory, Cache, CreateInfo.PSOCache, m_DisplayFormat, true) ||
         !m_ToneMapping.ResizeResources(Device, DisplayWidth, DisplayHeight, Targets.Formats.OutputColor))
         return RTXPTErrorCode::PostProcessSetupFailed;
@@ -113,20 +161,23 @@ RTXPTErrorCode RTXPTRealtimePipeline::Initialize(const RTXPTRealtimePipelineCrea
 /* Build initializes headers/surfaces, then light preparation consumes this frame's depth/motion before Fill.
  * Fill produces one current sample per layer; guides are spatial/current-frame only. Raw merges the noisy layers and
  * Native denoises them first (Denoise); both produce render-size linear HDR. A SuperResolution pipeline upscales it to
- * the display size (Upscale), and ToneMapping writes the host's explicit RTV at the display size.
- * Only completion of the entire chain publishes valid output.
+ * the display size (Upscale). DLSSRR instead prepares RR's noisy radiance and guides from the layers and the denoised
+ * specular hit distance of the guides, and RR reconstructs the display-size HDR (Reconstruct). ToneMapping writes the
+ * host's explicit RTV at the display size. Only completion of the entire chain publishes valid output.
  */
 RTXPTErrorCode RTXPTRealtimePipeline::Render(IDeviceContext* Context, RTXPTRayTracingPass& Rays, RTXPTLightsBaker& Lights, const SampleConstants& Input, const RTXPTToneMappingParameters& ToneParameters, const RTXPTRealtimeHistoryAttribs& History, ITextureView* DisplayRTV, RTXPTGpuProfiler* Profiler)
 {
     m_Stats.OutputValid = false;
     if (!m_Ready)
         return RTXPTErrorCode::NotInitialized;
+    const bool   bReconstruction = m_Reconstructor == RTXPTRealtimeReconstructor::DLSSRR;
     const Uint32 Width = m_Targets.GetRenderWidth(), Height = m_Targets.GetRenderHeight();
     const Uint32 DisplayWidth = m_Targets.GetDisplayWidth(), DisplayHeight = m_Targets.GetDisplayHeight();
     if (!Context || !DisplayRTV || DisplayRTV->GetDesc().Format != m_DisplayFormat ||
         DisplayRTV->GetTexture()->GetDesc().Width != DisplayWidth || DisplayRTV->GetTexture()->GetDesc().Height != DisplayHeight ||
         Input.ptConsts.imageWidth != Width || Input.ptConsts.imageHeight != Height ||
-        Input.ptConsts.NEEType > 1 || ToneParameters.AutoExposure || (m_SuperResolution && !History.Upscaler))
+        Input.ptConsts.NEEType > 1 || ToneParameters.AutoExposure || (m_SuperResolution && !History.Upscaler) ||
+        (bReconstruction && !History.Reconstruction))
         return RTXPTErrorCode::InvalidArgument;
 
     SampleConstants Constants = Input;
@@ -141,10 +192,10 @@ RTXPTErrorCode RTXPTRealtimePipeline::Render(IDeviceContext* Context, RTXPTRayTr
     PT.genericTSLineStride          = static_cast<Uint32>(ComputeRTXPTLayerLineStride(Width));
     PT.genericTSPlaneStride         = static_cast<Uint32>(ComputeRTXPTLayerPlaneStride(Width, Height));
     PT.preExposedGrayLuminance      = m_ToneMapping.ComputePreExposedGrayLuminance(ToneParameters, true);
-    //Textures are sampled for the output resolution the upscaler reconstructs.
-    if (m_SuperResolution)
+    //Textures are sampled for the output resolution the upscaler or reconstruction produces.
+    if (DisplayWidth != Width || DisplayHeight != Height)
         PT.texLODBias += RTXPTSuperResolutionInputs::ComputeTexLODBias(Width, Height, DisplayWidth, DisplayHeight);
-    if (m_Denoiser == RTXPTRealtimeDenoiser::NrdRelax)
+    if (m_Denoiser == RTXPTRealtimeDenoiser::NrdRelax || bReconstruction)
     {
         //As RTXPTSample::UpdateFrameConstants converts the Sample's realtime firefly threshold.
         PT.denoisingEnabled                                = 1;
@@ -153,6 +204,8 @@ RTXPTErrorCode RTXPTRealtimePipeline::Render(IDeviceContext* Context, RTXPTRayTr
         PT.denoisingLayersSuppressPrimaryIndirectSpecularK = kNativeSuppressPrimaryIndirectSpecK;
         PT.denoisingLayersAntiAliasingFallthrough          = kNativeAntiAliasingFallthrough;
         PT.allowPrimarySurfaceReplacement                  = kNativeAllowPrimarySurfaceReplacement;
+        if (bReconstruction)
+            PT.DLSSRRBrightnessClampK = kReconstructionBrightnessClampK * PT.preExposedGrayLuminance;
     }
     else
     {
@@ -213,31 +266,42 @@ RTXPTErrorCode RTXPTRealtimePipeline::Render(IDeviceContext* Context, RTXPTRayTr
             return RTXPTErrorCode::GuidesFailed;
     }
     ++m_Stats.GuideBakes;
-    if (m_Denoiser == RTXPTRealtimeDenoiser::NrdRelax)
+    if (bReconstruction)
     {
-        const auto Code = Denoise(Context, Constants, History, Profiler);
+        const auto Code = Reconstruct(Context, Constants, ToneParameters, History, Profiler);
         if (Code != RTXPTErrorCode::Ok)
             return Code;
     }
     else
     {
-        RTXPTDenoiserPostProcessAttribs Merge;
-        Merge.pRenderTargets  = &m_Targets;
-        Merge.pMergeOutputUAV = m_Targets.GetOutputColorUAV();
-        RTXPTGpuProfiler::Scope Timing{Profiler, Context, RTXPTGpuProfiler::Stage::Merge};
-        if (!m_Merge.RunNoDenoiserFinalMerge(Context, Merge))
-            return RTXPTErrorCode::RealtimeMergeFailed;
+        if (m_Denoiser == RTXPTRealtimeDenoiser::NrdRelax)
+        {
+            const auto Code = Denoise(Context, Constants, History, Profiler);
+            if (Code != RTXPTErrorCode::Ok)
+                return Code;
+        }
+        else
+        {
+            RTXPTDenoiserPostProcessAttribs Merge;
+            Merge.pRenderTargets  = &m_Targets;
+            Merge.pMergeOutputUAV = m_Targets.GetOutputColorUAV();
+            RTXPTGpuProfiler::Scope Timing{Profiler, Context, RTXPTGpuProfiler::Stage::Merge};
+            if (!m_Merge.RunNoDenoiserFinalMerge(Context, Merge))
+                return RTXPTErrorCode::RealtimeMergeFailed;
+        }
+        ++m_Stats.MergeDispatches;
+        RTXPTRayTracingPass::InsertUAVBarrier(Context, Dispatch.pOutputColorUAV);
     }
-    ++m_Stats.MergeDispatches;
-    RTXPTRayTracingPass::InsertUAVBarrier(Context, Dispatch.pOutputColorUAV);
     if (m_SuperResolution)
     {
         const auto Code = Upscale(Context, Constants, History, Profiler);
         if (Code != RTXPTErrorCode::Ok)
             return Code;
     }
+    //Every Execute of the upscaler or reconstruction flushes and invalidates the context state; tone mapping sets all
+    //of its own.
     RTXPTToneMappingRenderAttribs Tone;
-    Tone.pSourceSRV = m_SuperResolution ? m_Targets.GetProcessedOutputColorSRV() : m_Targets.GetOutputColorSRV();
+    Tone.pSourceSRV = m_SuperResolution || bReconstruction ? m_Targets.GetProcessedOutputColorSRV() : m_Targets.GetOutputColorSRV();
     Tone.pLdrRTV    = DisplayRTV;
     Tone.Width      = DisplayWidth;
     Tone.Height     = DisplayHeight;
@@ -306,5 +370,49 @@ RTXPTErrorCode RTXPTRealtimePipeline::Upscale(IDeviceContext* Context, const Sam
     ++m_Stats.SuperResolutionExecutes;
     m_Stats.SuperResolutionResets += History.Reset ? 1u : 0u;
     return RTXPTErrorCode::Ok;
+}
+
+/* Prepares RR's render-size noisy radiance (OutputColor, clamped to DLSSRRBrightnessClampK) and guides from this
+ * frame's layers with the uploaded constants, then RR reconstructs the display-size HDR (ProcessedOutputColor). The
+ * color stays scene-linear: RR receives the exposure tone mapping applies through the exposure texture (D4), with
+ * PreExposure and ExposureScale 1, so the output stays in the input's scale and tone mapping alone applies the display
+ * exposure. The rays carry RR's camera jitter alone (D5). Execute transitions every input and output.
+ */
+RTXPTErrorCode RTXPTRealtimePipeline::Reconstruct(IDeviceContext* Context, const SampleConstants& Constants, const RTXPTToneMappingParameters& ToneParameters, const RTXPTRealtimeHistoryAttribs& History, RTXPTGpuProfiler* Profiler)
+{
+#if RTXPT_HAS_RAY_RECONSTRUCTION
+    {
+        RTXPTGpuProfiler::Scope Timing{Profiler, Context, RTXPTGpuProfiler::Stage::RRPrepare};
+        if (!m_Merge.RunDLSSRRDenoiserPrepareInputs(Context, m_Targets))
+            return RTXPTErrorCode::RayReconstructionInputsFailed;
+    }
+    ++m_Stats.RayReconstructionPrepares;
+    const float Exposure = m_ReconstructionDisplayExposure ? m_ToneMapping.ComputeExposureScale(ToneParameters) : 1.0f;
+    if (!std::isfinite(Exposure) || !(Exposure > 0))
+        return RTXPTErrorCode::RayReconstructionInputsFailed;
+    if (Exposure != m_ReconstructionExposureValue)
+    {
+        Context->UpdateTexture(m_ReconstructionExposure, 0, 0, Box{0, 1, 0, 1}, TextureSubResData{&Exposure, sizeof(Exposure)},
+                               RESOURCE_STATE_TRANSITION_MODE_TRANSITION, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+        m_ReconstructionExposureValue = Exposure;
+    }
+    ExecuteRayReconstructionAttribs Attribs;
+    if (!RTXPTRayReconstructionInputs::MakeExecuteAttribsWithoutMicroJitter(Context, m_Targets, History.Reconstruction->GetDesc(), Constants, History.Reset,
+                                                                            m_ReconstructionExposure->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE), Attribs))
+        return RTXPTErrorCode::RayReconstructionInputsFailed;
+    {
+        RTXPTGpuProfiler::Scope Timing{Profiler, Context, RTXPTGpuProfiler::Stage::RR};
+        if (!History.Reconstruction->Execute(Attribs))
+            return RTXPTErrorCode::RayReconstructionExecuteFailed;
+    }
+    ++m_Stats.RayReconstructionExecutes;
+    m_Stats.RayReconstructionResets += History.Reset ? 1u : 0u;
+    m_Stats.RayReconstructionExposure = Exposure;
+    return RTXPTErrorCode::Ok;
+#else
+    //Initialize rejects DLSSRR when the library has no ray reconstruction interface.
+    (void)Context, (void)Constants, (void)ToneParameters, (void)History, (void)Profiler;
+    return RTXPTErrorCode::RayReconstructionUnavailable;
+#endif
 }
 } // namespace Diligent

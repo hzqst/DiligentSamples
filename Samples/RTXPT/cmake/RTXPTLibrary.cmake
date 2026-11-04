@@ -1,8 +1,11 @@
-# Reusable scene and embedded Reference/RealtimeRaw/RealtimeNative/RealtimeDLSSSR renderer. This entry point does not
-# fetch assets or optional denoising/reconstruction SDKs. Hosts supply Diligent
+# Reusable scene and embedded Reference/RealtimeRaw/RealtimeNative/RealtimeDLSSSR/RealtimeDLSSRR renderer. This entry
+# point does not fetch assets or optional denoising/reconstruction SDKs. Hosts supply Diligent
 # dependencies, either source targets or an interface target for an installed SDK, whose include directories
 # must cover the super resolution interface (RealtimeDLSSSR calls it; the host creates the factory),
 # and optionally an NRD target (NRD_TARGET, see rtxpt_add_nrd) for the standalone denoiser.
+# RealtimeDLSSRR calls the ray reconstruction interface, which Core builds for Windows x64 only: the library uses
+# Core's interface target where it exists, or the dependencies' include directories when the host passes
+# RAY_RECONSTRUCTION. Without either, RealtimeDLSSRR reports ray reconstruction as unavailable.
 # D3D_SHADER_REFLECTION states that the dependencies provide ShaderD3D.h when they are not
 # Diligent source targets; NRD needs it to bind its resources by register on D3D.
 include_guard(GLOBAL)
@@ -10,7 +13,7 @@ get_filename_component(RTXPT_LIBRARY_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUT
 set_property(GLOBAL PROPERTY RTXPT_LIBRARY_ROOT "${RTXPT_LIBRARY_ROOT}")
 
 function(add_rtxpt_library target)
-    cmake_parse_arguments(RTXPT "NO_UI;PATH_TRACING_ONLY;D3D_SHADER_REFLECTION" "SHARC_SHADER_DIR;NRD_TARGET" "DEPENDENCIES" ${ARGN})
+    cmake_parse_arguments(RTXPT "NO_UI;PATH_TRACING_ONLY;D3D_SHADER_REFLECTION;RAY_RECONSTRUCTION" "SHARC_SHADER_DIR;NRD_TARGET" "DEPENDENCIES" ${ARGN})
     get_property(root GLOBAL PROPERTY RTXPT_LIBRARY_ROOT)
     set(sources
         RTXPTScene RTXPTSceneGraph RTXPTSceneJson RTXPTMaterials
@@ -34,6 +37,15 @@ function(add_rtxpt_library target)
     endif()
     if(TARGET Diligent-SuperResolutionInterface)
         target_link_libraries(${target} PUBLIC Diligent-SuperResolutionInterface)
+    endif()
+    # Only the library's sources test RTXPT_HAS_RAY_RECONSTRUCTION; its public headers do not depend on it.
+    if(TARGET Diligent-RayReconstructionInterface)
+        target_link_libraries(${target} PUBLIC Diligent-RayReconstructionInterface)
+        target_compile_definitions(${target} PRIVATE RTXPT_HAS_RAY_RECONSTRUCTION=1)
+    elseif(RTXPT_RAY_RECONSTRUCTION)
+        target_compile_definitions(${target} PRIVATE RTXPT_HAS_RAY_RECONSTRUCTION=1)
+    else()
+        target_compile_definitions(${target} PRIVATE RTXPT_HAS_RAY_RECONSTRUCTION=0)
     endif()
     target_compile_definitions(${target} PRIVATE RTXPT_SHARC_SHADER_DIR="${RTXPT_SHARC_SHADER_DIR}")
     if(RTXPT_NO_UI)

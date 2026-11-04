@@ -109,6 +109,8 @@ bool IsPassInSet(RTXPTPostProcessPassId Pass, RTXPTPostProcessPassSet PassSet)
         case RTXPTPostProcessPassSet::RealtimeNative:
             return Pass == RTXPTPostProcessPassId::RelaxDenoiserPrepareInputs ||
                 Pass == RTXPTPostProcessPassId::RelaxDenoiserFinalMerge || IsHistoryConfidencePass(Pass);
+        case RTXPTPostProcessPassSet::RealtimeRR:
+            return Pass == RTXPTPostProcessPassId::DLSSRRDenoiserPrepareInputs;
         default:
             return true;
     }

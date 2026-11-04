@@ -574,7 +574,7 @@ From an x64 VS 2022 Developer Command Prompt, at the superproject root:
 ```bat
 cl /nologo /std:c++17 /EHsc /MDd /D_DEBUG /DDEVELOPMENT /DPLATFORM_WIN32=1 /DNOMINMAX /DRTXPT_HAS_NRD=0 /DRTXPT_SHARC_SHADER_DIR=\"unused\" ^
  /IDiligentCore\Platforms\Basic\interface /IDiligentCore\Primitives\interface /IDiligentCore\Common\interface ^
- /IDiligentCore\Graphics\GraphicsEngine\interface /IDiligentCore\Graphics\GraphicsTools\interface /IDiligentCore\Graphics\GraphicsAccessories\interface ^
+ /IDiligentCore\Graphics\GraphicsEngine\interface /IDiligentCore\Graphics\RayReconstruction\interface /IDiligentCore\Graphics\GraphicsTools\interface /IDiligentCore\Graphics\GraphicsAccessories\interface ^
  DiligentSamples\Samples\RTXPT\tests\RRPrepareInputsTest.cpp DiligentSamples\Samples\RTXPT\src\RTXPTRenderTargets.cpp DiligentSamples\Samples\RTXPT\src\RTXPTPostProcessPass.cpp ^
  DiligentSamples\Samples\RTXPT\src\RTXPTRayTracingPass.cpp ^
  /Fo"%TEMP%\\" /Fe"%TEMP%\RRPrepareInputsTest.exe" /link user32.lib ^
@@ -1560,3 +1560,80 @@ internal `nv.ngx.dlss.resource` images. Not covered: a failure after an accepted
 Execute (tone mapping has no injection point; it shares the failure path above), a
 failed input preparation, image quality against Native and Reference, and the
 host's viewport composition.
+
+## Realtime DLSS ray reconstruction views (M5.1)
+
+`RTXPTViewMode::RealtimeDLSSRR` traces the current frame's noisy layers at the input
+size DLSS RR reports for the display size and quality (`RTXPTRayReconstructionQuality`),
+prepares RR's noisy radiance and guides (`RTXPTPostProcessPassSet::RealtimeRR`) and
+executes the view's own DLSS RR feature, which replaces NRD, the merge and super
+resolution; tone mapping then runs at the display size. The guides are still baked:
+the RR prepare reads the specular hit distance they denoise. The view creates the
+feature with explicit exposure: every Execute reads a 1x1 R32F texture holding the
+display exposure tone mapping applies, with PreExposure and ExposureScale 1, so the
+reconstructed HDR keeps the scale of its scene-linear input and tone mapping alone
+applies the display exposure. The rays carry RR's camera jitter alone; the pipeline
+calls `MakeExecuteAttribsWithoutMicroJitter`, which rejects per-pixel micro-jitter.
+The host passes the device's `IRayReconstructionFactory`, leaves `RenderSize` empty
+and describes an unjittered camera at `GetRenderSize`, as for RealtimeDLSSSR.
+
+The library compiles the mode where Core's `Diligent-RayReconstructionInterface`
+target exists or the host passes `RAY_RECONSTRUCTION` to `add_rtxpt_library`
+(its dependencies then cover the interface headers); otherwise the view reports
+`RayReconstructionUnavailable`.
+
+`--rr_embedded_validation true` runs RR01-RR05 once on the Sample's scene and exits
+with 1 on any failure. Like the realtime modes, it creates no async queue: embedded
+hosts render on one graphics queue, and Core frees GPU descriptors only once every
+queue has passed them, so an idle second queue would hold the descriptors of each
+destroyed view until an `IdleGPU`. A test double of the factory forwards to the real
+provider, records every Execute and injects failures:
+
+- RR01: RR Native at 1280x720 and 1281x721 renders at exactly the size of an
+  independent query (the display size) with one feature of explicit exposure and
+  preset F; one accepted Execute per frame with the exposure texture bound and
+  PreExposure/ExposureScale 1; only the first frame restarts history; the jitter
+  follows the successful frame count; no NRD instance, denoise, merge or super
+  resolution runs; the inputs are at render size and the reconstructed HDR at
+  display size.
+- RR02: at display exposures 0.15, 0.5, 1 and 2, after 16 static frames, RR receives
+  the exposure its scheme sets and the texture holds it, and the reconstructed mean
+  luminance stays within 10% of the noisy input's (R06). The D4 A/B renders each
+  exposure with the display exposure and with exposure 1, and measures the mean
+  adjacent display difference over 8 still frames, with RealtimeNative as reference.
+  The display exposure is kept unless it fails R06 or its still difference exceeds
+  the exposure-1 one by more than x1.25 + 0.5/255; the rule was fixed before the run.
+- RR03: a right-handed view (`View * FlipZ`, `FlipZ * Projection`) of the same world
+  hands RR the same matrices and jitter as the left-handed one, and its RR depth and
+  motion match after a camera move.
+- RR04: static and moving cameras keep history; a cut and a missed host frame restart it.
+- RR05: a missing factory or DLSS RR variant, a failed or out-of-range query, an
+  unknown quality, a failed creation, a host render size and host jitter are rejected
+  without creating a feature for an unsupported query. An orthographic projection
+  fails the inputs before Execute (RayReconstructionInputsFailed). A failed first
+  Execute reports RayReconstructionCreateFailed, a later one
+  RayReconstructionExecuteFailed; none publishes output or advances the frame count,
+  the next frame restarts history with the failed frame's jitter index, and the
+  neighbouring view keeps its history.
+
+```bat
+cd <DiligentEngine>\DiligentSamples\Samples\RTXPT
+RTXPT.exe --mode d3d12 --width 640 --height 360 --rr_embedded_validation true
+RTXPT.exe --mode d3d12 --embedded_mode dlss_rr --embedded_rr_quality native --exit_after_frames 300
+```
+
+Both exited 0 on RTX 5060 / Windows, Debug, 2026-11-04; the validation failed, as it
+should, against each of five source changes: a view that reports DLSS RR as
+unsupported, RR exposure 1 whatever the display exposure, the Sample's 0.1
+micro-jitter on the RR branch, an RR history that never restarts, and a failed first
+Execute reported as an evaluation failure. The D4 A/B kept the display exposure: both
+schemes kept the noisy input's mean luminance within 1.5% (ratios 0.985-0.989) and
+their still display differences agreed within noise (0.08-0.15/255, against
+0.17-0.31/255 for RealtimeNative). The Vulkan run passed as well but reported
+`VUID-vkCmdDraw-None-09600` for NGX's internal `nv.ngx.dlssd.resource` images; it
+also passed with `--vk_rr false`, so on this driver DLSS RR does not depend on the
+device's ray reconstruction setup. Not covered: Quality, Balanced and Performance
+beyond one 300-frame Balanced run, a render size below the display size in the
+validation, resize and mode or quality switches, more views than RR05's pair, a
+failure after an accepted Execute, initialization without NRD, and image quality
+against Native and Reference.

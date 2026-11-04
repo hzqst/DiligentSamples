@@ -72,6 +72,7 @@ set(INCLUDE
     tests/HDRValidationCapture.hpp
     tests/SubSamplingSceneValidation.hpp
     tests/SRSceneValidation.hpp
+    tests/RREmbeddedValidation.hpp
 )
 
 set(SHADERS
@@ -481,6 +482,8 @@ if(RAY_RECONSTRUCTION_SUPPORTED)
     endif()
 else()
     target_compile_definitions(RTXPT PRIVATE RTXPT_HAS_RAY_RECONSTRUCTION=0)
+    # Core does not build the module here; the Sample's RR pass and adapter still compile against its interface.
+    target_include_directories(RTXPT PRIVATE "${DILIGENT_CORE_SOURCE_DIR}/Graphics/RayReconstruction/interface")
 endif()
 
 if(RTXPT_RAY_RECONSTRUCTION_SHARED)

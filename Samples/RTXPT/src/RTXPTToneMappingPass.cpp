@@ -678,6 +678,12 @@ float RTXPTToneMappingPass::ComputePreExposedGrayLuminance(const RTXPTToneMappin
     return std::max(ComputeRec709Luminance(Gray), 1.0e-6f);
 }
 
+float RTXPTToneMappingPass::ComputeExposureScale(const RTXPTToneMappingParameters& Params) const
+{
+    const RTXPTToneMappingParameters PreparedParams = PrepareToneMappingParameters(Params, m_ComputeSupported);
+    return PreparedParams.AutoExposure ? 1.0f : ComputeToneMappingExposureScale(PreparedParams);
+}
+
 bool RTXPTToneMappingPass::Render(IDeviceContext* pContext, const RTXPTToneMappingRenderAttribs& Attribs)
 {
     m_Stats.LastRenderExecuted = false;

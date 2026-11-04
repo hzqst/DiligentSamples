@@ -4,8 +4,9 @@
 
 #include <cmath>
 #include <cstring>
+#include <vector>
 
-#include "../../../../DiligentCore/Graphics/RayReconstruction/interface/RayReconstructionFactory.h"
+#include "RayReconstructionFactory.h"
 #include "RTXPTFrameConstants.hpp"
 #include "RTXPTRenderTargets.hpp"
 
@@ -22,9 +23,31 @@ enum class RTXPTRayReconstructionExposure
 };
 
 // Resource/parameter adapter. Factory ownership, jitter sequence, history and
-// Execute scheduling are handled by the RR pass, not by this stateless adapter.
+// Execute scheduling are handled by the Sample's RR pass or by the embedded view
+// and its realtime pipeline, not by this stateless adapter.
 struct RTXPTRayReconstructionInputs
 {
+    // The DLSS RR variant Factory enumerates.
+    static bool FindDLSSVariant(IRayReconstructionFactory& Factory, RayReconstructionInfo& Variant)
+    {
+        Variant      = {};
+        Uint32 Count = 0;
+        Factory.EnumerateVariants(Count, nullptr);
+        std::vector<RayReconstructionInfo> Variants(Count);
+        if (Count != 0)
+            Factory.EnumerateVariants(Count, Variants.data());
+        Variants.resize(Count);
+        for (const RayReconstructionInfo& Info : Variants)
+        {
+            if (Info.VariantId == RayReconstructionVariant_DLSS)
+            {
+                Variant = Info;
+                return true;
+            }
+        }
+        return false;
+    }
+
     static bool MakeDesc(const RayReconstructionSourceSettingsAttribs& Query,
                          const RayReconstructionSourceSettings&        Source,
                          RayReconstructionDesc&                        Desc,
@@ -153,6 +176,25 @@ struct RTXPTRayReconstructionInputs
         std::memcpy(Attribs.WorldToView, WorldToView.Data(), sizeof(Attribs.WorldToView));
         std::memcpy(Attribs.ViewToClip, ViewToClip.Data(), sizeof(Attribs.ViewToClip));
         return true;
+    }
+
+    // MakeExecuteAttribs for a frame whose rays carry RR's camera jitter alone, as the embedded realtime pipeline
+    // traces them: RR's jitter then describes every sample. Fails, clearing Attribs, on per-pixel micro-jitter, which
+    // the Sample's advanced path adds and passes to MakeExecuteAttribs directly.
+    static bool MakeExecuteAttribsWithoutMicroJitter(IDeviceContext*                  Context,
+                                                     const RTXPTRenderTargets&        Targets,
+                                                     const RayReconstructionDesc&     Desc,
+                                                     const SampleConstants&           Frame,
+                                                     bool                             ResetHistory,
+                                                     ITextureView*                    pExposureSRV,
+                                                     ExecuteRayReconstructionAttribs& Attribs)
+    {
+        if (Frame.ptConsts.perPixelJitterAAScale != 0)
+        {
+            Attribs = {};
+            return false;
+        }
+        return MakeExecuteAttribs(Context, Targets, Desc, Frame, ResetHistory, pExposureSRV, Attribs);
     }
 };
 

@@ -188,6 +188,25 @@ void CheckRRExplicitExposure(IRenderDevice*                                Devic
     std::cout << "RR explicit exposure passed\n";
 }
 
+// The embedded pipeline traces with RR's camera jitter alone; the Sample's advanced path adds per-pixel micro-jitter.
+void CheckRRMicroJitter(IDeviceContext* Context, const RTXPTRenderTargets& Targets, const RayReconstructionDesc& Desc, SampleConstants Frame)
+{
+    // The Sample's default micro-jitter (RTXPTRealtimeSettings::DLSSRRMicroJitter).
+    constexpr float                 kMicroJitter = 0.1f;
+    ExecuteRayReconstructionAttribs Execute;
+    Frame.ptConsts.perPixelJitterAAScale = 0;
+    Require(RTXPTRayReconstructionInputs::MakeExecuteAttribsWithoutMicroJitter(Context, Targets, Desc, Frame, false, nullptr, Execute) &&
+                Execute.pColorSRV,
+            "Camera-jittered RR frame rejected");
+    Frame.ptConsts.perPixelJitterAAScale = kMicroJitter;
+    Require(RTXPTRayReconstructionInputs::MakeExecuteAttribs(Context, Targets, Desc, Frame, false, nullptr, Execute),
+            "Micro-jittered frame of the Sample's path rejected");
+    Require(!RTXPTRayReconstructionInputs::MakeExecuteAttribsWithoutMicroJitter(Context, Targets, Desc, Frame, false, nullptr, Execute) &&
+                !Execute.pColorSRV,
+            "Micro-jittered RR frame accepted without micro-jitter or bindings retained");
+    std::cout << "RR micro-jitter rejection passed\n";
+}
+
 void CheckRRResourceContract(IRenderDevice* Device, IDeviceContext* Context, const char* FactoryPath)
 {
     HMODULE Library = LoadLibraryA(FactoryPath);
@@ -279,6 +298,7 @@ void CheckRRResourceContract(IRenderDevice* Device, IDeviceContext* Context, con
         Frame.ptConsts.imageWidth--;
         CheckRRViewConventions(Context, Targets, Desc, Frame, WorldToView, ViewToClip);
         CheckRRExplicitExposure(Device, Context, Targets, Query, Source, Frame);
+        CheckRRMicroJitter(Context, Targets, Desc, Frame);
         std::cout << "RR resource contract " << Desc.InputWidth << 'x' << Desc.InputHeight << " -> "
                   << Desc.OutputWidth << 'x' << Desc.OutputHeight << " passed\n";
 

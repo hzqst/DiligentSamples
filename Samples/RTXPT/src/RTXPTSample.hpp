@@ -150,13 +150,23 @@ private:
     bool   m_SuperResolutionValidationDone     = false;
     Uint32 m_SuperResolutionValidationFailures = 0;
 
+    //RealtimeDLSSRR: the device's ray reconstruction factory, shared by the embedded views; null without the module.
+    RefCntAutoPtr<IRayReconstructionFactory> m_EmbeddedReconstructionFactory;
+    void                                     CreateEmbeddedReconstructionFactory();
+    //--rr_embedded_validation: the RealtimeDLSSRR view checks on the Sample's scene, run once, then the Sample exits.
+    void   RunEmbeddedReconstructionValidation();
+    bool   m_ValidateEmbeddedReconstruction           = false;
+    bool   m_EmbeddedReconstructionValidationDone     = false;
+    Uint32 m_EmbeddedReconstructionValidationFailures = 0;
+
     //--embedded_reference and --embedded_mode render the Sample's scene through one embedded view of that mode.
     bool                                RunEmbeddedView();
     bool                                EnsureEmbeddedScene(IShaderSourceInputStreamFactory* Shaders);
     void                                CreateEmbeddedShaderSource(IShaderSourceInputStreamFactory** Shaders) const;
-    bool                                m_UseEmbeddedView        = false;
-    RTXPTViewMode                       m_EmbeddedMode           = RTXPTViewMode::Reference;
-    RTXPTUpscaleQuality                 m_EmbeddedUpscaleQuality = RTXPTUpscaleQuality::Quality;
+    bool                                m_UseEmbeddedView               = false;
+    RTXPTViewMode                       m_EmbeddedMode                  = RTXPTViewMode::Reference;
+    RTXPTUpscaleQuality                 m_EmbeddedUpscaleQuality        = RTXPTUpscaleQuality::Quality;
+    RTXPTRayReconstructionQuality       m_EmbeddedReconstructionQuality = RTXPTRayReconstructionQuality::Native;
     std::unique_ptr<RTXPTEmbeddedScene> m_EmbeddedScene; // Outlives resizes, which recreate only the view.
     std::unique_ptr<RTXPTEmbeddedView>  m_EmbeddedView;
     RefCntAutoPtr<IRenderStateCache>    m_pEmbeddedStateCache; // Outlives resizes and scene reloads for recreated embedded renderers.

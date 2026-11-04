@@ -29,6 +29,9 @@
 #include "RTXPTNrdConfig.hpp"
 #include "RTXPTSuperResolutionInputs.hpp"
 #include "SuperResolutionFactoryLoader.h"
+#if RTXPT_HAS_RAY_RECONSTRUCTION
+#    include "RayReconstructionFactoryLoader.h"
+#endif
 // Core's variant IDs are not part of its interface; the super resolution validation checks the fork's copy.
 #include "../../../../DiligentCore/Graphics/SuperResolution/include/SuperResolutionVariants.hpp"
 #include "DebugUtilities.hpp"
@@ -641,11 +644,15 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
     Args.Parse("realtime_native", m_RealtimeNativeEnabled);
     Args.Parse("embedded_reference", m_UseEmbeddedView);
     if (Args.ParseEnum<RTXPTViewMode>("embedded_mode", 0,
-                                      {{"reference", RTXPTViewMode::Reference}, {"raw", RTXPTViewMode::RealtimeRaw}, {"native", RTXPTViewMode::RealtimeNative}, {"dlss_sr", RTXPTViewMode::RealtimeDLSSSR}}, m_EmbeddedMode))
+                                      {{"reference", RTXPTViewMode::Reference}, {"raw", RTXPTViewMode::RealtimeRaw}, {"native", RTXPTViewMode::RealtimeNative}, {"dlss_sr", RTXPTViewMode::RealtimeDLSSSR}, {"dlss_rr", RTXPTViewMode::RealtimeDLSSRR}}, m_EmbeddedMode))
         m_UseEmbeddedView = true;
     Args.ParseEnum<RTXPTUpscaleQuality>("sr_quality", 0,
                                         {{"quality", RTXPTUpscaleQuality::Quality}, {"balanced", RTXPTUpscaleQuality::Balanced}, {"performance", RTXPTUpscaleQuality::Performance}}, m_EmbeddedUpscaleQuality);
+    Args.ParseEnum<RTXPTRayReconstructionQuality>("embedded_rr_quality", 0,
+                                                  {{"native", RTXPTRayReconstructionQuality::Native}, {"quality", RTXPTRayReconstructionQuality::Quality}, {"balanced", RTXPTRayReconstructionQuality::Balanced}, {"performance", RTXPTRayReconstructionQuality::Performance}},
+                                                  m_EmbeddedReconstructionQuality);
     Args.Parse("sr_validation", m_ValidateSuperResolution);
+    Args.Parse("rr_embedded_validation", m_ValidateEmbeddedReconstruction);
     Args.Parse("asyncPrefix", m_EnableAsyncPrefix);
     Args.Parse("async_queue", m_CreateAsyncQueue);
     Args.Parse("async_validation", m_ValidateAsyncPrefix);
@@ -739,6 +746,17 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
         LOG_ERROR_MESSAGE("sr_validation cannot be combined with other realtime, embedded, capture or validation modes");
         return CommandLineStatus::Error;
     }
+    if (m_ValidateEmbeddedReconstruction &&
+        (IsSharedRealtimeEnabled() || m_UseEmbeddedView || m_ValidateRayReconstruction || m_ValidateSubSampling ||
+         m_ValidateAsyncPrefix || m_ReferenceCapture.Enabled() || m_ValidateSuperResolution))
+    {
+        LOG_ERROR_MESSAGE("rr_embedded_validation cannot be combined with other realtime, embedded, capture or validation modes");
+        return CommandLineStatus::Error;
+    }
+    //Embedded hosts render on one graphics queue. An idle second queue would also hold every descriptor the destroyed
+    //views release, until an IdleGPU, and the sequence creates more views than the GPU descriptor heap holds.
+    if (m_ValidateEmbeddedReconstruction)
+        m_EnableAsyncPrefix = m_CreateAsyncQueue = false;
     if (m_ReferenceCapture.Enabled())
     {
         if (m_RealtimeUI.RealtimeMode || m_UseEmbeddedView || m_ReferenceCapture.Samples == 0 ||
@@ -2422,6 +2440,12 @@ bool RTXPTSample::RunEmbeddedView()
             ViewCI.SuperResolutionFactory = m_EmbeddedSuperResolutionFactory;
             ViewCI.UpscaleQuality         = m_EmbeddedUpscaleQuality;
         }
+        else if (m_EmbeddedMode == RTXPTViewMode::RealtimeDLSSRR)
+        {
+            CreateEmbeddedReconstructionFactory();
+            ViewCI.RayReconstructionFactory = m_EmbeddedReconstructionFactory;
+            ViewCI.ReconstructionQuality    = m_EmbeddedReconstructionQuality;
+        }
         else
             ViewCI.RenderSize = ViewCI.DisplaySize;
 
@@ -2451,7 +2475,7 @@ bool RTXPTSample::RunEmbeddedView()
             return false;
         }
     }
-    //The camera describes the render size without jitter; RealtimeDLSSSR adds its own.
+    //The camera describes the render size without jitter; RealtimeDLSSSR and RealtimeDLSSRR add their own.
     const RTXPTViewSize  Render     = m_EmbeddedView->GetRenderSize();
     const auto           Camera     = MakePathTracerCameraData(m_Camera, Render.Width, Render.Height, Desc.Width, Desc.Height, 1, 0, {});
     const auto           View       = MakePathTracerViewData(m_Camera.GetViewMatrix(), m_Camera.GetProjMatrix(), Render.Width, Render.Height, {});
@@ -2464,6 +2488,14 @@ bool RTXPTSample::RunEmbeddedView()
     return m_EmbeddedBlit.Render(m_pImmediateContext, m_pSwapChain, m_EmbeddedDisplaySRV);
 }
 
+void RTXPTSample::CreateEmbeddedReconstructionFactory()
+{
+#if RTXPT_HAS_RAY_RECONSTRUCTION
+    if (!m_EmbeddedReconstructionFactory)
+        LoadAndCreateRayReconstructionFactory(m_pDevice, &m_EmbeddedReconstructionFactory);
+#endif
+}
+
 void RTXPTSample::Render()
 {
     if (m_ValidateSuperResolution)
@@ -2474,6 +2506,19 @@ void RTXPTSample::Render()
             RunSuperResolutionValidation();
 #if PLATFORM_WIN32
             PostQuitMessage(m_SuperResolutionValidationFailures == 0 ? 0 : 1);
+#endif
+        }
+        ClearFallback(float4{0, 0, 0, 1});
+        return;
+    }
+    if (m_ValidateEmbeddedReconstruction)
+    {
+        if (!m_EmbeddedReconstructionValidationDone)
+        {
+            m_EmbeddedReconstructionValidationDone = true;
+            RunEmbeddedReconstructionValidation();
+#if PLATFORM_WIN32
+            PostQuitMessage(m_EmbeddedReconstructionValidationFailures == 0 ? 0 : 1);
 #endif
         }
         ClearFallback(float4{0, 0, 0, 1});
@@ -2623,10 +2668,20 @@ void RTXPTSample::Update(double CurrTime, double ElapsedTime, bool DoUpdateUI)
         else if (m_UseEmbeddedView && m_EmbeddedView)
         {
             const auto& SR = m_EmbeddedView->GetSuperResolutionInfo();
+            const auto& RR = m_EmbeddedView->GetRayReconstructionInfo();
             if (m_EmbeddedMode == RTXPTViewMode::RealtimeDLSSSR)
                 std::cout << "RealtimeDLSSSR: variant=" << SR.Variant << " render=" << SR.RenderSize.Width << 'x' << SR.RenderSize.Height
                           << " display=" << SR.DisplaySize.Width << 'x' << SR.DisplaySize.Height << " executes=" << SR.Executes
                           << " resets=" << SR.Resets << " failures=" << SR.Failures << std::endl;
+            if (m_EmbeddedMode == RTXPTViewMode::RealtimeDLSSRR)
+            {
+                const auto& Stats = m_EmbeddedView->GetRealtimeStats();
+                std::cout << "RealtimeDLSSRR: variant=" << RR.Variant << " render=" << RR.RenderSize.Width << 'x' << RR.RenderSize.Height
+                          << " display=" << RR.DisplaySize.Width << 'x' << RR.DisplaySize.Height << " executes=" << RR.Executes
+                          << " resets=" << RR.Resets << " failures=" << RR.Failures << " exposure=" << RR.Exposure
+                          << " nrdInstances=" << Stats.NrdInstances << " denoise=" << Stats.DenoiseDispatches
+                          << " srExecutes=" << Stats.SuperResolutionExecutes << std::endl;
+            }
             PostQuitMessage(m_LastFrameSucceeded ? 0 : 1);
         }
         else
@@ -3774,5 +3829,6 @@ void RTXPTSample::InvalidatePreviousFrameConstants()
 #include "../tests/SubSamplingSceneValidation.hpp"
 #include "../tests/AsyncPrefixSceneValidation.hpp"
 #include "../tests/SRSceneValidation.hpp"
+#include "../tests/RREmbeddedValidation.hpp"
 
 } // namespace Diligent
