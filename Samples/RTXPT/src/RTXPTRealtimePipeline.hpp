@@ -53,12 +53,14 @@ struct RTXPTRealtimeStats
     Uint32 SuperResolutionExecutes = 0;
     Uint32 SuperResolutionResets   = 0;
     //Ray reconstruction pipelines: input preparations, accepted executions, those that restarted its history, and the
-    //exposure the latest accepted one received (D4: the display exposure tone mapping applies).
-    Uint32 RayReconstructionPrepares = 0;
-    Uint32 RayReconstructionExecutes = 0;
-    Uint32 RayReconstructionResets   = 0;
-    float  RayReconstructionExposure = 0;
-    bool   OutputValid               = false;
+    //exposure the latest accepted one received (D4: the display exposure tone mapping applies) with the forward sign of
+    //its view (1 left-handed, -1 right-handed).
+    Uint32 RayReconstructionPrepares    = 0;
+    Uint32 RayReconstructionExecutes    = 0;
+    Uint32 RayReconstructionResets      = 0;
+    float  RayReconstructionExposure    = 0;
+    float  RayReconstructionForwardSign = 0;
+    bool   OutputValid                  = false;
     //Motion and history validity of direct rigid/skinned surfaces and single rigid planar reflections have numerical
     //GPU tests. Other paths are reported invalid instead of approximated. This alone is not a denoiser claim.
     bool DynamicMotionValidated = true;

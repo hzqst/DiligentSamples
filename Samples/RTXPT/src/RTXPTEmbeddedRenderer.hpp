@@ -190,15 +190,20 @@ struct RTXPTViewRayReconstructionInfo
 {
     std::string                   Variant;
     RTXPTRayReconstructionQuality Quality = RTXPTRayReconstructionQuality::Native;
-    RTXPTViewSize                 RenderSize;
-    RTXPTViewSize                 DisplaySize;
-    float2                        Jitter    = float2{0, 0};
-    bool                          LastReset = false;
+    //The DLSS preset of the feature: the Core default F (D5).
+    std::string   Preset;
+    RTXPTViewSize RenderSize;
+    RTXPTViewSize DisplaySize;
+    float2        Jitter    = float2{0, 0};
+    bool          LastReset = false;
     //The exposure the latest successful Render handed RR: the display exposure tone mapping applies (D4).
-    float  Exposure = 0;
-    Uint32 Executes = 0;
-    Uint32 Resets   = 0;
-    Uint32 Failures = 0;
+    float Exposure = 0;
+    //The sign of the forward axis of the latest successful Render's view: 1 for a left-handed view, -1 for a
+    //right-handed one (forward = -Z). RR's depth and matrices use that forward-positive basis.
+    float  ForwardSign = 0;
+    Uint32 Executes    = 0;
+    Uint32 Resets      = 0;
+    Uint32 Failures    = 0;
 };
 
 //Sizes are local to the view texture; host viewport offsets belong to final composition only. Every mode requires a

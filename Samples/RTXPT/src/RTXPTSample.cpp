@@ -26,6 +26,7 @@
 
 #include "RTXPTSample.hpp"
 #include "RTXPTCameraBasis.hpp"
+#include "RTXPTDebugCapture.hpp"
 #include "RTXPTNrdConfig.hpp"
 #include "RTXPTSuperResolutionInputs.hpp"
 #include "SuperResolutionFactoryLoader.h"
@@ -51,6 +52,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>

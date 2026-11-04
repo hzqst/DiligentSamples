@@ -9,9 +9,11 @@
 // cannot be made to report (NGX accepts out-of-range sizes, M5.0a). RR01 checks the exact queries and the execution of
 // every quality and tone mapping after Execute, RR02 exposure (R06 and the D4 A/B), RR03 right-handed views, RR04
 // history, RR05 failures, RR06 motion below the display size, RR07 reinitialization, RR08 several views, RR09 failures
-// after an accepted Execute and RR10 a steady state. A failure of tone mapping itself has no injection point: RR09's
-// failures share its path, and neither the view nor the pipeline has a production fault hook (M5.2).
-// RTXPTSample.cpp includes Float16.hpp, ObjectBase.hpp and RefCountedObjectImpl.hpp for it.
+// after an accepted Execute, RR10 a steady state and RR11 the debug capture of a view. A failure of tone mapping itself
+// has no injection point: RR09's failures share its path, and neither the view nor the pipeline has a production fault
+// hook (M5.2).
+// RTXPTSample.cpp includes Float16.hpp, ObjectBase.hpp, RefCountedObjectImpl.hpp, RTXPTDebugCapture.hpp and <chrono>
+// for it.
 
 namespace
 {
@@ -181,6 +183,14 @@ constexpr float  kRREmbeddedMatrixTolerance = 1e-5f;
 constexpr double kRREmbeddedMotionTolerance = 0.25;
 //RR03: a static frame, then one after a camera move.
 constexpr Uint32 kRREmbeddedHandednessFrames = 2;
+//RR01, RR03 and RR11: the preset every view creates its feature with (D5), and the forward sign a view reports for its
+//handedness: 1 for the Sample's left-handed view, -1 for a right-handed one.
+constexpr const char* kRREmbeddedPresetName      = "F";
+constexpr float       kRREmbeddedLeftHandedSign  = 1.0f;
+constexpr float       kRREmbeddedRightHandedSign = -1.0f;
+//RR11: the successful frame the capture exports, rendered at c1a0's display exposure so the exposure is not 1.
+constexpr Uint32 kRREmbeddedCaptureFrames   = 4;
+constexpr float  kRREmbeddedCaptureExposure = 0.15f;
 //The D4 A/B: static frames before the measurement, then still frames whose adjacent display difference is averaged.
 constexpr Uint32 kRREmbeddedWarmupFrames = 16;
 constexpr Uint32 kRREmbeddedStillFrames  = 8;
@@ -501,9 +511,9 @@ void RTXPTSample::RunEmbeddedReconstructionValidation()
                       !Desc.MotionVectorsJittered && Desc.RoughnessPacked,
                   Name + ": the feature does not match the requested quality, the query, explicit exposure (D4) and preset F (D5)");
             const RTXPTViewRayReconstructionInfo& Info = View->GetRayReconstructionInfo();
-            Check(Info.Variant == DLSSRR.Name && Info.Quality == Case.Quality &&
+            Check(Info.Variant == DLSSRR.Name && Info.Quality == Case.Quality && Info.Preset == kRREmbeddedPresetName &&
                       SameSize(Info.RenderSize, RenderSize) && SameSize(Info.DisplaySize, CaseDisplay),
-                  Name + ": the reported variant, quality or size is wrong");
+                  Name + ": the reported variant, quality, preset or size is wrong");
             for (Uint32 Frame = 0; Frame < kRREmbeddedFrames; ++Frame)
                 if (Prepare())
                     CheckOk(Render(*View), Name + ": frame " + std::to_string(Frame));
@@ -670,6 +680,8 @@ void RTXPTSample::RunEmbeddedReconstructionValidation()
                 }
             }
             Check(SameExecute, "RR03: the right-handed view hands RR other matrices or jitter (R02)");
+            Check(Left->GetRayReconstructionInfo().ForwardSign == kRREmbeddedLeftHandedSign && Right->GetRayReconstructionInfo().ForwardSign == kRREmbeddedRightHandedSign,
+                  "RR03: each view must report the forward sign of its handedness");
             //R01 and R03: the same forward-positive depth, foreground included, and the same render-pixel motion.
             std::vector<Uint8> LeftDepth, RightDepth, LeftMotion, RightMotion;
             Uint32             DepthStride = 0, RightDepthStride = 0, MotionStride = 0, RightMotionStride = 0;
@@ -1162,6 +1174,82 @@ void RTXPTSample::RunEmbeddedReconstructionValidation()
                   "RR10: every steady frame must execute once and keep its history");
             CheckJitterSequence(Reconstruction, "RR10");
             CheckToneMapping(*View, "RR10");
+        }
+    }
+
+    LOG_INFO_MESSAGE("RR embedded validation RR11: the debug capture of a view");
+    {
+        auto           Factory  = MakeFactory(RREmbeddedFactoryFault::None);
+        RTXPTErrorCode Code     = RTXPTErrorCode::Ok;
+        auto           View     = CreateView(RTXPTViewMode::RealtimeDLSSRR, Display, Factory, Code, RTXPTRayReconstructionQuality::Balanced);
+        bool           Rendered = CheckOk(Code, "RR11 view");
+        for (Uint32 Frame = 0; Rendered && Frame < kRREmbeddedCaptureFrames; ++Frame)
+            Rendered = Prepare() && CheckOk(Render(*View, false, kRREmbeddedCaptureExposure), "RR11 frame " + std::to_string(Frame));
+        //A new directory for each run. The capture stays there for tests/validate_realtime_capture.py.
+        const auto Directory = std::filesystem::temp_directory_path() /
+            ("RTXPT-rr-capture-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        const bool     bCaptured = Rendered && Check(RTXPTDebugCapture::Capture(m_pDevice, m_pImmediateContext, *View, Directory), "RR11: the view could not be captured");
+        std::ifstream  ManifestFile{Directory / "manifest.json"};
+        nlohmann::json Manifest = bCaptured ? nlohmann::json::parse(ManifestFile, nullptr, false) : nlohmann::json{};
+        if (bCaptured && Check(Manifest.is_object(), "RR11: the manifest is not a JSON object"))
+        {
+            const RTXPTViewRayReconstructionInfo& Info = View->GetRayReconstructionInfo();
+            nlohmann::json&                       RR   = Manifest["ray_reconstruction"];
+            Check(Manifest["mode"] == "RealtimeDLSSRR" && Manifest["frame_index"] == kRREmbeddedCaptureFrames &&
+                      Manifest["render_size"] == nlohmann::json{Info.RenderSize.Width, Info.RenderSize.Height} &&
+                      Manifest["display_size"] == nlohmann::json{Info.DisplaySize.Width, Info.DisplaySize.Height} &&
+                      Manifest["jitter"] == nlohmann::json{Info.Jitter.x, Info.Jitter.y} && Manifest["denoiser"].is_null() && Manifest["nrd_instances"] == 0,
+                  "RR11: the manifest must describe the RR view, its sizes and jitter, and no denoiser");
+            Check(RR["provider"] == Info.Variant && RR["quality"] == "Balanced" && RR["preset"] == kRREmbeddedPresetName &&
+                      RR["exposure"] == Info.Exposure && RR["view_forward_sign"] == kRREmbeddedLeftHandedSign && RR["micro_jitter"] == 0 &&
+                      RR["executes"] == Info.Executes && RR["resets"] == Info.Resets && RR["failures"] == Info.Failures,
+                  "RR11: the manifest must report the view's feature, its exposure (D4), handedness and no micro-jitter (D5)");
+            std::ifstream ExposureFile{Directory / "rr_exposure.bin", std::ios::binary};
+            float         Exposure = 0;
+            ExposureFile.read(reinterpret_cast<char*>(&Exposure), sizeof(Exposure));
+            Check(ExposureFile && Exposure == Info.Exposure, "RR11: the captured exposure texture must hold the exposure RR received");
+            //Every RR input and output, at the size, format and frame of the view's output, and no NRD or SR result.
+            constexpr std::pair<RTXPTViewOutput, const char*> Outputs[] = {
+                {RTXPTViewOutput::ReconstructedRadiance, "reconstructed_radiance"},
+                {RTXPTViewOutput::RayReconstructionColor, "rr_color"},
+                {RTXPTViewOutput::RayReconstructionDepth, "rr_depth"},
+                {RTXPTViewOutput::RayReconstructionMotion, "rr_motion"},
+                {RTXPTViewOutput::RayReconstructionSpecularMotion, "rr_specular_motion"},
+                {RTXPTViewOutput::RayReconstructionNormalRoughness, "rr_normal_roughness"},
+                {RTXPTViewOutput::RayReconstructionDiffuseAlbedo, "rr_diffuse_albedo"},
+                {RTXPTViewOutput::RayReconstructionSpecularAlbedo, "rr_specular_albedo"},
+                {RTXPTViewOutput::RayReconstructionExposure, "rr_exposure"},
+                {RTXPTViewOutput::Display, "display"},
+            };
+            const nlohmann::json& Resources = Manifest["resources"];
+            //The size of a file of the capture; the largest value when it is missing.
+            const auto FileBytes = [&](const nlohmann::json& Resource) {
+                std::error_code Error;
+                return std::filesystem::file_size(Directory / Resource.value("file", ""), Error);
+            };
+            for (const auto& [Output, Name] : Outputs)
+            {
+                const RTXPTViewOutputInfo Expected = View->GetOutputInfo(Output);
+                const auto                Found    = std::find_if(Resources.begin(), Resources.end(), [Name = Name](const nlohmann::json& Resource) {
+                    return Resource.value("name", "") == Name;
+                });
+                const bool                bListed  = Found != Resources.end();
+                const bool                bMatches = bListed && Expected.Valid && Found->value("width", 0u) == Expected.Size.Width &&
+                    Found->value("height", 0u) == Expected.Size.Height && Found->value("format", "") == GetTextureFormatAttribs(Expected.ResourceFormat).Name &&
+                    Found->value("frame_index", 0u) == Expected.FrameIndex && FileBytes(*Found) == Found->value("bytes", Uint64{0});
+                Check(bMatches, std::string{"RR11: the capture must export "} + Name + " at the view's size, format and frame");
+            }
+            const bool            bOtherResult = std::any_of(Resources.begin(), Resources.end(), [](const nlohmann::json& Resource) {
+                const std::string Name = Resource.value("name", "");
+                return Name.rfind("history_confidence", 0) == 0 || Name.rfind("sr_", 0) == 0 || Name == "denoised_radiance" ||
+                    Name == "noisy_radiance" || Name == "upscaled_radiance";
+            });
+            const nlohmann::json& Unavailable  = Manifest["unavailable_stages"];
+            const auto            Lists        = [&](const char* Stage) {
+                return std::find(Unavailable.begin(), Unavailable.end(), Stage) != Unavailable.end();
+            };
+            Check(!bOtherResult && Lists("NRD") && Lists("SR") && !Lists("RR"), "RR11: the capture must contain no NRD or SR result and report RR as available");
+            LOG_INFO_MESSAGE("RR11: capture ", Directory.string(), "; validate it with tests/validate_realtime_capture.py");
         }
     }
     m_pImmediateContext->WaitForIdle();
