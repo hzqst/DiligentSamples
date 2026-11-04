@@ -572,10 +572,11 @@ Debug directory contains the engine, RR/NGX, DXC and `nvngx_dlssd` runtime DLLs.
 From an x64 VS 2022 Developer Command Prompt, at the superproject root:
 
 ```bat
-cl /nologo /std:c++17 /EHsc /MDd /D_DEBUG /DDEVELOPMENT /DPLATFORM_WIN32=1 /DNOMINMAX /DRTXPT_HAS_NRD=0 ^
+cl /nologo /std:c++17 /EHsc /MDd /D_DEBUG /DDEVELOPMENT /DPLATFORM_WIN32=1 /DNOMINMAX /DRTXPT_HAS_NRD=0 /DRTXPT_SHARC_SHADER_DIR=\"unused\" ^
  /IDiligentCore\Platforms\Basic\interface /IDiligentCore\Primitives\interface /IDiligentCore\Common\interface ^
  /IDiligentCore\Graphics\GraphicsEngine\interface /IDiligentCore\Graphics\GraphicsTools\interface /IDiligentCore\Graphics\GraphicsAccessories\interface ^
  DiligentSamples\Samples\RTXPT\tests\RRPrepareInputsTest.cpp DiligentSamples\Samples\RTXPT\src\RTXPTRenderTargets.cpp DiligentSamples\Samples\RTXPT\src\RTXPTPostProcessPass.cpp ^
+ DiligentSamples\Samples\RTXPT\src\RTXPTRayTracingPass.cpp ^
  /Fo"%TEMP%\\" /Fe"%TEMP%\RRPrepareInputsTest.exe" /link user32.lib ^
  build\x64\Debug\DiligentCore\Graphics\GraphicsAccessories\Debug\Diligent-GraphicsAccessories.lib ^
  build\x64\Debug\DiligentCore\Common\Debug\Diligent-Common.lib ^
@@ -616,7 +617,15 @@ conversion, object motion, camera motion, rejection of previous points behind th
 camera, temporal jitter, micro-jitter, aperture sampling and near-plane offset.
 Expected motion is checked in render pixels with positive X right/positive Y down.
 
-Every case checks finite outputs, unit normal length within fp16 tolerance,
+All 15 cases run twice: with the Sample's left-handed view (forward = +Z) and
+with the game's right-handed view (forward = -Z). The second run expresses the
+same world, rays and clip space as `View * FlipZ` and `FlipZ * Projection`, so
+both runs share the same expectations. RR depth must be the forward view distance
+within 1e-5 relative error; a right-handed foreground must never become the sky
+marker. The production post-process wrapper uses `RTXPTRayTracingPass` UAV
+barriers, so the build also compiles that file with an unused SHaRC shader directory.
+
+Every case checks finite outputs, unit normal length within 2e-3,
 bounded albedo and linear roughness. One-pixel inputs use an 8x8 dispatch to
 exercise the production bounds guard. The fixtures use the existing 80-byte
 DenoisingLayer packing; they do not reimplement the RR preparation algorithm.
@@ -629,11 +638,17 @@ DenoisingLayer packing; they do not reimplement the RR preparation algorithm.
 - reuse on unchanged requests, recreation on resize, RR/NRD mode switching and reset;
 - packed roughness, linear depth, motion/jitter flags, exposure values, untransposed
   row-major matrices, optional-guide clearing and stale-frame rejection;
+- a right-handed view (`V * FlipZ`, `FlipZ * P`) reaches RR as `V` and `P`, whose
+  world-to-clip product matches the frame's within 1e-5 * max(1, |m|), and
+  orthographic and affine view-to-clip transforms are rejected;
+- explicit exposure: a 1x1 R16F SRV is bound with PreExposure and ExposureScale 1;
+  a missing, 2x1 or RGBA16F texture, or a texture with an auto-exposure desc, is rejected;
 - two calls through `RunDLSSRRDenoiserPrepareInputs`, GPU readback, output SRV
   transitions, rebinding after cleanup, and rejection of aliased outputs.
 
-Validation on RTX 5060: both backends pass the resource checks, production wrapper
-and 15 readback cases. D3D12 also checks RR -> NRD -> RR allocation with NRD's
+Validation on RTX 5060: both backends pass the resource, view-convention and
+explicit-exposure checks, the production wrapper and 30 readback cases (15 per
+view convention). D3D12 also checks RR -> NRD -> RR allocation with NRD's
 RGB10A2 encoding preserved. The tested Vulkan backend does not support the existing
 RGB10A2 UAV, so it reports that NRD switch as skipped and tests RR -> reference -> RR
 instead. This existing NRD limit does not block RR resources (recorded before hzqst/DiligentCore#8; see [Vulkan RGB10A2 UAV status](#vulkan-rgb10a2-uav-status)). The existing DXC

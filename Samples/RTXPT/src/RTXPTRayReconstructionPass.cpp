@@ -152,7 +152,7 @@ bool RTXPTRayReconstructionPass::Execute(IDeviceContext* pContext, const RTXPTRe
         return false;
     ExecuteRayReconstructionAttribs Attribs;
     if (!RTXPTRayReconstructionInputs::MakeExecuteAttribs(pContext, Targets, m_Desc, Frame,
-                                                          ResetHistory || m_ResetHistory, Attribs))
+                                                          ResetHistory || m_ResetHistory, nullptr, Attribs))
         return Fail(RTXPTRayReconstructionStatus::ExecuteFailed, "DLSS-RR frame input contract failed; output discarded.");
     pContext->SetRenderTargets(0, nullptr, nullptr, RESOURCE_STATE_TRANSITION_MODE_NONE);
     if (!m_Reconstruction->Execute(Attribs))
