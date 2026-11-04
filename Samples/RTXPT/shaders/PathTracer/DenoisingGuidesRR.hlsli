@@ -21,12 +21,16 @@ float3 RRFiniteNonNegative(float3 value)
 
 void DLSSRRDenoiserPrepareInputs(uint2 pixelPos)
 {
-    // BUILD uses mini-constant sample offset zero. Depth is the dominant path's
-    // virtual ray distance, not hardware depth or linear view Z.
+    // BUILD uses mini-constant sample offset zero. Depth is the positive linear
+    // view depth of the dominant path's virtual ray end, not hardware depth: its
+    // distance along the view's forward axis. A right-handed view (forward = -Z,
+    // as the game's) has a perspective w = -z, so its z is negated; the RR
+    // adapter (RTXPTRayReconstructionInputs) hands RR the matching basis.
     const CameraRay cameraRay = ComputePathTracerCameraRay(g_Frame.ptConsts, pixelPos, g_Frame.ptConsts.sampleBaseIndex);
     const float rayDistance = t_Depth[pixelPos];
     const float3 virtualWorldPos = cameraRay.origin + cameraRay.dir * rayDistance;
-    const float viewZ = mul(float4(virtualWorldPos, 1.0), g_Frame.view.MatWorldToView).z;
+    const float viewForwardSign = g_Frame.view.MatViewToClip[2][3] < 0.0 ? -1.0 : 1.0;
+    const float viewZ = viewForwardSign * mul(float4(virtualWorldPos, 1.0), g_Frame.view.MatWorldToView).z;
     const float kSkyViewZ = kEnvironmentMapSceneDistance;
     u_RRDepth[pixelPos] = isfinite(rayDistance) && rayDistance > 0.0 && isfinite(viewZ) && viewZ > 0.0 ? viewZ : kSkyViewZ;
     const float2 motion = t_MotionVectors[pixelPos].xy;

@@ -44,6 +44,17 @@ void Near(float Expected, float Actual)
     Require(std::abs(Expected - Actual) < 0.003f, "Unexpected GPU output");
 }
 
+// Frozen M5 input gates: R32F RR depth within 1e-5 relative, RGBA16F unit normals within 2e-3 of length 1.
+constexpr float kRRDepthRelativeTolerance = 1e-5f;
+constexpr float kRRNormalLengthTolerance  = 2e-3f;
+
+void NearRelative(float Expected, float Actual, float Tolerance, const char* Message)
+{
+    if (std::abs(Expected - Actual) > Tolerance * std::abs(Expected))
+        std::cerr << "Expected " << Expected << ", got " << Actual << '\n';
+    Require(std::abs(Expected - Actual) <= Tolerance * std::abs(Expected), Message);
+}
+
 Uint32 Pack(float Low, float High)
 {
     return Float16{Low}.Raw() | (Uint32{Float16{High}.Raw()} << 16);
@@ -157,9 +168,18 @@ void main(uint3 tid : SV_DispatchThreadID)
     Require(ScenePSO != nullptr, "RR planar scene pipeline failed");
 
     // One-pixel inputs deliberately dispatch an 8x8 group to exercise bounds checks.
-    for (int Test = 0; Test < 15; ++Test)
+    // Every case runs twice: with the Sample's left-handed view (forward = +Z) and with the game's right-handed view
+    // (forward = -Z), the same world, rays and clip space expressed as View * FlipZ and FlipZ * Projection. RR depth is
+    // the forward distance in both, so the expectations do not depend on the convention.
+    constexpr int   kInputCaseCount  = 15;
+    constexpr float kTestFovRadians  = 1.0f;
+    constexpr float kTestAspectRatio = 1.0f;
+    for (int Run = 0; Run < 2 * kInputCaseCount; ++Run)
     {
-        SampleConstants Frame     = {};
+        const int       Test         = Run % kInputCaseCount;
+        const bool      bRightHanded = Run >= kInputCaseCount;
+        const char*     Convention   = bRightHanded ? " (right-handed view)" : " (left-handed view)";
+        SampleConstants Frame        = {};
         Frame.ptConsts.imageWidth = Frame.ptConsts.imageHeight = 1;
         Frame.ptConsts._activeDenoisingLayerCount              = Test == 8 ? 0 : 3;
         Frame.ptConsts.genericTSLineStride                     = 8;
@@ -183,6 +203,11 @@ void main(uint3 tid : SV_DispatchThreadID)
                 Frame.ptConsts.sampleBaseIndex       = 17;
             }
         }
+        const float4x4 Projection = float4x4::Projection(kTestFovRadians, kTestAspectRatio, Frame.ptConsts.camera.NearZ,
+                                                         Frame.ptConsts.camera.FarZ, false);
+        const float4x4 FlipZ      = float4x4::Scale(1, 1, -1);
+        Frame.view.MatWorldToView = bRightHanded ? FlipZ : float4x4::Identity();
+        Frame.view.MatViewToClip  = bRightHanded ? FlipZ * Projection : Projection;
         BufferDesc CBDesc;
         CBDesc.Name      = "RR test constants";
         CBDesc.Size      = sizeof(Frame);
@@ -331,14 +356,16 @@ void main(uint3 tid : SV_DispatchThreadID)
             Context->UnmapTextureSubresource(Readback, 0, 0);
         }
         const auto& Normal = Results[3];
-        std::cout << "RR motion case " << Test << ": " << Results[5][0] << ", " << Results[5][1]
+        std::cout << "RR motion case " << Test << Convention << ": " << Results[5][0] << ", " << Results[5][1]
                   << "; specular " << Results[6][0] << ", " << Results[6][1] << '\n';
-        Near(Test < 2 ? 5000000.0f : Test < 10 ? 2.1f : 3.0f, Results[4][0]);
+        NearRelative(Test < 2 ? 5000000.0f : Test < 10 ? 2.1f : 3.0f, Results[4][0], kRRDepthRelativeTolerance,
+                     "RR depth is not the forward view distance");
         Near(Test < 10 ? 2.0f : Test == 10 ? 0.25f : Test == 12 ? 0.0f : -0.75f, Results[5][0]);
         Near(Test < 10 ? -3.0f : Test == 10 || Test == 12 ? 0.0f : -2.0f, Results[5][1]);
         Near(Test == 14 ? -0.5f : Results[5][0], Results[6][0]);
         Near(Test == 14 ? -2.0f : Results[5][1], Results[6][1]);
-        Near(1, std::sqrt(Normal[0] * Normal[0] + Normal[1] * Normal[1] + Normal[2] * Normal[2]));
+        Require(std::abs(1 - std::sqrt(Normal[0] * Normal[0] + Normal[1] * Normal[1] + Normal[2] * Normal[2])) <= kRRNormalLengthTolerance,
+                "RR normal is not unit length");
         Require(Normal[3] >= 0 && Normal[3] <= 1, "Roughness outside [0,1]");
         for (size_t Guide = 1; Guide <= 2; ++Guide)
             for (float Value : Results[Guide])
@@ -380,7 +407,7 @@ void main(uint3 tid : SV_DispatchThreadID)
             Near(1, Normal[3]);
         }
         if (Test == 8 || Test == 9) Near(0, Results[0][0]);
-        std::cout << "RR input case " << Test << " passed\n";
+        std::cout << "RR input case " << Test << Convention << " passed\n";
         Context->Flush();
         Context->FinishFrame();
     }

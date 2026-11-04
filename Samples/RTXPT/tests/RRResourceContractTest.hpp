@@ -4,6 +4,7 @@
 
 #include "../src/RTXPTRayReconstructionInputs.hpp"
 #include "../src/RTXPTPostProcessPass.hpp"
+#include <algorithm>
 #include <filesystem>
 
 namespace
@@ -92,6 +93,101 @@ void CheckRRPrepareWrapper(IRenderDevice* Device, IDeviceContext* Context, IEngi
     std::cout << "Production RR prepare wrapper, rebind and alias rejection passed\n";
 }
 
+// The game supplies right-handed views (forward = -Z). The adapter must hand RR the same clip space in the
+// forward-positive basis the RR prepare depth uses: WorldToView * FlipZ and FlipZ * ViewToClip.
+void CheckRRViewConventions(IDeviceContext*              Context,
+                            const RTXPTRenderTargets&    Targets,
+                            const RayReconstructionDesc& Desc,
+                            SampleConstants              Frame,
+                            const float4x4&              WorldToView,
+                            const float4x4&              ViewToClip)
+{
+    // Frozen M5 gate: the RR matrices reproduce the frame's clip transform within 1e-5 * max(1, |m|).
+    constexpr float kMatrixTolerance = 1e-5f;
+    const float4x4  FlipZ            = float4x4::Scale(1, 1, -1);
+    Frame.view.MatWorldToView        = WorldToView * FlipZ;
+    Frame.view.MatViewToClip         = FlipZ * ViewToClip;
+    const float4x4 WorldToClip       = Frame.view.MatWorldToView * Frame.view.MatViewToClip;
+
+    ExecuteRayReconstructionAttribs Execute;
+    Require(RTXPTRayReconstructionInputs::MakeExecuteAttribs(Context, Targets, Desc, Frame, false, nullptr, Execute),
+            "Right-handed view rejected");
+    float4x4 RRWorldToView, RRViewToClip;
+    std::memcpy(RRWorldToView.Data(), Execute.WorldToView, sizeof(Execute.WorldToView));
+    std::memcpy(RRViewToClip.Data(), Execute.ViewToClip, sizeof(Execute.ViewToClip));
+    const float4x4 RRWorldToClip = RRWorldToView * RRViewToClip;
+    for (size_t Index = 0; Index < 16; ++Index)
+    {
+        Near(WorldToView.Data()[Index], RRWorldToView.Data()[Index]);
+        Near(ViewToClip.Data()[Index], RRViewToClip.Data()[Index]);
+        const float Expected = WorldToClip.Data()[Index];
+        Require(std::abs(Expected - RRWorldToClip.Data()[Index]) <= kMatrixTolerance * std::max(1.0f, std::abs(Expected)),
+                "RR matrices change the clip transform");
+    }
+
+    // A projection without a perspective w has no forward axis the RR depth could follow.
+    Frame.view.MatViewToClip = float4x4::OrthoOffCenter(-1, 1, -1, 1, 0.1f, 100.0f, false);
+    Require(!RTXPTRayReconstructionInputs::MakeExecuteAttribs(Context, Targets, Desc, Frame, false, nullptr, Execute) &&
+                !Execute.pColorSRV,
+            "Orthographic RR view accepted");
+    Frame.view.MatViewToClip = float4x4::Scale(2, 3, 4);
+    Require(!RTXPTRayReconstructionInputs::MakeExecuteAttribs(Context, Targets, Desc, Frame, false, nullptr, Execute),
+            "Affine RR view-to-clip accepted");
+    std::cout << "RR view conventions passed\n";
+}
+
+// The game path passes its display exposure in a 1x1 texture instead of using NGX auto exposure.
+void CheckRRExplicitExposure(IRenderDevice*                                Device,
+                             IDeviceContext*                               Context,
+                             const RTXPTRenderTargets&                     Targets,
+                             const RayReconstructionSourceSettingsAttribs& Query,
+                             const RayReconstructionSourceSettings&        Source,
+                             const SampleConstants&                        Frame)
+{
+    RayReconstructionDesc Desc;
+    Require(RTXPTRayReconstructionInputs::MakeDesc(Query, Source, Desc, RTXPTRayReconstructionExposure::Explicit) &&
+                !Desc.AutoExposure,
+            "Explicit-exposure RR desc rejected");
+    const auto MakeExposure = [&](Uint32 Width, TEXTURE_FORMAT Format) {
+        TextureDesc ExposureDesc;
+        ExposureDesc.Name      = "RR test exposure";
+        ExposureDesc.Type      = RESOURCE_DIM_TEX_2D;
+        ExposureDesc.Width     = Width;
+        ExposureDesc.Height    = 1;
+        ExposureDesc.Format    = Format;
+        ExposureDesc.BindFlags = BIND_SHADER_RESOURCE;
+        RefCntAutoPtr<ITexture> Texture;
+        Device->CreateTexture(ExposureDesc, nullptr, &Texture);
+        Require(Texture != nullptr, "Cannot create RR test exposure");
+        return Texture;
+    };
+    const auto Exposure      = MakeExposure(1, TEX_FORMAT_R16_FLOAT);
+    const auto WideExposure  = MakeExposure(2, TEX_FORMAT_R16_FLOAT);
+    const auto ColorExposure = MakeExposure(1, TEX_FORMAT_RGBA16_FLOAT);
+    auto*      ExposureSRV   = Exposure->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
+
+    ExecuteRayReconstructionAttribs Execute;
+    Require(RTXPTRayReconstructionInputs::MakeExecuteAttribs(Context, Targets, Desc, Frame, false, ExposureSRV, Execute) &&
+                Execute.pExposureSRV == ExposureSRV,
+            "Explicit RR exposure not bound");
+    Near(1, Execute.PreExposure);
+    Near(1, Execute.ExposureScale);
+    Require(!RTXPTRayReconstructionInputs::MakeExecuteAttribs(Context, Targets, Desc, Frame, false, nullptr, Execute),
+            "Explicit RR exposure without a texture accepted");
+    Require(!RTXPTRayReconstructionInputs::MakeExecuteAttribs(Context, Targets, Desc, Frame, false,
+                                                              WideExposure->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE), Execute),
+            "RR exposure that is not 1x1 accepted");
+    Require(!RTXPTRayReconstructionInputs::MakeExecuteAttribs(Context, Targets, Desc, Frame, false,
+                                                              ColorExposure->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE), Execute),
+            "RR exposure with a color format accepted");
+
+    RayReconstructionDesc AutoDesc;
+    Require(RTXPTRayReconstructionInputs::MakeDesc(Query, Source, AutoDesc) && AutoDesc.AutoExposure, "Auto-exposure RR desc changed");
+    Require(!RTXPTRayReconstructionInputs::MakeExecuteAttribs(Context, Targets, AutoDesc, Frame, false, ExposureSRV, Execute),
+            "Auto-exposure RR accepted an exposure texture");
+    std::cout << "RR explicit exposure passed\n";
+}
+
 void CheckRRResourceContract(IRenderDevice* Device, IDeviceContext* Context, const char* FactoryPath)
 {
     HMODULE Library = LoadLibraryA(FactoryPath);
@@ -133,12 +229,14 @@ void CheckRRResourceContract(IRenderDevice* Device, IDeviceContext* Context, con
         Frame.view.ViewportSize      = float2{static_cast<float>(Desc.InputWidth), static_cast<float>(Desc.InputHeight)};
         Frame.view.PixelOffset       = float2{0.25f, -0.375f};
         Frame.ptConsts.camera.Jitter = float2{0.25f, 0.375f};
-        Frame.view.MatWorldToView    = float4x4::Translation(2, 3, 4);
-        Frame.view.MatViewToClip     = float4x4::Scale(2, 3, 4);
+        const float4x4 WorldToView   = float4x4::Translation(2, 3, 4);
+        const float4x4 ViewToClip    = float4x4::Projection(1.0f, 16.0f / 9.0f, 0.1f, 100.0f, false);
+        Frame.view.MatWorldToView    = WorldToView;
+        Frame.view.MatViewToClip     = ViewToClip;
         ExecuteRayReconstructionAttribs Execute;
         Execute.pExposureSRV = Execute.pRoughnessSRV = Execute.pDiffuseHitDistanceSRV =
             Execute.pSpecularHitDistanceSRV = Execute.pSpecularMotionVectorsSRV = Targets.GetOutputColorSRV();
-        Require(RTXPTRayReconstructionInputs::MakeExecuteAttribs(Context, Targets, Desc, Frame, true, Execute), "RR execute adapter failed");
+        Require(RTXPTRayReconstructionInputs::MakeExecuteAttribs(Context, Targets, Desc, Frame, true, nullptr, Execute), "RR execute adapter failed");
         Require(!Execute.pExposureSRV && !Execute.pRoughnessSRV && !Execute.pDiffuseHitDistanceSRV &&
                     !Execute.pSpecularHitDistanceSRV && Execute.pSpecularMotionVectorsSRV == Targets.GetRRSpecMotionVectorsSRV(),
                 "Optional guides retained previous bindings");
@@ -175,9 +273,12 @@ void CheckRRResourceContract(IRenderDevice* Device, IDeviceContext* Context, con
                 Require(Views[Previous]->GetTexture() != Views[Index]->GetTexture(), "Aliased RR resources");
         }
         Frame.ptConsts.imageWidth++;
-        Require(!RTXPTRayReconstructionInputs::MakeExecuteAttribs(Context, Targets, Desc, Frame, false, Execute) &&
+        Require(!RTXPTRayReconstructionInputs::MakeExecuteAttribs(Context, Targets, Desc, Frame, false, nullptr, Execute) &&
                     !Execute.pColorSRV && !Execute.pOutputUAV,
                 "Stale frame accepted or bindings retained");
+        Frame.ptConsts.imageWidth--;
+        CheckRRViewConventions(Context, Targets, Desc, Frame, WorldToView, ViewToClip);
+        CheckRRExplicitExposure(Device, Context, Targets, Query, Source, Frame);
         std::cout << "RR resource contract " << Desc.InputWidth << 'x' << Desc.InputHeight << " -> "
                   << Desc.OutputWidth << 'x' << Desc.OutputHeight << " passed\n";
 
