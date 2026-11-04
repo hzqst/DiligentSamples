@@ -617,7 +617,42 @@ conversion, object motion, camera motion, rejection of previous points behind th
 camera, temporal jitter, micro-jitter, aperture sampling and near-plane offset.
 Expected motion is checked in render pixels with positive X right/positive Y down.
 
-All 15 cases run twice: with the Sample's left-handed view (forward = +Z) and
+Five perspective cases (issue #288) replace the former smooth-reflector case,
+whose layer did not match its exported depth. They use a real 1280x720 render
+view: a 1 rad horizontal FOV (`float4x4::Projection` takes the vertical FOV),
+clip matrices that are the product of the view and projection, and a jitter
+that puts the one test pixel's sample on the optical axis. The camera moved
+from x = -0.05. Each layer is written as BUILD stores it: last physical ray,
+length accumulated from the near plane, virtual motion. Depth equals the
+dominant layer's distance, and the surface motion is consistent with it. The
+cases are:
+
+- a direct surface (vertex 1);
+- the issue's primary surface replacement behind a mirror (vertex 2), whose
+  specular motion is 13.27 render pixels (the previous shader produced 0);
+- a dominant layer 1 whose layer 0 deliberately differs;
+- a depth that stops at an earlier motion-blocking surface;
+- a specular image behind the previous camera.
+
+The first three expect the image hitT beyond the depth's virtual point, against
+an analytic pinhole oracle that does not use the matrices. The last two must
+keep the surface motion bit for bit. RG16F outputs are compared within one
+half-precision ULP: the tested D3D12 and Vulkan devices round the 13.2698
+result down to 13.2656.
+
+Validation of #288 on RTX 5060: D3D12 and Vulkan both exit 0, with the RR resource
+contracts, the wrapper and 38 readback cases. Each of these shader mutations
+makes the D3D12 run fail at the case named:
+
+- the previous shader: the primary surface replacement case (0 instead of 13.27);
+- reading layer 0 instead of the dominant layer: the dominant-layer case;
+- checking only that the layer distance is finite, not equal to the depth: the
+  blocked-anchor case;
+- dropping the projection check: the failed-projection case (0 instead of -293).
+
+Dropping the depth comparison altogether already fails the earlier sky-marker case.
+
+All 19 cases run twice: with the Sample's left-handed view (forward = +Z) and
 with the game's right-handed view (forward = -Z). The second run expresses the
 same world, rays and clip space as `View * FlipZ` and `FlipZ * Projection`, so
 both runs share the same expectations. RR depth must be the forward view distance
