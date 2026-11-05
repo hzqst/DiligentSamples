@@ -5,6 +5,7 @@
 #include "RTXPTFrameConstants.hpp"
 #include "RTXPTSceneRuntime.hpp"
 #include "RTXPTSceneHistory.hpp"
+#include "RTXPTAutoExposure.hpp"
 #include "RTXPTBloomPass.hpp"
 #include "RTXPTToneMappingPass.hpp"
 #include "RenderDevice.h"
@@ -132,6 +133,11 @@ enum class RTXPTViewOutput
     //Every mode, when the latest Render applied Bloom (RTXPTViewDisplaySettings::Bloom): the display-size linear HDR
     //after Bloom, before tone mapping (RGBA16F). The HDR of the mode that Bloom read keeps its own output above.
     BloomRadiance,
+    //Every mode, when the latest Render used auto exposure: the exposure it applied (1x1 R32F, a linear multiplier),
+    //which DLSSRR's reconstruction read as well, and the state its meter wrote for the next frame
+    //(RTXPTAutoExposure::GetPendingState). They belong to the view's RTXPTAutoExposure: its next frame overwrites them.
+    AutoExposureUsed,
+    AutoExposureState,
 };
 
 enum class RTXPTOutputEncoding
@@ -157,21 +163,26 @@ constexpr float RTXPTMaxBloomIntensity = 0.1f;
 //with. WhiteMaxLuminance is the white point of ReinhardModified and WhiteScale that of HableUc2; each operator ignores
 //the other's. Bloom is the Sample's Bloom (RTXPTBloomPass) on the display-size HDR before tone mapping:
 //(1 - Intensity) * HDR + Intensity * HDR blurred at a quarter of the display width and height. It is off by default,
-//unlike the Sample's controls; a zero radius or intensity bypasses it as Enabled = false does. Render rejects values outside
-//the ranges above or an unknown operator instead of clamping them. None of them rescales or blurs the accumulated,
-//noisy, denoised, upscaled or reconstructed HDR, and changing them restarts no history.
+//unlike the Sample's controls; a zero radius or intensity bypasses it as Enabled = false does. AutoExposure, when
+//enabled, replaces Exposure: tone mapping and ray reconstruction read the exposure the view's RTXPTAutoExposure adapts on
+//the GPU, metered from the HDR before Bloom, and the realtime clamps use RTXPTAutoExposureTraceClampExposure. Render
+//rejects values outside the ranges above (IsValidRTXPTAutoExposure for AutoExposure, whatever Enabled) or an unknown
+//operator instead of clamping them. None of them rescales or blurs the accumulated, noisy, denoised, upscaled or
+//reconstructed HDR, and changing them restarts no history.
 struct RTXPTViewDisplaySettings
 {
-    float                   Exposure          = 1.0f;
-    RTXPTToneMapperOperator ToneMapOperator   = RTXPTToneMapperOperator::Reinhard;
-    float                   WhiteMaxLuminance = 1.0f;
-    float                   WhiteScale        = 5.1f;
-    RTXPTBloomParameters    Bloom{false};
+    float                       Exposure          = 1.0f;
+    RTXPTToneMapperOperator     ToneMapOperator   = RTXPTToneMapperOperator::Reinhard;
+    float                       WhiteMaxLuminance = 1.0f;
+    float                       WhiteScale        = 5.1f;
+    RTXPTBloomParameters        Bloom{false};
+    RTXPTAutoExposureParameters AutoExposure;
 };
 
 //The tone mapping parameters Render applies for Display: manual exposure with the default camera (ISO 100, f/1, 1 s, a
 //factor of 1), so ExposureCompensation = log2(Exposure) is the only exposure the tone mapper, ray reconstruction and the
-//realtime clamps derive. Display must be within the ranges Render accepts.
+//realtime clamps derive. With auto exposure the exposure is resolved on the GPU instead, and ExposureCompensation is 0.
+//Display must be within the ranges Render accepts.
 RTXPTToneMappingParameters MakeRTXPTToneMappingParameters(const RTXPTViewDisplaySettings& Display);
 
 //A borrowed result of the latest Render. Texture is null unless that Render succeeded. It remains usable until the
@@ -236,8 +247,11 @@ struct RTXPTViewRayReconstructionInfo
     RTXPTViewSize DisplaySize;
     float2        Jitter    = float2{0, 0};
     bool          LastReset = false;
-    //The exposure the latest successful Render handed RR: the display exposure tone mapping applies (D4).
-    float Exposure = 0;
+    //The exposure the latest successful Render handed RR: the display exposure tone mapping applies (D4). With auto
+    //exposure RR read that exposure from the GPU (RTXPTViewOutput::AutoExposureUsed): AutoExposure is set and Exposure
+    //is 0.
+    float Exposure     = 0;
+    bool  AutoExposure = false;
     //The sign of the forward axis of the latest successful Render's view: 1 for a left-handed view, -1 for a
     //right-handed one (forward = -Z). RR's depth and matrices use that forward-positive basis.
     float  ForwardSign = 0;
@@ -326,8 +340,10 @@ public:
     //Creates new targets and history and waits for the GPU. Reinitialization invalidates previous outputs even on failure.
     RTXPTErrorCode Initialize(IRenderDevice* Device, IDeviceContext* Context, const RTXPTEmbeddedViewCreateInfo& CreateInfo);
     //Display is applied to this frame alone (RTXPTViewDisplaySettings). Camera and View describe the render size without
-    //jitter; DLSSSR and DLSSRR add their own.
-    RTXPTErrorCode Render(const PathTracerCameraData& Camera, const PathTracerViewData& View, double Time, bool ResetHistory, const RTXPTViewDisplaySettings& Display = {});
+    //jitter; DLSSSR and DLSSRR add their own. AutoExposure is the auto exposure of the view's camera, required when
+    //Display enables it and ignored otherwise: Render begins its frame at Time and meters it, and the host commits that
+    //frame once it has accepted the whole frame (RTXPTAutoExposure::Commit). A Render that fails aborts it.
+    RTXPTErrorCode Render(const PathTracerCameraData& Camera, const PathTracerViewData& View, double Time, bool ResetHistory, const RTXPTViewDisplaySettings& Display = {}, RTXPTAutoExposure* AutoExposure = nullptr);
     // Revokes submitted output and temporal history after the host observes an execution failure.
     // Does not wait for the GPU or release resources that submitted commands may still reference.
     void InvalidateOutput();

@@ -103,7 +103,13 @@ and TLAS is separate. Nested intervals must not be summed with Total/ScenePrepar
 NRD, TAA, SR and RR are not active in Raw. A frame of any mode that applied Bloom
 (`RTXPTViewDisplaySettings::Bloom`) also exports display-size RGBA16F `bloom_radiance`,
 its HDR after Bloom and before tone mapping, times it in the `Bloom` stage and omits
-Bloom from `unavailable_stages`; the HDR of the mode stays the one Bloom read. Total GPU
+Bloom from `unavailable_stages`; the HDR of the mode stays the one Bloom read. A frame
+with auto exposure (`RTXPTViewDisplaySettings::AutoExposure`) records `exposure_mode`
+`Auto` and exports the 1x1 R32F `auto_exposure_used` it applied and the 2x1 RGBA32F
+`auto_exposure_next` its meter wrote (`RTXPTAutoExposureShared.h`); DLSSRR then reports
+its RR exposure as null with `exposure_source` `auto_exposure_used`, and
+`validate_realtime_capture.py` requires `rr_exposure` to equal the used exposure and the
+state's used exposure to be that of the frame. Total GPU
 allocation is unavailable; the manifest does not pass readback byte counts off as VRAM
 residency.
 

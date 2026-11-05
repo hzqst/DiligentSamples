@@ -4,6 +4,8 @@
 Raw exports its noisy current-frame HDR, Native its denoised HDR and each layer's history confidence.
 DLSSRR exports the inputs ray reconstruction received and its display-size HDR, and no NRD or SR work.
 A frame that applied Bloom exports its display-size HDR after Bloom and lists Bloom as available.
+A frame with auto exposure exports the exposure it used and the state its meter wrote for the next frame; RR read the
+used exposure, so RR's reported exposure is null and its exposure texture must hold the used one.
 
 This checks storage/finite values and frame provenance, not temporal correctness.
 RR inputs are also checked against the value ranges of their contract (the frozen D6 input checks).
@@ -26,7 +28,8 @@ MODES = {
 }
 NATIVE_LAYER_COUNT = 3
 PIXEL_BYTES = {'TEX_FORMAT_RGBA16_FLOAT': 8, 'TEX_FORMAT_R32_FLOAT': 4, 'TEX_FORMAT_RG16_FLOAT': 4,
-               'TEX_FORMAT_R8_UNORM': 1, 'TEX_FORMAT_RGBA8_TYPELESS': 4}
+               'TEX_FORMAT_R8_UNORM': 1, 'TEX_FORMAT_RGBA8_TYPELESS': 4, 'TEX_FORMAT_RGBA32_FLOAT': 16}
+FLOAT_FORMATS = ("TEX_FORMAT_RGBA16_FLOAT", "TEX_FORMAT_RG16_FLOAT", "TEX_FORMAT_R32_FLOAT", "TEX_FORMAT_RGBA32_FLOAT")
 SR_FORMATS = {'denoised_radiance': 'TEX_FORMAT_RGBA16_FLOAT',
               'upscaled_radiance': 'TEX_FORMAT_RGBA16_FLOAT',
               'sr_depth': 'TEX_FORMAT_R32_FLOAT', 'sr_motion': 'TEX_FORMAT_RG16_FLOAT',
@@ -52,6 +55,15 @@ RR_NORMAL_ROUGHNESS_COMPONENTS = 4
 # The display-size HDR after Bloom and before tone mapping.
 BLOOM = 'bloom_radiance'
 BLOOM_FORMATS = {BLOOM: 'TEX_FORMAT_RGBA16_FLOAT'}
+# The exposure the frame used and the state its meter wrote (RTXPTAutoExposureShared.h): base exposure, initialized,
+# target and event, then mean log2 luminance, valid samples, adaptation weight and the log2 of the used exposure.
+AE_USED = 'auto_exposure_used'
+AE_NEXT = 'auto_exposure_next'
+AE_FORMATS = {AE_USED: 'TEX_FORMAT_R32_FLOAT', AE_NEXT: 'TEX_FORMAT_RGBA32_FLOAT'}
+AE_EXTENTS = {AE_USED: [1, 1], AE_NEXT: [2, 1]}
+AE_STATE_USED_EV = 7
+# The used exposure is exp2 of the state's used exposure, both in 32-bit float.
+AE_USED_RELATIVE_TOLERANCE = 1e-5
 
 
 def validate_frame_jitter(manifest, label):
@@ -66,11 +78,15 @@ def validate_rr_metadata(manifest, names):
     if not rr['provider'] or rr['quality'] not in RR_QUALITIES or not rr['preset']:
         raise ValueError('Invalid RR provider/quality/preset')
     exposure = rr['exposure']
+    if manifest.get('exposure_mode') == 'Auto':
+        exposure_valid = exposure is None and rr.get('exposure_source') == 'auto_exposure_used'
+    else:
+        exposure_valid = (rr.get('exposure_source', 'display_exposure') == 'display_exposure' and
+                          math.isfinite(exposure) and exposure > 0)
     if (rr['depth_encoding'] != 'forward_positive_linear_view_depth_sky_5000000' or
             rr['motion_convention'] != 'current_to_previous_render_pixels_without_jitter' or
             rr['exposure_policy'] != 'explicit_exposure_texture_preexposure_1_scale_1' or
-            rr['micro_jitter'] != 0 or rr['view_forward_sign'] not in RR_FORWARD_SIGNS or
-            not math.isfinite(exposure) or exposure <= 0):
+            rr['micro_jitter'] != 0 or rr['view_forward_sign'] not in RR_FORWARD_SIGNS or not exposure_valid):
         raise ValueError('Unexpected RR input semantics')
     if manifest['nrd_instances'] != 0 or any(name.startswith(('history_confidence', 'sr_')) for name in names):
         raise ValueError('RR capture must contain no NRD or super resolution work')
@@ -104,8 +120,28 @@ def validate_rr_values(name, values, rr):
                 raise ValueError('RR roughness outside [0,1]')
     if name in RR_ALBEDOS and not all(0 <= v <= 1 for v in values):
         raise ValueError(f'RR albedo outside [0,1]: {name}')
-    if name == RR_EXPOSURE and values != [rr['exposure']]:
+    if name == RR_EXPOSURE and rr['exposure'] is not None and values != [rr['exposure']]:
         raise ValueError('RR exposure texture differs from the reported exposure')
+
+
+def validate_auto_exposure(manifest, names, values):
+    mode = manifest.get('exposure_mode', 'Manual')
+    if mode not in ('Manual', 'Auto'):
+        raise ValueError('Unknown exposure mode')
+    auto = mode == 'Auto'
+    if auto != (manifest.get('auto_exposure') is not None) or auto != (AE_FORMATS.keys() <= names):
+        raise ValueError('Auto exposure resources must be exported exactly with auto exposure')
+    if not auto:
+        if AE_FORMATS.keys() & names:
+            raise ValueError('Manual exposure capture exports auto exposure resources')
+        return
+    used, state = values[AE_USED][0], values[AE_NEXT]
+    if not used > 0:
+        raise ValueError('Auto exposure used a non-positive exposure')
+    if abs(2.0 ** state[AE_STATE_USED_EV] - used) > AE_USED_RELATIVE_TOLERANCE * used:
+        raise ValueError('Auto exposure state was written by another frame than the used exposure')
+    if manifest['mode'] == 'RealtimeDLSSRR' and values.get(RR_EXPOSURE) != [used]:
+        raise ValueError('RR read another exposure than the frame used')
 
 
 def validate(directory: Path, require_host=False):
@@ -148,6 +184,7 @@ def validate(directory: Path, require_host=False):
             raise ValueError("Native capture must contain every layer's history confidence and no noisy HDR")
     files = {}
     color = None
+    exposures = {}
     for resource in manifest["resources"] + [manifest["layers"]]:
         path = directory / resource["file"]
         if path.resolve().parent != directory.resolve():
@@ -169,7 +206,11 @@ def validate(directory: Path, require_host=False):
             validate_layout(manifest, resource, *UPSCALING[mode])
         if resource['name'] == BLOOM:
             validate_layout(manifest, resource, 'Bloom', BLOOM_FORMATS, (BLOOM,))
-        if fmt in ("TEX_FORMAT_RGBA16_FLOAT", "TEX_FORMAT_RG16_FLOAT", "TEX_FORMAT_R32_FLOAT"):
+        if resource['name'] in AE_FORMATS:
+            if (fmt != AE_FORMATS[resource['name']] or [resource['width'], resource['height']] != AE_EXTENTS[resource['name']] or
+                    resource['slices'] != 1 or resource['row_bytes'] != resource['width'] * PIXEL_BYTES[fmt]):
+                raise ValueError(f'Invalid auto exposure layout: {resource["name"]}')
+        if fmt in FLOAT_FORMATS:
             values = [v[0] for v in struct.iter_unpack("<e" if "16" in fmt else "<f", data)]
             if not all(math.isfinite(v) for v in values):
                 raise ValueError(f"Nonfinite current-frame signal: {path.name}")
@@ -180,6 +221,9 @@ def validate(directory: Path, require_host=False):
                 validate_rr_values(resource['name'], values, manifest['ray_reconstruction'])
             if resource["name"] == color_name:
                 color = (resource, values)
+            if resource['name'] in AE_FORMATS or resource['name'] == RR_EXPOSURE:
+                exposures[resource['name']] = values
+    validate_auto_exposure(manifest, names, exposures)
     if color is None:
         raise ValueError(f"Missing {color_name} HDR")
     timing = manifest["gpu_timing"]

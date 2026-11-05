@@ -56,6 +56,7 @@ set(INCLUDE
     src/RTXPTEmissiveTrianglePass.hpp
     src/RTXPTComputePass.hpp
     src/RTXPTAccumulationPass.hpp
+    src/RTXPTAutoExposure.hpp
     src/RTXPTBloomPass.hpp
     src/RTXPTDisplayBloom.hpp
     src/RTXPTSuperResolutionPass.hpp
@@ -139,6 +140,8 @@ set(SHADERS
     shaders/PostProcessing/RTXPTTemporalAAInputs.csh
     shaders/PostProcessing/RTXPTSuperResolutionInputs.csh
     shaders/PostProcessing/RTXPTDenoiserNRD.hlsli
+    shaders/PostProcessing/RTXPTAutoExposureShared.h
+    shaders/PostProcessing/RTXPTAutoExposure.csh
     shaders/PostProcessing/RTXPTBloomShared.h
     shaders/PostProcessing/RTXPTBloomCopy.psh
     shaders/PostProcessing/RTXPTBloomBlur.psh

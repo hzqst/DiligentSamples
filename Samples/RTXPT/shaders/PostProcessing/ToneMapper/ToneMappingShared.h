@@ -3,6 +3,12 @@
 
 #define RTXPT_TONEMAPPING_EXPOSURE_KEY 0.042
 
+// Where the exposure comes from: ColorTransform alone, the Sample's auto exposure (the mean of the luminance mips) on
+// top of it, or a resolved exposure texture (t_Exposure) on top of a ColorTransform without exposure.
+#define RTXPT_TONEMAPPING_EXPOSURE_PARAMETERS 0
+#define RTXPT_TONEMAPPING_EXPOSURE_MEASURED   1
+#define RTXPT_TONEMAPPING_EXPOSURE_RESOLVED   2
+
 enum RTXPTToneMapperOperator
 {
     RTXPTToneMapperOperator_Linear           = 0,
@@ -19,7 +25,7 @@ struct RTXPTToneMappingConstants
     float    WhiteMaxLuminance;
     uint     ToneMapOperator;
     uint     Clamped;
-    uint     AutoExposure;
+    uint     ExposureSource;
     float    AvgLuminance;
     float    AutoExposureLumValueMin;
     float    AutoExposureLumValueMax;

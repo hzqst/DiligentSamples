@@ -148,6 +148,10 @@ enum class RTXPTErrorCode : Uint32
     // Display Bloom of an embedded view
     BloomSetupFailed,
     BloomFailed,
+
+    // Auto exposure of an embedded view
+    AutoExposureSetupFailed,
+    AutoExposureFailed,
 };
 
 const char* GetRTXPTErrorCodeString(RTXPTErrorCode Code);

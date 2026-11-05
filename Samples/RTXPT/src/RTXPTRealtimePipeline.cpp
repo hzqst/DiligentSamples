@@ -54,6 +54,7 @@ RTXPTErrorCode RTXPTRealtimePipeline::Initialize(const RTXPTRealtimePipelineCrea
     m_SuperResolutionInputs.Reset();
     m_PixelList.Release();
     m_ReconstructionExposure.Release();
+    m_ReconstructionExposureRead.Release();
     m_Constants                     = CreateInfo.Constants;
     m_DisplayFormat                 = CreateInfo.DisplayFormat;
     m_Denoiser                      = CreateInfo.Denoiser;
@@ -167,7 +168,7 @@ RTXPTErrorCode RTXPTRealtimePipeline::Initialize(const RTXPTRealtimePipelineCrea
  * blurs and mixes a copy of that HDR (RTXPTDisplayBloom), and ToneMapping writes the host's explicit RTV at the display
  * size. Only completion of the entire chain publishes valid output.
  */
-RTXPTErrorCode RTXPTRealtimePipeline::Render(IDeviceContext* Context, RTXPTRayTracingPass& Rays, RTXPTLightsBaker& Lights, const SampleConstants& Input, const RTXPTToneMappingParameters& ToneParameters, const RTXPTBloomParameters& Bloom, const RTXPTRealtimeHistoryAttribs& History, ITextureView* DisplayRTV, RTXPTGpuProfiler* Profiler)
+RTXPTErrorCode RTXPTRealtimePipeline::Render(IDeviceContext* Context, RTXPTRayTracingPass& Rays, RTXPTLightsBaker& Lights, const SampleConstants& Input, const RTXPTToneMappingParameters& ToneParameters, const RTXPTBloomParameters& Bloom, RTXPTAutoExposure* AutoExposure, const RTXPTRealtimeHistoryAttribs& History, ITextureView* DisplayRTV, RTXPTGpuProfiler* Profiler)
 {
     m_Stats.OutputValid = false;
     if (!m_Ready)
@@ -179,7 +180,7 @@ RTXPTErrorCode RTXPTRealtimePipeline::Render(IDeviceContext* Context, RTXPTRayTr
         DisplayRTV->GetTexture()->GetDesc().Width != DisplayWidth || DisplayRTV->GetTexture()->GetDesc().Height != DisplayHeight ||
         Input.ptConsts.imageWidth != Width || Input.ptConsts.imageHeight != Height ||
         Input.ptConsts.NEEType > 1 || ToneParameters.AutoExposure || (m_SuperResolution && !History.Upscaler) ||
-        (bReconstruction && !History.Reconstruction))
+        (bReconstruction && !History.Reconstruction) || (AutoExposure && !AutoExposure->GetUsedExposure()))
         return RTXPTErrorCode::InvalidArgument;
 
     SampleConstants Constants = Input;
@@ -193,7 +194,16 @@ RTXPTErrorCode RTXPTRealtimePipeline::Render(IDeviceContext* Context, RTXPTRayTr
     PT.maxDenoisingLayerVertexDepth = std::min(PT.bounceCount, kMaxLayerVertexDepth);
     PT.genericTSLineStride          = static_cast<Uint32>(ComputeRTXPTLayerLineStride(Width));
     PT.genericTSPlaneStride         = static_cast<Uint32>(ComputeRTXPTLayerPlaneStride(Width, Height));
-    PT.preExposedGrayLuminance      = m_ToneMapping.ComputePreExposedGrayLuminance(ToneParameters, true);
+    if (AutoExposure)
+    {
+        RTXPTToneMappingParameters TraceClamp = ToneParameters;
+        TraceClamp.ExposureCompensation       = std::log2(RTXPTAutoExposureTraceClampExposure);
+        PT.preExposedGrayLuminance            = m_ToneMapping.ComputePreExposedGrayLuminance(TraceClamp, true);
+    }
+    else
+    {
+        PT.preExposedGrayLuminance = m_ToneMapping.ComputePreExposedGrayLuminance(ToneParameters, true);
+    }
     //Textures are sampled for the output resolution the upscaler or reconstruction produces.
     if (DisplayWidth != Width || DisplayHeight != Height)
         PT.texLODBias += RTXPTSuperResolutionInputs::ComputeTexLODBias(Width, Height, DisplayWidth, DisplayHeight);
@@ -270,7 +280,7 @@ RTXPTErrorCode RTXPTRealtimePipeline::Render(IDeviceContext* Context, RTXPTRayTr
     ++m_Stats.GuideBakes;
     if (bReconstruction)
     {
-        const auto Code = Reconstruct(Context, Constants, ToneParameters, History, Profiler);
+        const auto Code = Reconstruct(Context, Constants, ToneParameters, AutoExposure, History, Profiler);
         if (Code != RTXPTErrorCode::Ok)
             return Code;
     }
@@ -300,9 +310,16 @@ RTXPTErrorCode RTXPTRealtimePipeline::Render(IDeviceContext* Context, RTXPTRayTr
         if (Code != RTXPTErrorCode::Ok)
             return Code;
     }
-    //Every Execute of the upscaler or reconstruction flushes and invalidates the context state; Bloom and tone mapping
-    //set all of their own. Bloom leaves the HDR of the mode as the frame's captures publish it.
-    ITextureView* HDR        = m_SuperResolution || bReconstruction ? m_Targets.GetProcessedOutputColorSRV() : m_Targets.GetOutputColorSRV();
+    //Every Execute of the upscaler or reconstruction flushes and invalidates the context state; the meter, Bloom and tone
+    //mapping set all of their own. Auto exposure meters the HDR of the mode before Bloom, and Bloom leaves that HDR as
+    //the frame's captures publish it.
+    ITextureView* HDR = m_SuperResolution || bReconstruction ? m_Targets.GetProcessedOutputColorSRV() : m_Targets.GetOutputColorSRV();
+    if (AutoExposure)
+    {
+        const auto MeterCode = AutoExposure->Meter(Context, HDR->GetTexture(), DisplayWidth, DisplayHeight, Profiler);
+        if (MeterCode != RTXPTErrorCode::Ok)
+            return MeterCode;
+    }
     ITextureView* ToneSource = nullptr;
     const auto    BloomCode  = m_Bloom.Apply(Context, HDR->GetTexture(), Bloom, Profiler, ToneSource);
     if (BloomCode != RTXPTErrorCode::Ok)
@@ -313,6 +330,8 @@ RTXPTErrorCode RTXPTRealtimePipeline::Render(IDeviceContext* Context, RTXPTRayTr
     Tone.Width      = DisplayWidth;
     Tone.Height     = DisplayHeight;
     Tone.pParams    = &ToneParameters;
+    if (AutoExposure)
+        Tone.pExposureSRV = AutoExposure->GetUsedExposure()->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
     {
         RTXPTGpuProfiler::Scope Timing{Profiler, Context, RTXPTGpuProfiler::Stage::ToneMapping};
         if (!m_ToneMapping.Render(Context, Tone))
@@ -383,9 +402,11 @@ RTXPTErrorCode RTXPTRealtimePipeline::Upscale(IDeviceContext* Context, const Sam
  * frame's layers with the uploaded constants, then RR reconstructs the display-size HDR (ProcessedOutputColor). The
  * color stays scene-linear: RR receives the exposure tone mapping applies through the exposure texture (D4), with
  * PreExposure and ExposureScale 1, so the output stays in the input's scale and tone mapping alone applies the display
- * exposure. The rays carry RR's camera jitter alone (D5). Execute transitions every input and output.
+ * exposure. Manual exposure is written into the pipeline's own texture; auto exposure hands RR the view's used exposure
+ * of this frame, the texture tone mapping reads as well. The feature never runs its own auto exposure. The rays carry
+ * RR's camera jitter alone (D5). Execute transitions every input and output.
  */
-RTXPTErrorCode RTXPTRealtimePipeline::Reconstruct(IDeviceContext* Context, const SampleConstants& Constants, const RTXPTToneMappingParameters& ToneParameters, const RTXPTRealtimeHistoryAttribs& History, RTXPTGpuProfiler* Profiler)
+RTXPTErrorCode RTXPTRealtimePipeline::Reconstruct(IDeviceContext* Context, const SampleConstants& Constants, const RTXPTToneMappingParameters& ToneParameters, RTXPTAutoExposure* AutoExposure, const RTXPTRealtimeHistoryAttribs& History, RTXPTGpuProfiler* Profiler)
 {
 #if RTXPT_HAS_RAY_RECONSTRUCTION
     {
@@ -394,22 +415,25 @@ RTXPTErrorCode RTXPTRealtimePipeline::Reconstruct(IDeviceContext* Context, const
             return RTXPTErrorCode::RayReconstructionInputsFailed;
     }
     ++m_Stats.RayReconstructionPrepares;
-    const float Exposure = m_ReconstructionDisplayExposure ? m_ToneMapping.ComputeExposureScale(ToneParameters) : 1.0f;
-    if (!std::isfinite(Exposure) || !(Exposure > 0))
+    //The validation control that hands RR exposure 1 applies to both modes.
+    const bool  bAutoExposure = AutoExposure && m_ReconstructionDisplayExposure;
+    const float Exposure      = !m_ReconstructionDisplayExposure ? 1.0f : bAutoExposure ? 0.0f : m_ToneMapping.ComputeExposureScale(ToneParameters);
+    if (!bAutoExposure && (!std::isfinite(Exposure) || !(Exposure > 0)))
         return RTXPTErrorCode::RayReconstructionInputsFailed;
-    if (Exposure != m_ReconstructionExposureValue)
+    if (!bAutoExposure && Exposure != m_ReconstructionExposureValue)
     {
         Context->UpdateTexture(m_ReconstructionExposure, 0, 0, Box{0, 1, 0, 1}, TextureSubResData{&Exposure, sizeof(Exposure)},
                                RESOURCE_STATE_TRANSITION_MODE_TRANSITION, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
         m_ReconstructionExposureValue = Exposure;
     }
+    ITexture* ExposureTexture = bAutoExposure ? AutoExposure->GetUsedExposure() : m_ReconstructionExposure.RawPtr();
     //The forward sign MakeExecuteAttribs hands RR the depth basis with; a projection without one fails both.
     float ForwardSign = 0;
     if (!RTXPTRayReconstructionInputs::GetViewForwardSign(Constants.view.MatViewToClip, ForwardSign))
         return RTXPTErrorCode::RayReconstructionInputsFailed;
     ExecuteRayReconstructionAttribs Attribs;
     if (!RTXPTRayReconstructionInputs::MakeExecuteAttribsWithoutMicroJitter(Context, m_Targets, History.Reconstruction->GetDesc(), Constants, History.Reset,
-                                                                            m_ReconstructionExposure->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE), Attribs))
+                                                                            ExposureTexture->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE), Attribs))
         return RTXPTErrorCode::RayReconstructionInputsFailed;
     {
         RTXPTGpuProfiler::Scope Timing{Profiler, Context, RTXPTGpuProfiler::Stage::RR};
@@ -418,12 +442,14 @@ RTXPTErrorCode RTXPTRealtimePipeline::Reconstruct(IDeviceContext* Context, const
     }
     ++m_Stats.RayReconstructionExecutes;
     m_Stats.RayReconstructionResets += History.Reset ? 1u : 0u;
-    m_Stats.RayReconstructionExposure    = Exposure;
-    m_Stats.RayReconstructionForwardSign = ForwardSign;
+    m_Stats.RayReconstructionExposure     = Exposure;
+    m_Stats.RayReconstructionAutoExposure = bAutoExposure;
+    m_Stats.RayReconstructionForwardSign  = ForwardSign;
+    m_ReconstructionExposureRead          = ExposureTexture;
     return RTXPTErrorCode::Ok;
 #else
     //Initialize rejects DLSSRR when the library has no ray reconstruction interface.
-    (void)Context, (void)Constants, (void)ToneParameters, (void)History, (void)Profiler;
+    (void)Context, (void)Constants, (void)ToneParameters, (void)AutoExposure, (void)History, (void)Profiler;
     return RTXPTErrorCode::RayReconstructionUnavailable;
 #endif
 }
