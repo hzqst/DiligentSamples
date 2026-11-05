@@ -40,8 +40,10 @@ enum class RTXPTViewMode
 };
 
 //The DLSS quality of RealtimeDLSSSR. Each is queried exactly; an unsupported one fails rather than another substituting.
+//Native (DLAA) renders at the display size and still runs the upscaler as temporal anti-aliasing.
 enum class RTXPTUpscaleQuality
 {
+    Native,
     Quality,
     Balanced,
     Performance,

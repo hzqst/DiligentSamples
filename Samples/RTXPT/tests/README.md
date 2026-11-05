@@ -1608,8 +1608,10 @@ invalidates the output and the next frame restarts NRD and DLSS history.
 any failure. A test double of the factory forwards to the real DLSS provider,
 records every Execute and injects failures:
 
-- S05: Quality, Balanced and Performance at 1280x720 and Quality at 1281x721 render at
-  exactly the size of an independent query and create one DLSS feature for it; one
+- S05: Quality, Balanced and Performance at 1280x720, Quality at 1281x721 and Native
+  (DLAA, `SUPER_RESOLUTION_OPTIMIZATION_TYPE_NATIVE`) at 1280x720 render at exactly the
+  size of an independent query, which is the display size for Native, and create one
+  DLSS feature for it with the queried optimization type; one
   accepted Execute per frame, only the first restarts history, the jitter follows the
   successful frame count, inputs are at render size and the output at display size.
   At display exposures 1, 0.5 and 2 the upscaled HDR keeps the mean luminance of its

@@ -57,19 +57,20 @@ struct RTXPTSuperResolutionSettings
 
 struct RTXPTSuperResolutionFrameDesc
 {
-    RTXPTRenderTargetDimensions Dimensions;
-    INTERFACE_ID                VariantId        = {};
-    SUPER_RESOLUTION_TYPE       Type             = SUPER_RESOLUTION_TYPE_SPATIAL;
-    TEXTURE_FORMAT              ColorFormat      = TEX_FORMAT_UNKNOWN;
-    TEXTURE_FORMAT              DepthFormat      = TEX_FORMAT_UNKNOWN;
-    TEXTURE_FORMAT              MotionFormat     = TEX_FORMAT_UNKNOWN;
-    TEXTURE_FORMAT              OutputFormat     = TEX_FORMAT_UNKNOWN;
-    bool                        Enabled          = false;
-    bool                        Temporal         = false;
-    bool                        ResetHistory     = false;
-    float2                      Jitter           = float2{0.0f, 0.0f};
-    float                       Sharpness        = 0.0f;
-    float                       TimeDeltaSeconds = 0.0f;
+    RTXPTRenderTargetDimensions        Dimensions;
+    INTERFACE_ID                       VariantId        = {};
+    SUPER_RESOLUTION_TYPE              Type             = SUPER_RESOLUTION_TYPE_SPATIAL;
+    SUPER_RESOLUTION_OPTIMIZATION_TYPE OptimizationType = SUPER_RESOLUTION_OPTIMIZATION_TYPE_BALANCED;
+    TEXTURE_FORMAT                     ColorFormat      = TEX_FORMAT_UNKNOWN;
+    TEXTURE_FORMAT                     DepthFormat      = TEX_FORMAT_UNKNOWN;
+    TEXTURE_FORMAT                     MotionFormat     = TEX_FORMAT_UNKNOWN;
+    TEXTURE_FORMAT                     OutputFormat     = TEX_FORMAT_UNKNOWN;
+    bool                               Enabled          = false;
+    bool                               Temporal         = false;
+    bool                               ResetHistory     = false;
+    float2                             Jitter           = float2{0.0f, 0.0f};
+    float                              Sharpness        = 0.0f;
+    float                              TimeDeltaSeconds = 0.0f;
 };
 
 struct RTXPTSuperResolutionExecuteAttribs

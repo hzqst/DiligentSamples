@@ -353,7 +353,7 @@ void Tutorial27_PostProcessing::Update(double CurrTime, double ElapsedTime, bool
         SRAttribs.OutputFormat     = m_ShaderSettings->IsTemporalUpscaling() ? TEX_FORMAT_R11G11B10_FLOAT : TEX_FORMAT_RGBA8_UNORM_SRGB;
         SRAttribs.Flags            = m_ShaderSettings->IsTemporalUpscaling() ? SUPER_RESOLUTION_FLAG_AUTO_EXPOSURE : SUPER_RESOLUTION_FLAG_NONE;
         SRAttribs.OptimizationType = m_ShaderSettings->SROptimizationType;
-        if (!m_pSRFactory->GetSourceSettings(SRAttribs, SRSettings))
+        if (m_pSRFactory->GetSourceSettings(SRAttribs, SRSettings) != SUPER_RESOLUTION_SOURCE_SETTINGS_STATUS_SUCCESS)
         {
             // The selected optimization type is unavailable for this variant; render at the output resolution.
             SRSettings.OptimalInputWidth  = SCDesc.Width;
@@ -632,6 +632,7 @@ void Tutorial27_PostProcessing::PrepareResources()
             const auto& Desc = m_pSRUpscaler->GetDesc();
             NeedRecreate =
                 Desc.VariantId != VariantId ||
+                Desc.OptimizationType != m_ShaderSettings->SROptimizationType ||
                 Desc.InputWidth != m_PostFXFrameDesc.Width ||
                 Desc.InputHeight != m_PostFXFrameDesc.Height ||
                 Desc.OutputWidth != SCDesc.Width ||
@@ -642,12 +643,13 @@ void Tutorial27_PostProcessing::PrepareResources()
         {
 
             SuperResolutionDesc UpscalerDesc;
-            UpscalerDesc.VariantId    = VariantId;
-            UpscalerDesc.InputWidth   = m_PostFXFrameDesc.Width;
-            UpscalerDesc.InputHeight  = m_PostFXFrameDesc.Height;
-            UpscalerDesc.OutputWidth  = SCDesc.Width;
-            UpscalerDesc.OutputHeight = SCDesc.Height;
-            UpscalerDesc.Flags        = m_ShaderSettings->IsTemporalUpscaling() ? SUPER_RESOLUTION_FLAG_AUTO_EXPOSURE : SUPER_RESOLUTION_FLAG_NONE;
+            UpscalerDesc.VariantId        = VariantId;
+            UpscalerDesc.InputWidth       = m_PostFXFrameDesc.Width;
+            UpscalerDesc.InputHeight      = m_PostFXFrameDesc.Height;
+            UpscalerDesc.OutputWidth      = SCDesc.Width;
+            UpscalerDesc.OutputHeight     = SCDesc.Height;
+            UpscalerDesc.Flags            = m_ShaderSettings->IsTemporalUpscaling() ? SUPER_RESOLUTION_FLAG_AUTO_EXPOSURE : SUPER_RESOLUTION_FLAG_NONE;
+            UpscalerDesc.OptimizationType = m_ShaderSettings->SROptimizationType;
 
             if (m_ShaderSettings->SupportsSharpness())
                 UpscalerDesc.Flags = UpscalerDesc.Flags | SUPER_RESOLUTION_FLAG_ENABLE_SHARPENING;

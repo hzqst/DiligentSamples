@@ -445,11 +445,29 @@ void CheckExecuteAdapter(IRenderDevice* Device, IDeviceContext* Context)
                 Desc.OutputHeight == kDisplayHeight && Desc.Flags == SUPER_RESOLUTION_FLAG_NONE &&
                 Desc.ColorFormat == TEX_FORMAT_RGBA16_FLOAT && Desc.OutputFormat == TEX_FORMAT_RGBA16_FLOAT &&
                 Desc.DepthFormat == TEX_FORMAT_R32_FLOAT && Desc.MotionFormat == TEX_FORMAT_RG16_FLOAT &&
-                Desc.ExposureFormat == TEX_FORMAT_R16_FLOAT && Desc.ReactiveMaskFormat == TEX_FORMAT_UNKNOWN,
+                Desc.ExposureFormat == TEX_FORMAT_R16_FLOAT && Desc.ReactiveMaskFormat == TEX_FORMAT_UNKNOWN &&
+                Desc.OptimizationType == Query.OptimizationType,
             "MakeDesc produced an unexpected description");
     const RTXPTRenderTargetDimensions Dimensions = RTXPTSuperResolutionInputs::MakeDimensions(Desc);
     Require(Dimensions == RTXPTRenderTargetDimensions{kRenderWidth, kRenderHeight, kDisplayWidth, kDisplayHeight, true} && Dimensions.IsValid(),
             "Render targets must use the input size for guides and the output size for display");
+
+    //Native resolution (DLAA) traces at the display size and still keeps the upscaler's input and output separate.
+    auto NativeQuery                = Query;
+    NativeQuery.OptimizationType    = SUPER_RESOLUTION_OPTIMIZATION_TYPE_NATIVE;
+    auto NativeSource               = Source;
+    NativeSource.OptimalInputWidth  = kDisplayWidth;
+    NativeSource.OptimalInputHeight = kDisplayHeight;
+    NativeSource.MinInputWidth      = kDisplayWidth;
+    NativeSource.MinInputHeight     = kDisplayHeight;
+    SuperResolutionDesc NativeDesc;
+    Require(RTXPTSuperResolutionInputs::MakeDesc(NativeQuery, NativeSource, NativeDesc) &&
+                NativeDesc.InputWidth == kDisplayWidth && NativeDesc.InputHeight == kDisplayHeight &&
+                NativeDesc.OptimizationType == SUPER_RESOLUTION_OPTIMIZATION_TYPE_NATIVE,
+            "MakeDesc must describe a native resolution upscaler at the display size");
+    const RTXPTRenderTargetDimensions NativeDimensions = RTXPTSuperResolutionInputs::MakeDimensions(NativeDesc);
+    Require(NativeDimensions == RTXPTRenderTargetDimensions{kDisplayWidth, kDisplayHeight, kDisplayWidth, kDisplayHeight, true} && NativeDimensions.IsValid(),
+            "Native resolution must keep separate super resolution targets");
 
     const auto RejectsQuery = [&](const char* Name, auto&& Change) {
         auto BadQuery  = Query;

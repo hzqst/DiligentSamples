@@ -59,7 +59,8 @@ bool UpscalerDescMatches(const SuperResolutionDesc& Lhs, const SuperResolutionDe
         Lhs.ColorFormat == Rhs.ColorFormat &&
         Lhs.DepthFormat == Rhs.DepthFormat &&
         Lhs.MotionFormat == Rhs.MotionFormat &&
-        Lhs.Flags == Rhs.Flags;
+        Lhs.Flags == Rhs.Flags &&
+        Lhs.OptimizationType == Rhs.OptimizationType;
 }
 
 RTXPTSuperResolutionFrameDesc MakeDirectFrameDesc(Uint32                              DisplayWidth,
@@ -255,7 +256,7 @@ RTXPTSuperResolutionFrameDesc RTXPTSuperResolutionPass::ResolveFrameDesc(const R
     SRAttribs.OptimizationType = Settings.OptimizationType;
 
     SuperResolutionSourceSettings SRSettings;
-    if (!m_Factory->GetSourceSettings(SRAttribs, SRSettings))
+    if (m_Factory->GetSourceSettings(SRAttribs, SRSettings) != SUPER_RESOLUTION_SOURCE_SETTINGS_STATUS_SUCCESS)
     {
         // The provider never substitutes another quality mode; report the unavailable selection.
         m_Stats.DisabledReason = "super resolution quality mode unavailable for the output resolution";
@@ -270,6 +271,7 @@ RTXPTSuperResolutionFrameDesc RTXPTSuperResolutionPass::ResolveFrameDesc(const R
     FrameDesc.Temporal                         = true;
     FrameDesc.Type                             = pVariant->Type;
     FrameDesc.VariantId                        = pVariant->VariantId;
+    FrameDesc.OptimizationType                 = SRAttribs.OptimizationType;
     if (!FrameDesc.Dimensions.IsValid())
     {
         DEV_ERROR("RTXPT super resolution dimensions are invalid");
@@ -316,17 +318,18 @@ bool RTXPTSuperResolutionPass::EnsureUpscaler(const RTXPTSuperResolutionFrameDes
     }
 
     SuperResolutionDesc Desc;
-    Desc.Name         = "RTXPT super resolution upscaler";
-    Desc.VariantId    = FrameDesc.VariantId;
-    Desc.InputWidth   = FrameDesc.Dimensions.RenderWidth;
-    Desc.InputHeight  = FrameDesc.Dimensions.RenderHeight;
-    Desc.OutputWidth  = FrameDesc.Dimensions.DisplayWidth;
-    Desc.OutputHeight = FrameDesc.Dimensions.DisplayHeight;
-    Desc.OutputFormat = FrameDesc.OutputFormat;
-    Desc.ColorFormat  = FrameDesc.ColorFormat;
-    Desc.DepthFormat  = FrameDesc.DepthFormat;
-    Desc.MotionFormat = FrameDesc.MotionFormat;
-    Desc.Flags        = GetFlags(*VariantIt, FrameDesc.Sharpness);
+    Desc.Name             = "RTXPT super resolution upscaler";
+    Desc.VariantId        = FrameDesc.VariantId;
+    Desc.InputWidth       = FrameDesc.Dimensions.RenderWidth;
+    Desc.InputHeight      = FrameDesc.Dimensions.RenderHeight;
+    Desc.OutputWidth      = FrameDesc.Dimensions.DisplayWidth;
+    Desc.OutputHeight     = FrameDesc.Dimensions.DisplayHeight;
+    Desc.OutputFormat     = FrameDesc.OutputFormat;
+    Desc.ColorFormat      = FrameDesc.ColorFormat;
+    Desc.DepthFormat      = FrameDesc.DepthFormat;
+    Desc.MotionFormat     = FrameDesc.MotionFormat;
+    Desc.Flags            = GetFlags(*VariantIt, FrameDesc.Sharpness);
+    Desc.OptimizationType = FrameDesc.OptimizationType;
 
     if (m_Upscaler && UpscalerDescMatches(m_UpscalerDesc, Desc))
     {

@@ -80,9 +80,14 @@ public:
                      << (bAuto ? "{\"used\":\"auto_exposure_used\",\"next\":\"auto_exposure_next\",\"state_layout\":\"shaders/PostProcessing/RTXPTAutoExposureShared.h\"}" : "null") << ',';
             if (bSR)
             {
-                const char* Quality = SR.Quality == RTXPTUpscaleQuality::Quality ? "Quality" :
-                                                                                   SR.Quality == RTXPTUpscaleQuality::Balanced ? "Balanced" :
-                                                                                                                                 "Performance";
+                const char* Quality = "Performance";
+                switch (SR.Quality)
+                {
+                    case RTXPTUpscaleQuality::Native: Quality = "Native"; break;
+                    case RTXPTUpscaleQuality::Quality: Quality = "Quality"; break;
+                    case RTXPTUpscaleQuality::Balanced: Quality = "Balanced"; break;
+                    case RTXPTUpscaleQuality::Performance: break;
+                }
                 const nlohmann::json Metadata = {
                     {"provider", SR.Variant}, {"quality", Quality}, {"executes", SR.Executes}, {"resets", SR.Resets}, {"failures", SR.Failures}, {"last_reset", SR.LastReset}, {"depth_encoding", "forward_projection_0_1_far_1"}, {"motion_convention", "current_to_previous_render_pixels_without_jitter"}, {"exposure_policy", "explicit_1_preexposure_1_scale_1"}};
                 Manifest << "\"super_resolution\":" << Metadata.dump() << ',';

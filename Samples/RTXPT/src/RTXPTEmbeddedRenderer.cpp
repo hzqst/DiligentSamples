@@ -37,6 +37,7 @@ SUPER_RESOLUTION_OPTIMIZATION_TYPE ToOptimizationType(RTXPTUpscaleQuality Qualit
 {
     switch (Quality)
     {
+        case RTXPTUpscaleQuality::Native: return SUPER_RESOLUTION_OPTIMIZATION_TYPE_NATIVE;
         case RTXPTUpscaleQuality::Quality: return SUPER_RESOLUTION_OPTIMIZATION_TYPE_HIGH_QUALITY;
         case RTXPTUpscaleQuality::Balanced: return SUPER_RESOLUTION_OPTIMIZATION_TYPE_BALANCED;
         case RTXPTUpscaleQuality::Performance: return SUPER_RESOLUTION_OPTIMIZATION_TYPE_HIGH_PERFORMANCE;
@@ -382,7 +383,8 @@ struct RTXPTEmbeddedView::Impl
         Query.OptimizationType = ToOptimizationType(Quality);
         SuperResolutionSourceSettings Source;
         SuperResolutionDesc           Desc;
-        if (Query.OptimizationType == SUPER_RESOLUTION_OPTIMIZATION_TYPE_COUNT || !Factory->GetSourceSettings(Query, Source) ||
+        if (Query.OptimizationType == SUPER_RESOLUTION_OPTIMIZATION_TYPE_COUNT ||
+            Factory->GetSourceSettings(Query, Source) != SUPER_RESOLUTION_SOURCE_SETTINGS_STATUS_SUCCESS ||
             !RTXPTSuperResolutionInputs::MakeDesc(Query, Source, Desc))
             return RTXPTErrorCode::SuperResolutionQueryFailed;
         Factory->CreateSuperResolution(Desc, &Upscaler);

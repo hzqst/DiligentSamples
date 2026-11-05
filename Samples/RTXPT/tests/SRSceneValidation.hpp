@@ -84,17 +84,18 @@ public:
         else
             m_Inner->EnumerateVariants(NumVariants, Variants);
     }
-    Bool DILIGENT_CALL_TYPE GetSourceSettings(const SuperResolutionSourceSettingsAttribs& Attribs, SuperResolutionSourceSettings& Settings) const override final
+    SUPER_RESOLUTION_SOURCE_SETTINGS_STATUS DILIGENT_CALL_TYPE GetSourceSettings(const SuperResolutionSourceSettingsAttribs& Attribs, SuperResolutionSourceSettings& Settings) const override final
     {
         ++Queries;
-        if (m_Fault == SRFactoryFault::Query || !m_Inner->GetSourceSettings(Attribs, Settings))
+        const SUPER_RESOLUTION_SOURCE_SETTINGS_STATUS Status = m_Fault == SRFactoryFault::Query ? SUPER_RESOLUTION_SOURCE_SETTINGS_STATUS_UNSUPPORTED : m_Inner->GetSourceSettings(Attribs, Settings);
+        if (Status != SUPER_RESOLUTION_SOURCE_SETTINGS_STATUS_SUCCESS)
         {
             Settings = {};
-            return False;
+            return Status;
         }
         if (m_Fault == SRFactoryFault::Range)
             Settings.OptimalInputWidth = Settings.MaxInputWidth + 1;
-        return True;
+        return Status;
     }
     void DILIGENT_CALL_TYPE CreateSuperResolution(const SuperResolutionDesc& Desc, ISuperResolution** ppUpscaler) override final
     {
@@ -125,6 +126,8 @@ private:
 //The display sizes the views are validated at: the M4.0 query size and an odd one (S04).
 constexpr Uint32 kSRValidationWidth = 1280, kSRValidationHeight = 720;
 constexpr Uint32 kSRValidationOddWidth = 1281, kSRValidationOddHeight = 721;
+//One past the last RTXPTUpscaleQuality, which the view must reject without querying.
+constexpr RTXPTUpscaleQuality kSRValidationUnknownQuality = static_cast<RTXPTUpscaleQuality>(static_cast<int>(RTXPTUpscaleQuality::Performance) + 1);
 //The upscaled mean luminance relative to its input's. Applying the display exposure (0.5 or 2) inside the upscaler
 //would move it by 2x; the allowance covers DLSS reconstruction differences of a static scene.
 constexpr double kSRValidationLuminanceTolerance = 0.1;
@@ -273,6 +276,7 @@ void RTXPTSample::RunSuperResolutionValidation()
         {RTXPTUpscaleQuality::Balanced, SUPER_RESOLUTION_OPTIMIZATION_TYPE_BALANCED, "Balanced", Display},
         {RTXPTUpscaleQuality::Performance, SUPER_RESOLUTION_OPTIMIZATION_TYPE_HIGH_PERFORMANCE, "Performance", Display},
         {RTXPTUpscaleQuality::Quality, SUPER_RESOLUTION_OPTIMIZATION_TYPE_HIGH_QUALITY, "Quality (odd display)", {kSRValidationOddWidth, kSRValidationOddHeight}},
+        {RTXPTUpscaleQuality::Native, SUPER_RESOLUTION_OPTIMIZATION_TYPE_NATIVE, "Native", Display},
     };
     for (const QualityCase& Case : Qualities)
     {
@@ -284,7 +288,7 @@ void RTXPTSample::RunSuperResolutionValidation()
         Query.OutputFormat     = RTXPTRenderTargetFormats{}.ProcessedOutputColor;
         Query.OptimizationType = Case.Type;
         SuperResolutionSourceSettings Expected;
-        if (!Check(Provider->GetSourceSettings(Query, Expected), Name + ": DLSS does not support the display size"))
+        if (!Check(Provider->GetSourceSettings(Query, Expected) == SUPER_RESOLUTION_SOURCE_SETTINGS_STATUS_SUCCESS, Name + ": DLSS does not support the display size"))
             continue;
         auto           Factory = MakeFactory(SRFactoryFault::None);
         RTXPTErrorCode Code    = RTXPTErrorCode::Ok;
@@ -296,7 +300,8 @@ void RTXPTSample::RunSuperResolutionValidation()
         const RTXPTViewSize        RenderSize{Expected.OptimalInputWidth, Expected.OptimalInputHeight};
         Check(SameSize(View->GetRenderSize(), RenderSize) && SameSize(View->GetDisplaySize(), Case.Display), Name + ": the render size is not the query's");
         Check(Desc.VariantId == VariantId_DLSS && Desc.InputWidth == RenderSize.Width && Desc.InputHeight == RenderSize.Height &&
-                  Desc.OutputWidth == Case.Display.Width && Desc.OutputHeight == Case.Display.Height && Desc.Flags == SUPER_RESOLUTION_FLAG_NONE,
+                  Desc.OutputWidth == Case.Display.Width && Desc.OutputHeight == Case.Display.Height && Desc.Flags == SUPER_RESOLUTION_FLAG_NONE &&
+                  Desc.OptimizationType == Case.Type,
               Name + ": the feature does not match the query");
         Check(View->GetSuperResolutionInfo().Variant == DLSS.Name && View->GetSuperResolutionInfo().Quality == Case.Quality &&
                   SameSize(View->GetSuperResolutionInfo().RenderSize, RenderSize),
@@ -353,7 +358,7 @@ void RTXPTSample::RunSuperResolutionValidation()
             Check(Factory->CreateAttempts == (Fault == SRFactoryFault::Create ? 1u : 0u), std::string{Name} + ": a feature was created for an unsupported query");
         }
         auto Factory = MakeFactory(SRFactoryFault::None);
-        CreateView(RTXPTViewMode::RealtimeDLSSSR, Display, static_cast<RTXPTUpscaleQuality>(3), Factory, Code);
+        CreateView(RTXPTViewMode::RealtimeDLSSSR, Display, kSRValidationUnknownQuality, Factory, Code);
         CheckCode(RTXPTErrorCode::SuperResolutionQueryFailed, Code, "unknown quality");
         Check(Factory->Queries == 0 && Factory->CreateAttempts == 0, "unknown quality: queried or created");
         CreateView(RTXPTViewMode::RealtimeDLSSSR, Display, RTXPTUpscaleQuality::Quality, Factory, Code, Display);
