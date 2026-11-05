@@ -5,6 +5,7 @@
 #include "RTXPTFrameConstants.hpp"
 #include "RTXPTSceneRuntime.hpp"
 #include "RTXPTSceneHistory.hpp"
+#include "RTXPTBloomPass.hpp"
 #include "RTXPTToneMappingPass.hpp"
 #include "RenderDevice.h"
 #include "DeviceContext.h"
@@ -19,6 +20,7 @@ struct RTXPTSceneFrameStats;
 struct IRenderStateCache;
 struct IPipelineStateCache;
 struct RTXPTRealtimeStats;
+struct RTXPTDisplayBloomStats;
 class RTXPTGpuProfiler;
 struct ISuperResolutionFactory;
 struct IRayReconstructionFactory;
@@ -60,8 +62,8 @@ enum class RTXPTRayReconstructionQuality
 //with RTXPTScene/RTXPTMaterials. It has two layers, so the views of one scene share what depends on the scene alone:
 // - RTXPTEmbeddedScene: the runtime scene of a loaded scene, its GPU frame (acceleration structures, lights, emissive
 //   triangles) and its environment.
-// - RTXPTEmbeddedView: the frame targets, light sampling and path tracing bindings, accumulation history and tone
-//   mapping of one camera at one size. A new size or a new camera needs only a new view.
+// - RTXPTEmbeddedView: the frame targets, light sampling and path tracing bindings, accumulation history, Bloom and
+//   tone mapping of one camera at one size. A new size or a new camera needs only a new view.
 //The host owns the render state cache and the optional native pipeline cache, so objects it recreates reuse the shaders
 //and pipelines compiled for earlier ones. Scenes and views keep references to both, which the shaders and pipelines
 //created from them need until they are released.
@@ -127,6 +129,9 @@ enum class RTXPTViewOutput
     RayReconstructionSpecularAlbedo,
     //DLSSRR only: the 1x1 R32F exposure the reconstruction read (D4).
     RayReconstructionExposure,
+    //Every mode, when the latest Render applied Bloom (RTXPTViewDisplaySettings::Bloom): the display-size linear HDR
+    //after Bloom, before tone mapping (RGBA16F). The HDR of the mode that Bloom read keeps its own output above.
+    BloomRadiance,
 };
 
 enum class RTXPTOutputEncoding
@@ -142,18 +147,26 @@ constexpr float RTXPTMinDisplayExposure  = 1.0f / 4294967296.0f;
 constexpr float RTXPTMaxDisplayExposure  = 4294967296.0f;
 constexpr float RTXPTMinToneMappingWhite = 1.0f / 64.0f;
 constexpr float RTXPTMaxToneMappingWhite = 65536.0f;
+//The Bloom range of the Sample's controls: a radius of [0, 64] display pixels, whose quarter clamped to [1, 100] is the
+//sigma of the blur, and an intensity of [0, 0.1], the weight of the blurred image in the mix.
+constexpr float RTXPTMaxBloomRadius    = 64.0f;
+constexpr float RTXPTMaxBloomIntensity = 0.1f;
 
 //The display transform of one Render. Exposure is the linear multiplier tone mapping applies to the scene-linear HDR
 //before ToneMapOperator, and the exposure ray reconstruction and the realtime firefly and brightness clamps scale
 //with. WhiteMaxLuminance is the white point of ReinhardModified and WhiteScale that of HableUc2; each operator ignores
-//the other's. Render rejects values outside the ranges above or an unknown operator instead of clamping them. None of
-//them rescales the accumulated, noisy, denoised or reconstructed HDR, and changing them restarts no history.
+//the other's. Bloom is the Sample's Bloom (RTXPTBloomPass) on the display-size HDR before tone mapping:
+//(1 - Intensity) * HDR + Intensity * HDR blurred at a quarter of the display width and height. It is off by default,
+//unlike the Sample's controls; a zero radius or intensity bypasses it as Enabled = false does. Render rejects values outside
+//the ranges above or an unknown operator instead of clamping them. None of them rescales or blurs the accumulated,
+//noisy, denoised, upscaled or reconstructed HDR, and changing them restarts no history.
 struct RTXPTViewDisplaySettings
 {
     float                   Exposure          = 1.0f;
     RTXPTToneMapperOperator ToneMapOperator   = RTXPTToneMapperOperator::Reinhard;
     float                   WhiteMaxLuminance = 1.0f;
     float                   WhiteScale        = 5.1f;
+    RTXPTBloomParameters    Bloom{false};
 };
 
 //The tone mapping parameters Render applies for Display: manual exposure with the default camera (ISO 100, f/1, 1 s, a
@@ -329,11 +342,13 @@ public:
     const RTXPTViewSuperResolutionInfo&   GetSuperResolutionInfo() const;
     const RTXPTViewRayReconstructionInfo& GetRayReconstructionInfo() const;
     const RTXPTRealtimeStats&             GetRealtimeStats() const;
-    IBuffer*                              GetRealtimeLayerBuffer() const;
-    const RTXPTViewHistoryInfo&           GetHistoryInfo() const;
-    Uint32                                GetTraceCount() const;
-    Uint32                                GetAccumulationCount() const;
-    RTXPTGpuProfiler&                     GetProfiler();
+    //The display Bloom of the view since Initialize (RTXPTDisplayBloom).
+    const RTXPTDisplayBloomStats& GetBloomStats() const;
+    IBuffer*                      GetRealtimeLayerBuffer() const;
+    const RTXPTViewHistoryInfo&   GetHistoryInfo() const;
+    Uint32                        GetTraceCount() const;
+    Uint32                        GetAccumulationCount() const;
+    RTXPTGpuProfiler&             GetProfiler();
 
 private:
     struct Impl;

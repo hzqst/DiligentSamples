@@ -144,6 +144,10 @@ enum class RTXPTErrorCode : Uint32
     RayReconstructionCreateFailed,
     RayReconstructionInputsFailed,
     RayReconstructionExecuteFailed,
+
+    // Display Bloom of an embedded view
+    BloomSetupFailed,
+    BloomFailed,
 };
 
 const char* GetRTXPTErrorCodeString(RTXPTErrorCode Code);

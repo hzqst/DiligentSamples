@@ -229,6 +229,8 @@ const char* GetRTXPTErrorCodeString(RTXPTErrorCode Code)
         case RTXPTErrorCode::RayReconstructionCreateFailed: return "the DLSS RR feature could not be created or failed its first execution";
         case RTXPTErrorCode::RayReconstructionInputsFailed: return "the ray reconstruction inputs could not be prepared";
         case RTXPTErrorCode::RayReconstructionExecuteFailed: return "the DLSS RR evaluation failed";
+        case RTXPTErrorCode::BloomSetupFailed: return "the Bloom pass or its display HDR target could not be created";
+        case RTXPTErrorCode::BloomFailed: return "the Bloom pass failed";
     }
     return "unknown error";
 }

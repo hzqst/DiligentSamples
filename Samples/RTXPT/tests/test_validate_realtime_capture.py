@@ -137,6 +137,30 @@ class RRCaptureTest(unittest.TestCase):
         self.assertEqual(4, self.run_capture()['frame_index'])
         self.assertTrue((self.directory / 'reconstructed_radiance.pfm').exists())
 
+    def write_bloom(self, size):
+        self.write('bloom_radiance', size, 'RGBA16_FLOAT', 'e', [0.5] * 4 * size * size)
+
+    def test_valid_bloom_capture(self):
+        self.write_bloom(self.DISPLAY)
+        self.manifest['unavailable_stages'] = ['NRD', 'SR', 'TAA']
+        self.assertEqual(4, self.run_capture()['frame_index'])
+
+    def test_bloom_radiance_with_unavailable_bloom_rejected(self):
+        self.write_bloom(self.DISPLAY)
+        with self.assertRaisesRegex(ValueError, 'Bloom radiance'):
+            self.run_capture()
+
+    def test_available_bloom_without_radiance_rejected(self):
+        self.manifest['unavailable_stages'] = ['NRD', 'SR', 'TAA']
+        with self.assertRaisesRegex(ValueError, 'Bloom radiance'):
+            self.run_capture()
+
+    def test_render_size_bloom_radiance_rejected(self):
+        self.write_bloom(self.RENDER)
+        self.manifest['unavailable_stages'] = ['NRD', 'SR', 'TAA']
+        with self.assertRaisesRegex(ValueError, 'Bloom extent'):
+            self.run_capture()
+
     def test_missing_rr_input_rejected(self):
         self.manifest['resources'] = [r for r in self.manifest['resources'] if r['name'] != 'rr_specular_albedo']
         with self.assertRaisesRegex(ValueError, 'Missing RR'):

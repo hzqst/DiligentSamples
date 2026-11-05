@@ -130,6 +130,7 @@ RTXPTErrorCode RTXPTRealtimePipeline::Initialize(const RTXPTRealtimePipelineCrea
                                            (bNative ? RTXPTPostProcessPassSet::RealtimeNative : RTXPTPostProcessPassSet::RealtimeRaw);
     if (!m_Guides.Initialize(Device, Factory, Cache, m_Constants, true) ||
         !m_Merge.Initialize(Device, Factory, Cache, m_Constants, true, PassSet) ||
+        !m_Bloom.Initialize(Device, Cache, DisplayWidth, DisplayHeight) ||
         !m_ToneMapping.Initialize(Device, Factory, Cache, CreateInfo.PSOCache, m_DisplayFormat, true) ||
         !m_ToneMapping.ResizeResources(Device, DisplayWidth, DisplayHeight, Targets.Formats.OutputColor))
         return RTXPTErrorCode::PostProcessSetupFailed;
@@ -162,10 +163,11 @@ RTXPTErrorCode RTXPTRealtimePipeline::Initialize(const RTXPTRealtimePipelineCrea
  * Fill produces one current sample per layer; guides are spatial/current-frame only. Raw merges the noisy layers and
  * Native denoises them first (Denoise); both produce render-size linear HDR. A SuperResolution pipeline upscales it to
  * the display size (Upscale). DLSSRR instead prepares RR's noisy radiance and guides from the layers and the denoised
- * specular hit distance of the guides, and RR reconstructs the display-size HDR (Reconstruct). ToneMapping writes the
- * host's explicit RTV at the display size. Only completion of the entire chain publishes valid output.
+ * specular hit distance of the guides, and RR reconstructs the display-size HDR (Reconstruct). Bloom, when active,
+ * blurs and mixes a copy of that HDR (RTXPTDisplayBloom), and ToneMapping writes the host's explicit RTV at the display
+ * size. Only completion of the entire chain publishes valid output.
  */
-RTXPTErrorCode RTXPTRealtimePipeline::Render(IDeviceContext* Context, RTXPTRayTracingPass& Rays, RTXPTLightsBaker& Lights, const SampleConstants& Input, const RTXPTToneMappingParameters& ToneParameters, const RTXPTRealtimeHistoryAttribs& History, ITextureView* DisplayRTV, RTXPTGpuProfiler* Profiler)
+RTXPTErrorCode RTXPTRealtimePipeline::Render(IDeviceContext* Context, RTXPTRayTracingPass& Rays, RTXPTLightsBaker& Lights, const SampleConstants& Input, const RTXPTToneMappingParameters& ToneParameters, const RTXPTBloomParameters& Bloom, const RTXPTRealtimeHistoryAttribs& History, ITextureView* DisplayRTV, RTXPTGpuProfiler* Profiler)
 {
     m_Stats.OutputValid = false;
     if (!m_Ready)
@@ -298,10 +300,15 @@ RTXPTErrorCode RTXPTRealtimePipeline::Render(IDeviceContext* Context, RTXPTRayTr
         if (Code != RTXPTErrorCode::Ok)
             return Code;
     }
-    //Every Execute of the upscaler or reconstruction flushes and invalidates the context state; tone mapping sets all
-    //of its own.
+    //Every Execute of the upscaler or reconstruction flushes and invalidates the context state; Bloom and tone mapping
+    //set all of their own. Bloom leaves the HDR of the mode as the frame's captures publish it.
+    ITextureView* HDR        = m_SuperResolution || bReconstruction ? m_Targets.GetProcessedOutputColorSRV() : m_Targets.GetOutputColorSRV();
+    ITextureView* ToneSource = nullptr;
+    const auto    BloomCode  = m_Bloom.Apply(Context, HDR->GetTexture(), Bloom, Profiler, ToneSource);
+    if (BloomCode != RTXPTErrorCode::Ok)
+        return BloomCode;
     RTXPTToneMappingRenderAttribs Tone;
-    Tone.pSourceSRV = m_SuperResolution || bReconstruction ? m_Targets.GetProcessedOutputColorSRV() : m_Targets.GetOutputColorSRV();
+    Tone.pSourceSRV = ToneSource;
     Tone.pLdrRTV    = DisplayRTV;
     Tone.Width      = DisplayWidth;
     Tone.Height     = DisplayHeight;

@@ -71,6 +71,8 @@ public:
         //RealtimeDLSSSR: input preparation and the upscaler's evaluation.
         SuperResolutionInputs,
         SuperResolution,
+        //Every mode that applies the display Bloom of its view.
+        Bloom,
         Count
     };
 
@@ -217,7 +219,7 @@ private:
     static constexpr Uint32                               kBufferedFrames = 8;
     static constexpr Uint32                               kReportFrames   = 120;
     static constexpr std::array<const char*, kStageCount> kNames          = {
-        "Total", "PrefixEarly", "BUILD", "LightsBaker", "SHaRCUpdate", "SHaRCResolve", "SubSampling", "FILL", "Guides", "RRPrepare", "RR", "PostProcess", "Merge", "ToneMapping", "ScenePrepare", "SkinAndBLAS", "TLAS", "HostComposite", "NRD", "NRDPrepare0", "NRDPrepare1", "NRDPrepare2", "NRDDispatch0", "NRDDispatch1", "NRDDispatch2", "NRDMerge0", "NRDMerge1", "NRDMerge2", "SRInputs", "SR"};
+        "Total", "PrefixEarly", "BUILD", "LightsBaker", "SHaRCUpdate", "SHaRCResolve", "SubSampling", "FILL", "Guides", "RRPrepare", "RR", "PostProcess", "Merge", "ToneMapping", "ScenePrepare", "SkinAndBLAS", "TLAS", "HostComposite", "NRD", "NRDPrepare0", "NRDPrepare1", "NRDPrepare2", "NRDDispatch0", "NRDDispatch1", "NRDDispatch2", "NRDMerge0", "NRDMerge1", "NRDMerge2", "SRInputs", "SR", "Bloom"};
     struct Frame
     {
         std::array<RefCntAutoPtr<IQuery>, kStageCount * 2> Queries;

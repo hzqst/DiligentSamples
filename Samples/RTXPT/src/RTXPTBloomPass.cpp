@@ -34,6 +34,7 @@
 #include "GraphicsTypesX.hpp"
 #include "MapHelper.hpp"
 #include "RenderStateCache.h"
+#include "RTXPTShaderSource.hpp"
 
 namespace Diligent
 {
@@ -276,7 +277,7 @@ bool RTXPTBloomPass::CreateSampler(IRenderDevice* pDevice)
 bool RTXPTBloomPass::CreateShaders(IRenderStateCache* pStateCache, IEngineFactory* pEngineFactory)
 {
     RefCntAutoPtr<IShaderSourceInputStreamFactory> pShaderSourceFactory;
-    pEngineFactory->CreateDefaultShaderSourceStreamFactory("shaders;shaders\\PostProcessing", &pShaderSourceFactory);
+    CreateRTXPTShaderSourceFactory(pEngineFactory, "shaders;shaders\\PostProcessing", &pShaderSourceFactory);
 
     ShaderCreateInfo ShaderCI;
     ShaderCI.SourceLanguage             = SHADER_SOURCE_LANGUAGE_HLSL;
@@ -521,11 +522,7 @@ bool RTXPTBloomPass::Render(IDeviceContext* pContext, const RTXPTBloomRenderAttr
 {
     m_Stats.LastRenderExecuted = false;
 
-    const bool Enabled =
-        Attribs.Params.Enabled &&
-        Attribs.Params.Intensity > 0.0f &&
-        Attribs.Params.Radius > 0.0f;
-    if (!Enabled)
+    if (!IsRTXPTBloomActive(Attribs.Params))
         return true;
 
     const float EffectiveSigma = std::clamp(Attribs.Params.Radius * 0.25f, 1.0f, 100.0f);

@@ -100,8 +100,12 @@ Embedded view timing uses the successful view index; scene timing uses PrepareCo
 Null timings mean unmeasured/unavailable. ScenePrepare includes resource uploads
 and rigid BLAS work. SkinAndBLAS is the combined interleaved skin/skinned-BLAS work,
 and TLAS is separate. Nested intervals must not be summed with Total/ScenePrepare.
-NRD, TAA, SR, RR and Bloom are not active in Raw. Total GPU allocation is unavailable;
-the manifest does not pass readback byte counts off as VRAM residency.
+NRD, TAA, SR and RR are not active in Raw. A frame of any mode that applied Bloom
+(`RTXPTViewDisplaySettings::Bloom`) also exports display-size RGBA16F `bloom_radiance`,
+its HDR after Bloom and before tone mapping, times it in the `Bloom` stage and omits
+Bloom from `unavailable_stages`; the HDR of the mode stays the one Bloom read. Total GPU
+allocation is unavailable; the manifest does not pass readback byte counts off as VRAM
+residency.
 
 Schema 2 also supports `RealtimeDLSSSR`: render-size denoised HDR, `sr_depth` (R32F,
 forward projected [0,1], far=1), `sr_motion` (RG16F, current-to-previous render pixels,

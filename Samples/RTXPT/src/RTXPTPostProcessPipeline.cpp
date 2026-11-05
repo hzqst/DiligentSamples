@@ -385,11 +385,7 @@ bool RTXPTPostProcessPipeline::RunPreToneMapping(IDeviceContext*             pCo
                                                  const RTXPTRenderTargets&   RenderTargets,
                                                  const RTXPTBloomParameters& BloomParams)
 {
-    const bool BloomEnabled =
-        BloomParams.Enabled &&
-        BloomParams.Intensity > 0.0f &&
-        BloomParams.Radius > 0.0f;
-    if (BloomEnabled && !m_BloomPass.ResizeResources(m_Device, RenderTargets.GetDisplayWidth(), RenderTargets.GetDisplayHeight(), RenderTargets.GetProcessedOutputColorFormat()))
+    if (IsRTXPTBloomActive(BloomParams) && !m_BloomPass.ResizeResources(m_Device, RenderTargets.GetDisplayWidth(), RenderTargets.GetDisplayHeight(), RenderTargets.GetProcessedOutputColorFormat()))
     {
         m_Stats.BloomStageReady = m_BloomPass.IsReady();
         DEV_ERROR("RTXPT bloom pass failed to resize resources");
