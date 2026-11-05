@@ -19,7 +19,8 @@ namespace Diligent
 //Texture bytes are tightly packed, little endian, top row first, array slices in ascending order. No color conversion.
 //The layer buffer retains the shader's packed representation; inactive records/padding are not valid surface guides.
 //RealtimeDLSSRR exports the render-size inputs ray reconstruction received, its exposure texture and its display-size
-//HDR; it has no denoised or upscaled HDR.
+//HDR; it has no denoised or upscaled HDR. A frame that applied Bloom also exports the display-size HDR after Bloom; the
+//HDR of its mode stays the one Bloom read.
 class RTXPTDebugCapture
 {
 public:
@@ -28,6 +29,7 @@ public:
         const bool bSR     = View.GetMode() == RTXPTViewMode::RealtimeDLSSSR;
         const bool bRR     = View.GetMode() == RTXPTViewMode::RealtimeDLSSRR;
         const bool bNative = View.GetMode() == RTXPTViewMode::RealtimeNative || bSR;
+        const bool bBloom  = View.GetBloomStats().LastApplied;
         //The render-size HDR of the frame: RR's noisy input, the denoised layers of Native and SR, or Raw's noisy HDR.
         const auto  ColorOutput = bRR ? RTXPTViewOutput::RayReconstructionColor : bNative ? RTXPTViewOutput::DenoisedRadiance : RTXPTViewOutput::NoisyRadiance;
         const char* ColorName   = bRR ? "rr_color" : bNative ? "denoised_radiance" : "noisy_radiance";
@@ -128,6 +130,8 @@ public:
                 Outputs.push_back({RTXPTViewOutput::RayReconstructionSpecularAlbedo, "rr_specular_albedo"});
                 Outputs.push_back({RTXPTViewOutput::RayReconstructionExposure, "rr_exposure"});
             }
+            if (bBloom)
+                Outputs.push_back({RTXPTViewOutput::BloomRadiance, "bloom_radiance"});
             bool First = true;
             for (const auto& Output : Outputs)
             {
@@ -159,7 +163,7 @@ public:
                         "\"validity\":\"layer header and VertexIndexAndRoughness high 16 bits; PreviousVirtualPosition.w is path history validity; inactive/padding undefined\"},\n";
             View.GetProfiler().Poll();
             WriteTiming(Manifest, View.GetProfiler());
-            Manifest << ",\"unavailable_stages\":[" << (bNative ? "" : "\"NRD\",") << (bSR ? "" : "\"SR\",") << "\"TAA\"," << (bRR ? "" : "\"RR\",") << "\"Bloom\"]\n}\n";
+            Manifest << ",\"unavailable_stages\":[" << (bNative ? "" : "\"NRD\",") << (bSR ? "" : "\"SR\",") << "\"TAA\"" << (bRR ? "" : ",\"RR\"") << (bBloom ? "" : ",\"Bloom\"") << "]\n}\n";
             Manifest.flush();
             if (!Manifest) return false;
             Manifest.close();

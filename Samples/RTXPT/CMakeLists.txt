@@ -7,7 +7,6 @@ set(SOURCE
     src/RTXPTPostProcessPipeline.cpp
     src/SharcIntegration.cpp
     src/AdaptiveSampling.cpp
-    src/RTXPTBloomPass.cpp
     src/RTXPTSuperResolutionPass.cpp
     src/RTXPTRayReconstructionPass.cpp
     src/RTXPTTemporalAAPass.cpp
@@ -58,6 +57,7 @@ set(INCLUDE
     src/RTXPTComputePass.hpp
     src/RTXPTAccumulationPass.hpp
     src/RTXPTBloomPass.hpp
+    src/RTXPTDisplayBloom.hpp
     src/RTXPTSuperResolutionPass.hpp
     src/RTXPTRayReconstructionPass.hpp
     src/RTXPTRayReconstructionInputs.hpp

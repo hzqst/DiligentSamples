@@ -9,6 +9,7 @@
 #include "RTXPTSceneRuntime.hpp"
 #include "RTXPTRayTracingPass.hpp"
 #include "RTXPTAccumulationPass.hpp"
+#include "RTXPTDisplayBloom.hpp"
 #include "RTXPTToneMappingPass.hpp"
 #include "RTXPTRealtimePipeline.hpp"
 #include "RTXPTNrdConfig.hpp"
@@ -203,8 +204,10 @@ struct RTXPTEmbeddedView::Impl
     RTXPTLightsBaker                   LightsBaker;
     RTXPTRayTracingPass                Rays;
     RTXPTAccumulationPass              Accumulation;
-    RTXPTToneMappingPass               ToneMapping;
-    RTXPTRealtimePipeline              Realtime;
+    //Reference only: the realtime pipeline keeps its own Bloom and tone mapping.
+    RTXPTDisplayBloom     Bloom;
+    RTXPTToneMappingPass  ToneMapping;
+    RTXPTRealtimePipeline Realtime;
     //RealtimeDLSSSR: the factory that created the upscaler is kept for the feature's lifetime.
     RefCntAutoPtr<ISuperResolutionFactory> SuperResolutionFactory;
     RefCntAutoPtr<ISuperResolution>        Upscaler;
@@ -568,6 +571,7 @@ RTXPTErrorCode RTXPTEmbeddedView::Initialize(IRenderDevice* Device, IDeviceConte
             R.Radiance = R.Realtime.GetTargets().GetOutputColorSRV()->GetTexture();
     }
     else if (!R.Accumulation.Initialize(Device, Factory, R.Cache, R.PSOCache, true) ||
+             !R.Bloom.Initialize(Device, R.Cache, Width, Height) ||
              !R.ToneMapping.Initialize(Device, Factory, R.Cache, R.PSOCache, CreateInfo.DisplayRTVFormat, true) ||
              !R.ToneMapping.ResizeResources(Device, Width, Height, TEX_FORMAT_RGBA32_FLOAT))
         return RTXPTErrorCode::PostProcessSetupFailed;
@@ -600,8 +604,13 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
     const auto IsWhitePoint = [](float White) {
         return White >= RTXPTMinToneMappingWhite && White <= RTXPTMaxToneMappingWhite;
     };
+    const auto IsBloomValue = [](float Value, float Max) {
+        return Value >= 0.0f && Value <= Max;
+    };
+    const bool bBloomValid = IsBloomValue(Display.Bloom.Radius, RTXPTMaxBloomRadius) && IsBloomValue(Display.Bloom.Intensity, RTXPTMaxBloomIntensity);
     if (!(Display.Exposure >= RTXPTMinDisplayExposure && Display.Exposure <= RTXPTMaxDisplayExposure) ||
-        Display.ToneMapOperator > RTXPTToneMapperOperator::Aces || !IsWhitePoint(Display.WhiteMaxLuminance) || !IsWhitePoint(Display.WhiteScale))
+        Display.ToneMapOperator > RTXPTToneMapperOperator::Aces || !IsWhitePoint(Display.WhiteMaxLuminance) || !IsWhitePoint(Display.WhiteScale) ||
+        !bBloomValid)
         return RTXPTErrorCode::InvalidArgument;
     const auto ToneParameters = MakeRTXPTToneMappingParameters(Display);
     if (Camera.ViewportWidth != R.Width || Camera.ViewportHeight != R.Height ||
@@ -670,7 +679,7 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
         const auto& Stats                = R.Realtime.GetStats();
         const auto  ExecutesBefore       = Stats.SuperResolutionExecutes;
         const auto  ReconstructedBefore  = Stats.RayReconstructionExecutes;
-        const auto  Code                 = R.Realtime.Render(R.Context, R.Rays, R.LightsBaker, Constants, ToneParameters, RealtimeHistory, R.DisplayRTV, &R.Profiler);
+        const auto  Code                 = R.Realtime.Render(R.Context, R.Rays, R.LightsBaker, Constants, ToneParameters, Display.Bloom, RealtimeHistory, R.DisplayRTV, &R.Profiler);
         if (Code == RTXPTErrorCode::SuperResolutionInputsFailed || Code == RTXPTErrorCode::SuperResolutionExecuteFailed)
         {
             ++R.SuperResolution.Failures;
@@ -734,8 +743,13 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
     Accumulation.BlendFactor                             = 1.0f / Samples;
     if (!R.Accumulation.Render(R.Context, Accumulation))
         return RTXPTErrorCode::AccumulationFailed;
+    //Bloom reads the processed radiance and leaves it, and the accumulated radiance, unchanged.
+    ITextureView* ToneSource = nullptr;
+    const auto    BloomCode  = R.Bloom.Apply(R.Context, R.Processed, Display.Bloom, nullptr, ToneSource);
+    if (BloomCode != RTXPTErrorCode::Ok)
+        return BloomCode;
     RTXPTToneMappingRenderAttribs Tone;
-    Tone.pSourceSRV = R.Processed->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
+    Tone.pSourceSRV = ToneSource;
     Tone.pLdrRTV    = R.DisplayRTV;
     Tone.Width      = R.Width;
     Tone.Height     = R.Height;
@@ -805,6 +819,7 @@ RTXPTViewOutputInfo RTXPTEmbeddedView::GetOutputInfo(RTXPTViewOutput Output, Uin
         case RTXPTViewOutput::RayReconstructionDiffuseAlbedo: Texture = ReconstructionTexture(Targets.GetRRDiffuseAlbedoSRV()); break;
         case RTXPTViewOutput::RayReconstructionSpecularAlbedo: Texture = ReconstructionTexture(Targets.GetRRSpecAlbedoSRV()); break;
         case RTXPTViewOutput::RayReconstructionExposure: Texture = bReconstruction ? R.Realtime.GetReconstructionExposure() : nullptr; break;
+        case RTXPTViewOutput::BloomRadiance: Texture = R.IsRealtime() ? R.Realtime.GetBloom().GetOutput() : R.Bloom.GetOutput(); break;
         default: return Info;
     }
     if (!Texture)
@@ -831,6 +846,10 @@ const RTXPTRealtimeStats&             RTXPTEmbeddedView::GetRealtimeStats() cons
 IBuffer*                              RTXPTEmbeddedView::GetRealtimeLayerBuffer() const
 {
     return m_Impl->OutputValid ? m_Impl->Realtime.GetTargets().GetDenoisingLayersBuffer() : nullptr;
+}
+const RTXPTDisplayBloomStats& RTXPTEmbeddedView::GetBloomStats() const
+{
+    return m_Impl->IsRealtime() ? m_Impl->Realtime.GetBloom().GetStats() : m_Impl->Bloom.GetStats();
 }
 
 void CreateRTXPTEmbeddedStateCache(IRenderDevice* Device, IRenderStateCache** Cache)

@@ -3,6 +3,7 @@
 
 Raw exports its noisy current-frame HDR, Native its denoised HDR and each layer's history confidence.
 DLSSRR exports the inputs ray reconstruction received and its display-size HDR, and no NRD or SR work.
+A frame that applied Bloom exports its display-size HDR after Bloom and lists Bloom as available.
 
 This checks storage/finite values and frame provenance, not temporal correctness.
 RR inputs are also checked against the value ranges of their contract (the frozen D6 input checks).
@@ -48,6 +49,9 @@ RR_FORWARD_SIGNS = (-1, 1)
 RR_SKY_DEPTH = 5000000.0
 RR_NORMAL_LENGTH_TOLERANCE = 2e-3
 RR_NORMAL_ROUGHNESS_COMPONENTS = 4
+# The display-size HDR after Bloom and before tone mapping.
+BLOOM = 'bloom_radiance'
+BLOOM_FORMATS = {BLOOM: 'TEX_FORMAT_RGBA16_FLOAT'}
 
 
 def validate_frame_jitter(manifest, label):
@@ -128,6 +132,8 @@ def validate(directory: Path, require_host=False):
         validate_frame_jitter(manifest, label)
     if mode == 'RealtimeDLSSRR':
         validate_rr_metadata(manifest, names)
+    if (BLOOM in names) == ('Bloom' in manifest.get('unavailable_stages', ['Bloom'])):
+        raise ValueError('Bloom radiance must be exported exactly when Bloom is available')
     if mode == 'RealtimeDLSSSR':
         sr = manifest['super_resolution']
         if not sr['provider'] or sr['quality'] not in ('Quality', 'Balanced', 'Performance'):
@@ -161,6 +167,8 @@ def validate(directory: Path, require_host=False):
             raise ValueError('Resource refers to another frame')
         if mode in UPSCALING and resource['name'] in UPSCALING[mode][1]:
             validate_layout(manifest, resource, *UPSCALING[mode])
+        if resource['name'] == BLOOM:
+            validate_layout(manifest, resource, 'Bloom', BLOOM_FORMATS, (BLOOM,))
         if fmt in ("TEX_FORMAT_RGBA16_FLOAT", "TEX_FORMAT_RG16_FLOAT", "TEX_FORMAT_R32_FLOAT"):
             values = [v[0] for v in struct.iter_unpack("<e" if "16" in fmt else "<f", data)]
             if not all(math.isfinite(v) for v in values):

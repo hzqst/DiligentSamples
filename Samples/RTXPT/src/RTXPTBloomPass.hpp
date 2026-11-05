@@ -45,6 +45,12 @@ struct RTXPTBloomParameters
     float Intensity = 0.004f;
 };
 
+//Whether RTXPTBloomPass::Render draws for Params: disabled Bloom and a zero intensity or radius bypass it.
+inline bool IsRTXPTBloomActive(const RTXPTBloomParameters& Params)
+{
+    return Params.Enabled && Params.Intensity > 0.0f && Params.Radius > 0.0f;
+}
+
 struct RTXPTBloomRenderAttribs
 {
     ITextureView*        pSourceSRV = nullptr;
@@ -113,7 +119,7 @@ private:
 
 private:
     RTXPTBloomPassStats                   m_Stats;
-    IRenderStateCache*                    m_pStateCache = nullptr; // Owned by RTXPTSample; set in Initialize.
+    IRenderStateCache*                    m_pStateCache = nullptr; // Owned by the caller of Initialize; set in Initialize.
     RefCntAutoPtr<IShader>                m_FullscreenVS;
     RefCntAutoPtr<IShader>                m_CopyPS;
     RefCntAutoPtr<IShader>                m_BlurPS;

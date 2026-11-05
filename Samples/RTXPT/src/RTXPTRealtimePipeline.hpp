@@ -1,6 +1,7 @@
 #pragma once
 
 #include "RTXPTDenoisingGuidesBaker.hpp"
+#include "RTXPTDisplayBloom.hpp"
 #include "RTXPTFrameConstants.hpp"
 #include "RTXPTLightsBaker.hpp"
 #include "RTXPTNrdDenoiser.hpp"
@@ -68,7 +69,7 @@ struct RTXPTRealtimeStats
 
 //Every argument but PSOCache is required. Native also needs NRD (RTXPTIsNrdAvailable).
 //Width and Height are the render size. With SuperResolution or the DLSSRR reconstructor, the layers and guides (and the
-//denoiser of SuperResolution) stay at render size and the reconstructed HDR, tone mapping and display target are
+//denoiser of SuperResolution) stay at render size and the reconstructed HDR, Bloom, tone mapping and display target are
 //DisplayWidth x DisplayHeight (at least the render size); otherwise the display target is the render size and the
 //display size must be 0. DLSSRR replaces the denoiser and super resolution: Denoiser must be None and SuperResolution
 //false, and the pipeline neither creates nor needs NRD.
@@ -117,7 +118,7 @@ class RTXPTRealtimePipeline
 {
 public:
     RTXPTErrorCode             Initialize(const RTXPTRealtimePipelineCreateInfo& CreateInfo);
-    RTXPTErrorCode             Render(IDeviceContext* Context, RTXPTRayTracingPass& Rays, RTXPTLightsBaker& Lights, const SampleConstants& Constants, const RTXPTToneMappingParameters& ToneParameters, const RTXPTRealtimeHistoryAttribs& History, ITextureView* DisplayRTV, RTXPTGpuProfiler* Profiler = nullptr);
+    RTXPTErrorCode             Render(IDeviceContext* Context, RTXPTRayTracingPass& Rays, RTXPTLightsBaker& Lights, const SampleConstants& Constants, const RTXPTToneMappingParameters& ToneParameters, const RTXPTBloomParameters& Bloom, const RTXPTRealtimeHistoryAttribs& History, ITextureView* DisplayRTV, RTXPTGpuProfiler* Profiler = nullptr);
     void                       InvalidateOutput() { m_Stats.OutputValid = false; }
     RTXPTRealtimeDenoiser      GetDenoiser() const { return m_Denoiser; }
     RTXPTRealtimeReconstructor GetReconstructor() const { return m_Reconstructor; }
@@ -128,6 +129,8 @@ public:
     const RTXPTSuperResolutionInputPass& GetSuperResolutionInputs() const { return m_SuperResolutionInputs; }
     //A DLSSRR pipeline's 1x1 R32F exposure texture, which its latest Execute read.
     ITexture* GetReconstructionExposure() const { return m_ReconstructionExposure; }
+    //The display Bloom of the current successful Render.
+    const RTXPTDisplayBloom& GetBloom() const { return m_Bloom; }
 
 private:
     RTXPTErrorCode Denoise(IDeviceContext* Context, const SampleConstants& Constants, const RTXPTRealtimeHistoryAttribs& History, RTXPTGpuProfiler* Profiler);
@@ -139,6 +142,7 @@ private:
     RTXPTPostProcessPass          m_Merge;
     RTXPTNrdDenoiser              m_Nrd;
     RTXPTRealtimeSettings         m_NrdSettings;
+    RTXPTDisplayBloom             m_Bloom;
     RTXPTToneMappingPass          m_ToneMapping;
     RTXPTSuperResolutionInputPass m_SuperResolutionInputs;
     RefCntAutoPtr<IBuffer>        m_Constants;

@@ -21,7 +21,7 @@ function(add_rtxpt_library target)
         RTXPTLightProxyBuildPass RTXPTEnvMapBaker RTXPTEnvMapBakerPass
         RTXPTEmissiveTrianglePass RTXPTRayTracingPass RTXPTSkinnedGeometry
         RTXPTSceneRuntime RTXPTSceneFrame RTXPTSceneImporter RTXPTComputePass
-        RTXPTAccumulationPass RTXPTToneMappingPass RTXPTRenderTargets
+        RTXPTAccumulationPass RTXPTBloomPass RTXPTDisplayBloom RTXPTToneMappingPass RTXPTRenderTargets
         RTXPTDenoisingGuidesBaker RTXPTPostProcessPass RTXPTRealtimePipeline RTXPTSuperResolutionInputPass
         RTXPTNrdConfig RTXPTNrdIntegration RTXPTNrdDenoiser)
     set(source_files)
