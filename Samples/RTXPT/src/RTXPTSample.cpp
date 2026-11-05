@@ -161,6 +161,7 @@ SUPER_RESOLUTION_OPTIMIZATION_TYPE ToSuperResolutionOptimizationType(RTXPTSuperR
         case RTXPTSuperResolutionQuality::Balanced: return SUPER_RESOLUTION_OPTIMIZATION_TYPE_BALANCED;
         case RTXPTSuperResolutionQuality::HighPerformance: return SUPER_RESOLUTION_OPTIMIZATION_TYPE_HIGH_PERFORMANCE;
         case RTXPTSuperResolutionQuality::MaxPerformance: return SUPER_RESOLUTION_OPTIMIZATION_TYPE_MAX_PERFORMANCE;
+        case RTXPTSuperResolutionQuality::Native: return SUPER_RESOLUTION_OPTIMIZATION_TYPE_NATIVE;
         default: return SUPER_RESOLUTION_OPTIMIZATION_TYPE_BALANCED;
     }
 }
@@ -649,7 +650,7 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
                                       {{"reference", RTXPTViewMode::Reference}, {"raw", RTXPTViewMode::RealtimeRaw}, {"native", RTXPTViewMode::RealtimeNative}, {"dlss_sr", RTXPTViewMode::RealtimeDLSSSR}, {"dlss_rr", RTXPTViewMode::RealtimeDLSSRR}}, m_EmbeddedMode))
         m_UseEmbeddedView = true;
     Args.ParseEnum<RTXPTUpscaleQuality>("sr_quality", 0,
-                                        {{"quality", RTXPTUpscaleQuality::Quality}, {"balanced", RTXPTUpscaleQuality::Balanced}, {"performance", RTXPTUpscaleQuality::Performance}}, m_EmbeddedUpscaleQuality);
+                                        {{"native", RTXPTUpscaleQuality::Native}, {"quality", RTXPTUpscaleQuality::Quality}, {"balanced", RTXPTUpscaleQuality::Balanced}, {"performance", RTXPTUpscaleQuality::Performance}}, m_EmbeddedUpscaleQuality);
     Args.ParseEnum<RTXPTRayReconstructionQuality>("embedded_rr_quality", 0,
                                                   {{"native", RTXPTRayReconstructionQuality::Native}, {"quality", RTXPTRayReconstructionQuality::Quality}, {"balanced", RTXPTRayReconstructionQuality::Balanced}, {"performance", RTXPTRayReconstructionQuality::Performance}},
                                                   m_EmbeddedReconstructionQuality);
@@ -3077,7 +3078,8 @@ void RTXPTSample::UpdateUI()
                         "High Quality",
                         "Balanced",
                         "High Performance",
-                        "Max Performance"};
+                        "Max Performance",
+                        "Native"};
                     int SRQuality = static_cast<int>(m_RealtimeUI.SuperResolutionQuality);
                     if (ImGui::Combo("SR Quality", &SRQuality, SRQualityItems, _countof(SRQualityItems)))
                     {

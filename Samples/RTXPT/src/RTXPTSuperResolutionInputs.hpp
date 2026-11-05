@@ -62,26 +62,28 @@ struct RTXPTSuperResolutionInputs
             Source.OptimalInputHeight < Source.MinInputHeight || Source.OptimalInputHeight > Source.MaxInputHeight)
             return false;
 
-        Desc.Name           = "RTXPT realtime super resolution";
-        Desc.VariantId      = Query.VariantId;
-        Desc.InputWidth     = Source.OptimalInputWidth;
-        Desc.InputHeight    = Source.OptimalInputHeight;
-        Desc.OutputWidth    = Query.OutputWidth;
-        Desc.OutputHeight   = Query.OutputHeight;
-        Desc.OutputFormat   = Formats.ProcessedOutputColor;
-        Desc.ColorFormat    = Formats.OutputColor;
-        Desc.DepthFormat    = RTXPTSuperResolutionInputPass::DepthFormat;
-        Desc.MotionFormat   = RTXPTSuperResolutionInputPass::MotionVectorsFormat;
-        Desc.ExposureFormat = RTXPTSuperResolutionInputPass::ExposureFormat;
-        Desc.Flags          = SUPER_RESOLUTION_FLAG_NONE;
+        Desc.Name             = "RTXPT realtime super resolution";
+        Desc.VariantId        = Query.VariantId;
+        Desc.InputWidth       = Source.OptimalInputWidth;
+        Desc.InputHeight      = Source.OptimalInputHeight;
+        Desc.OutputWidth      = Query.OutputWidth;
+        Desc.OutputHeight     = Query.OutputHeight;
+        Desc.OutputFormat     = Formats.ProcessedOutputColor;
+        Desc.ColorFormat      = Formats.OutputColor;
+        Desc.DepthFormat      = RTXPTSuperResolutionInputPass::DepthFormat;
+        Desc.MotionFormat     = RTXPTSuperResolutionInputPass::MotionVectorsFormat;
+        Desc.ExposureFormat   = RTXPTSuperResolutionInputPass::ExposureFormat;
+        Desc.Flags            = SUPER_RESOLUTION_FLAG_NONE;
+        Desc.OptimizationType = Query.OptimizationType;
         return true;
     }
 
     //Every guide, layer and denoiser target is at input size; the upscaled HDR and display targets at output size.
+    //They stay separate targets when the sizes are equal (SUPER_RESOLUTION_OPTIMIZATION_TYPE_NATIVE), because the
+    //upscaler still reads the input color and writes its own output.
     static RTXPTRenderTargetDimensions MakeDimensions(const SuperResolutionDesc& Desc)
     {
-        return {Desc.InputWidth, Desc.InputHeight, Desc.OutputWidth, Desc.OutputHeight,
-                Desc.InputWidth != Desc.OutputWidth || Desc.InputHeight != Desc.OutputHeight};
+        return {Desc.InputWidth, Desc.InputHeight, Desc.OutputWidth, Desc.OutputHeight, true};
     }
 
     //The texture LOD bias that samples the textures for the output resolution: -log2 of the per-axis upscale factor.

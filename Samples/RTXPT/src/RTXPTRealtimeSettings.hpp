@@ -67,9 +67,10 @@ enum class RTXPTSuperResolutionQuality : Uint32
     Balanced        = 2,
     HighPerformance = 3,
     MaxPerformance  = 4,
+    Native          = 5,
 };
 
-constexpr Uint32 kRTXPTSuperResolutionQualityCount = 5;
+constexpr Uint32 kRTXPTSuperResolutionQualityCount = 6;
 
 enum class RTXPTNrdMethod : Uint32
 {
