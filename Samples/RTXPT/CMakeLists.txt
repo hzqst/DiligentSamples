@@ -455,6 +455,14 @@ PRIVATE
     DiligentFX
 )
 
+# Opt-in GPU regression executable; it uses the Sample's already configured dependencies.
+if(PLATFORM_WIN32)
+    add_executable(RTXPTInstanceResourceBindingTest EXCLUDE_FROM_ALL
+        tests/InstanceResourceBindingTest.cpp src/RTXPTTemporalAAPass.cpp)
+    target_link_libraries(RTXPTInstanceResourceBindingTest PRIVATE RTXPT-Runtime)
+    target_compile_definitions(RTXPTInstanceResourceBindingTest PRIVATE NOMINMAX)
+endif()
+
 target_compile_definitions(RTXPT
 PRIVATE
     RTXPT_SHARC_SHADER_DIR="${RTXPT_SHARC_ROOT}/include"

@@ -201,8 +201,8 @@ bool RTXPTDenoisingGuidesBaker::CreatePass(IRenderDevice*                   pDev
     PipelineResourceLayoutDescX ResourceLayout;
     ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE;
     ResourceLayout
-        .AddVariable(SHADER_TYPE_COMPUTE, "g_Const", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
-        .AddVariable(SHADER_TYPE_COMPUTE, "g_DenoisingGuidesBakerConstants", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
+        .AddVariable(SHADER_TYPE_COMPUTE, "g_Const", SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE)
+        .AddVariable(SHADER_TYPE_COMPUTE, "g_DenoisingGuidesBakerConstants", SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE)
         .AddVariable(SHADER_TYPE_COMPUTE, "t_Depth", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "t_MotionVectors", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "t_PreviousAvgLayerRadiance", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
@@ -221,26 +221,29 @@ bool RTXPTDenoisingGuidesBaker::CreatePass(IRenderDevice*                   pDev
     if (!State.PSO)
         return false;
 
-    auto SetStatic = [&State](const char* Name, IDeviceObject* pObject) {
-        IShaderResourceVariable* pVar = State.PSO->GetStaticVariableByName(SHADER_TYPE_COMPUTE, Name);
+    State.PSO->CreateShaderResourceBinding(&State.SRB, true);
+    VERIFY(State.SRB, "Failed to create RTXPT denoising guides SRB");
+    if (!State.SRB)
+        return false;
+
+    auto SetInstanceVariable = [&State](const char* Name, IDeviceObject* pObject) {
+        IShaderResourceVariable* pVar = State.SRB->GetVariableByName(SHADER_TYPE_COMPUTE, Name);
         if (pVar == nullptr)
             return true;
         if (pObject == nullptr)
             return false;
-        pVar->Set(pObject, SET_SHADER_RESOURCE_FLAG_ALLOW_OVERWRITE);
+        pVar->Set(pObject);
         return true;
     };
 
-    if (!SetStatic("g_Const", m_FrameConstants) ||
-        !SetStatic("g_DenoisingGuidesBakerConstants", m_Constants))
+    if (!SetInstanceVariable("g_Const", m_FrameConstants) ||
+        !SetInstanceVariable("g_DenoisingGuidesBakerConstants", m_Constants))
     {
-        DEV_ERROR("Failed to bind RTXPT denoising guides static resources");
+        DEV_ERROR("Failed to bind RTXPT denoising guides instance resources");
         return false;
     }
 
-    State.PSO->CreateShaderResourceBinding(&State.SRB, true);
-    VERIFY(State.SRB, "Failed to create RTXPT denoising guides SRB");
-    return State.SRB != nullptr;
+    return true;
 }
 
 bool RTXPTDenoisingGuidesBaker::Bake(IDeviceContext*              pContext,

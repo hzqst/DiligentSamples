@@ -7,6 +7,31 @@ policy and the regression commands.
 Per-layer NRD distance collection, Prepare GPU regression and debug views are
 documented in [NRD_HIT_DISTANCE.md](NRD_HIT_DISTANCE.md).
 
+## Shared pipeline instance resource regression
+
+On Windows, build the opt-in `RTXPTInstanceResourceBindingTest` target in a Debug
+Sample build. Build `RTXPT` as well to stage the engine/archiver DLLs and shaders:
+
+```powershell
+cmake --build <sample-build> --config Debug --target RTXPT RTXPTInstanceResourceBindingTest
+$bin = "<sample-build>/DiligentSamples/Samples/RTXPT/Debug"
+& "$bin/RTXPTInstanceResourceBindingTest.exe" "$bin/GraphicsEngineD3D12_64d.dll" "$bin/shaders;$bin/shaders/NRD"
+& "$bin/RTXPTInstanceResourceBindingTest.exe" "$bin/GraphicsEngineVk_64d.dll" "$bin/shaders;$bin/shaders/NRD"
+```
+
+The test creates two actual pass instances sharing one render state cache and
+compares GPU readbacks byte-for-byte with instances using independent caches.
+It alternates distinct inputs/constants over four frames for Accumulation,
+Compute, DenoisingGuidesBaker, PostProcess, SuperResolutionInput, TemporalAA and
+ToneMapping. EmissiveTriangle and Skinning additionally cover delayed first Bind
+and rebuilding each SRB after another instance has initialized, with different
+dispatch counts and replacement output buffers. The pre-fix implementation fails
+all four EmissiveTriangle/Skinning cases on both APIs. Assertion/validation errors
+are counted and cause a nonzero exit without a modal assertion dialog.
+
+An optional final argument selects `skinning`, `emissive`, `accumulation`,
+`compute`, `guides`, `postprocess`, `srinputs`, `taa` or `tonemapping`.
+
 ## Vulkan RGB10A2 UAV status
 
 hzqst/DiligentCore#8 (`2fab46b3`, 2026-10-29) maps the RGB10A2 formats to Vulkan's

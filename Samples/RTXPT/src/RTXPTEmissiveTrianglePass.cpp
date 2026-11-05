@@ -135,7 +135,8 @@ bool RTXPTEmissiveTrianglePass::Initialize(IRenderDevice* pDevice, const RTXPTEm
     ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE;
     // Scene resources are mutable: Bind creates a new resource binding when they change. None of their buffers is
     // USAGE_DYNAMIC, so they need no dynamic offsets.
-    ResourceLayout.AddVariable(SHADER_TYPE_COMPUTE, "g_EmissiveTriangleBuildConstants", SHADER_RESOURCE_VARIABLE_TYPE_STATIC);
+    // Cached PSOs are shared; each SRB binds the constants of its pass instance.
+    ResourceLayout.AddVariable(SHADER_TYPE_COMPUTE, "g_EmissiveTriangleBuildConstants", SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE);
     for (const char* Name : {"t_PTMaterialData", "t_SubInstanceData", "t_SubInstanceTransforms", "t_VertexBuffer", "t_SkinnedVertexBuffer", "u_EmissiveTriangles"})
         ResourceLayout.AddVariable(SHADER_TYPE_COMPUTE, Name, SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE, SHADER_VARIABLE_FLAG_NO_DYNAMIC_BUFFERS);
     if (UseTextures)
@@ -169,14 +170,6 @@ bool RTXPTEmissiveTrianglePass::Initialize(IRenderDevice* pDevice, const RTXPTEm
     VERIFY(m_Constants, "Failed to create RTXPT emissive triangle build constants");
     if (!m_Constants)
         return false;
-
-    IShaderResourceVariable* pConstantsVar = m_PSO->GetStaticVariableByName(SHADER_TYPE_COMPUTE, "g_EmissiveTriangleBuildConstants");
-    if (pConstantsVar == nullptr)
-    {
-        UNEXPECTED("RTXPT emissive triangle pass constants are missing");
-        return false;
-    }
-    pConstantsVar->Set(m_Constants, SET_SHADER_RESOURCE_FLAG_ALLOW_OVERWRITE);
 
     m_Stats.Ready = true;
     return true;
@@ -235,6 +228,7 @@ bool RTXPTEmissiveTrianglePass::Bind(const RTXPTEmissiveTriangleBindings& Bindin
     }
 
     const std::pair<const char*, IDeviceObject*> Resources[] = {
+        {"g_EmissiveTriangleBuildConstants", m_Constants},
         {"t_PTMaterialData", Bindings.pMaterialBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE)},
         {"t_SubInstanceData", Bindings.pSubInstanceBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE)},
         {"t_SubInstanceTransforms", Bindings.pSubInstanceTransformBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE)},

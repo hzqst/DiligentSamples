@@ -93,7 +93,7 @@ bool RTXPTComputePass::Initialize(IRenderDevice* pDevice, const RTXPTComputePass
     PipelineResourceLayoutDescX ResourceLayout;
     ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE;
     ResourceLayout
-        .AddVariable(SHADER_TYPE_COMPUTE, "g_Const", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
+        .AddVariable(SHADER_TYPE_COMPUTE, "g_Const", SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE)
         .AddVariable(SHADER_TYPE_COMPUTE, "t_InputColor", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_Output", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC);
     PSOCreateInfo.PSODesc.ResourceLayout = ResourceLayout;
@@ -103,11 +103,18 @@ bool RTXPTComputePass::Initialize(IRenderDevice* pDevice, const RTXPTComputePass
     if (!m_PSO)
         return false;
 
-    m_PSO->GetStaticVariableByName(SHADER_TYPE_COMPUTE, "g_Const")->Set(CreateInfo.pFrameConstants, SET_SHADER_RESOURCE_FLAG_ALLOW_OVERWRITE);
     m_PSO->CreateShaderResourceBinding(&m_SRB, true);
     VERIFY(m_SRB, "Failed to create ", m_Name, " SRB");
     if (!m_SRB)
         return false;
+
+    auto* pConstantsVar = m_SRB->GetVariableByName(SHADER_TYPE_COMPUTE, "g_Const");
+    if (pConstantsVar == nullptr)
+    {
+        UNEXPECTED("RTXPT compute pass frame constants are missing");
+        return false;
+    }
+    pConstantsVar->Set(CreateInfo.pFrameConstants);
 
     // TODO(RTXPT-Port Phase 5.5): Restore RTXDI DI/GI and denoising-guide compute chains; R3 LightsBaker feedback uses RTXPTLightsBakerPass.
     m_Stats.Ready = true;
