@@ -204,7 +204,6 @@ struct RTXPTEmbeddedView::Impl
     RTXPTRayTracingPass                Rays;
     RTXPTAccumulationPass              Accumulation;
     RTXPTToneMappingPass               ToneMapping;
-    RTXPTToneMappingParameters         ToneParameters;
     RTXPTRealtimePipeline              Realtime;
     //RealtimeDLSSSR: the factory that created the upscaler is kept for the feature's lifetime.
     RefCntAutoPtr<ISuperResolutionFactory> SuperResolutionFactory;
@@ -572,14 +571,23 @@ RTXPTErrorCode RTXPTEmbeddedView::Initialize(IRenderDevice* Device, IDeviceConte
              !R.ToneMapping.Initialize(Device, Factory, R.Cache, R.PSOCache, CreateInfo.DisplayRTVFormat, true) ||
              !R.ToneMapping.ResizeResources(Device, Width, Height, TEX_FORMAT_RGBA32_FLOAT))
         return RTXPTErrorCode::PostProcessSetupFailed;
-    R.ToneParameters.ToneMapOperator = RTXPTToneMapperOperator::Reinhard;
     Context->Flush();
     Context->WaitForIdle();
     R.Ready = true;
     return RTXPTErrorCode::Ok;
 }
 
-RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, const PathTracerViewData& View, double Time, bool ResetHistory, float Exposure)
+RTXPTToneMappingParameters MakeRTXPTToneMappingParameters(const RTXPTViewDisplaySettings& Display)
+{
+    RTXPTToneMappingParameters Params;
+    Params.ToneMapOperator      = Display.ToneMapOperator;
+    Params.ExposureCompensation = std::log2(Display.Exposure);
+    Params.WhiteMaxLuminance    = Display.WhiteMaxLuminance;
+    Params.WhiteScale           = Display.WhiteScale;
+    return Params;
+}
+
+RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, const PathTracerViewData& View, double Time, bool ResetHistory, const RTXPTViewDisplaySettings& Display)
 {
     auto& R       = *m_Impl;
     ResetHistory  = ResetHistory || !R.OutputValid;
@@ -588,11 +596,14 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
     R.Realtime.InvalidateOutput();
     if (!R.Ready)
         return RTXPTErrorCode::NotInitialized;
-    constexpr float MaxExposure = 4294967296.0f;
-    if (!std::isfinite(Exposure) || Exposure < 1.0f / MaxExposure || Exposure > MaxExposure)
+    //NaN fails every comparison, so it is rejected like a value out of range.
+    const auto IsWhitePoint = [](float White) {
+        return White >= RTXPTMinToneMappingWhite && White <= RTXPTMaxToneMappingWhite;
+    };
+    if (!(Display.Exposure >= RTXPTMinDisplayExposure && Display.Exposure <= RTXPTMaxDisplayExposure) ||
+        Display.ToneMapOperator > RTXPTToneMapperOperator::Aces || !IsWhitePoint(Display.WhiteMaxLuminance) || !IsWhitePoint(Display.WhiteScale))
         return RTXPTErrorCode::InvalidArgument;
-    auto ToneParameters                 = R.ToneParameters;
-    ToneParameters.ExposureCompensation = std::log2(Exposure);
+    const auto ToneParameters = MakeRTXPTToneMappingParameters(Display);
     if (Camera.ViewportWidth != R.Width || Camera.ViewportHeight != R.Height ||
         View.ViewportSize.x != float(R.Width) || View.ViewportSize.y != float(R.Height))
         return RTXPTErrorCode::InvalidArgument;

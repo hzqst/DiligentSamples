@@ -316,11 +316,13 @@ void RTXPTSample::RunEmbeddedReconstructionValidation()
         return Check(Scene.Prepare(m_pImmediateContext) == RTXPTErrorCode::Ok, "the scene frame could not be prepared");
     };
     const auto RenderWith = [&](RTXPTEmbeddedView& View, const float4x4& WorldToView, const float4x4& ViewToClip, bool Reset, float Exposure, float2 HostJitter) {
-        const RTXPTViewSize R          = View.GetRenderSize();
-        const RTXPTViewSize D          = View.GetDisplaySize();
-        const auto          CameraData = MakePathTracerCameraData(Camera, R.Width, R.Height, D.Width, D.Height, 1, 0, HostJitter);
-        const auto          ViewData   = MakePathTracerViewData(WorldToView, ViewToClip, R.Width, R.Height, HostJitter);
-        return View.Render(CameraData, ViewData, Time, Reset, Exposure);
+        const RTXPTViewSize      R          = View.GetRenderSize();
+        const RTXPTViewSize      D          = View.GetDisplaySize();
+        const auto               CameraData = MakePathTracerCameraData(Camera, R.Width, R.Height, D.Width, D.Height, 1, 0, HostJitter);
+        const auto               ViewData   = MakePathTracerViewData(WorldToView, ViewToClip, R.Width, R.Height, HostJitter);
+        RTXPTViewDisplaySettings Display;
+        Display.Exposure = Exposure;
+        return View.Render(CameraData, ViewData, Time, Reset, Display);
     };
     const auto Render = [&](RTXPTEmbeddedView& View, bool Reset = false, float Exposure = 1.0f, float2 HostJitter = float2{0, 0}) {
         return RenderWith(View, CameraView, Camera.GetProjMatrix(), Reset, Exposure, HostJitter);

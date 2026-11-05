@@ -5,6 +5,7 @@
 #include "RTXPTFrameConstants.hpp"
 #include "RTXPTSceneRuntime.hpp"
 #include "RTXPTSceneHistory.hpp"
+#include "RTXPTToneMappingPass.hpp"
 #include "RenderDevice.h"
 #include "DeviceContext.h"
 #include "Texture.h"
@@ -133,6 +134,32 @@ enum class RTXPTOutputEncoding
     Linear,
     SRGB,
 };
+
+//The display exposure range of the tone mapper, [-32, 32] stops, and the range of its white points. At 1/64 the
+//Uncharted 2 white normalization still divides by about 0.0056 (its toe cancels less than 3 bits) and ReinhardModified
+//by White^2 = 2^-12; at 65536 neither curve differs visibly from its infinite-white limit.
+constexpr float RTXPTMinDisplayExposure  = 1.0f / 4294967296.0f;
+constexpr float RTXPTMaxDisplayExposure  = 4294967296.0f;
+constexpr float RTXPTMinToneMappingWhite = 1.0f / 64.0f;
+constexpr float RTXPTMaxToneMappingWhite = 65536.0f;
+
+//The display transform of one Render. Exposure is the linear multiplier tone mapping applies to the scene-linear HDR
+//before ToneMapOperator, and the exposure ray reconstruction and the realtime firefly and brightness clamps scale
+//with. WhiteMaxLuminance is the white point of ReinhardModified and WhiteScale that of HableUc2; each operator ignores
+//the other's. Render rejects values outside the ranges above or an unknown operator instead of clamping them. None of
+//them rescales the accumulated, noisy, denoised or reconstructed HDR, and changing them restarts no history.
+struct RTXPTViewDisplaySettings
+{
+    float                   Exposure          = 1.0f;
+    RTXPTToneMapperOperator ToneMapOperator   = RTXPTToneMapperOperator::Reinhard;
+    float                   WhiteMaxLuminance = 1.0f;
+    float                   WhiteScale        = 5.1f;
+};
+
+//The tone mapping parameters Render applies for Display: manual exposure with the default camera (ISO 100, f/1, 1 s, a
+//factor of 1), so ExposureCompensation = log2(Exposure) is the only exposure the tone mapper, ray reconstruction and the
+//realtime clamps derive. Display must be within the ranges Render accepts.
+RTXPTToneMappingParameters MakeRTXPTToneMappingParameters(const RTXPTViewDisplaySettings& Display);
 
 //A borrowed result of the latest Render. Texture is null unless that Render succeeded. It remains usable until the
 //next Render or Initialize, or destruction of the view. Deferred consumers must hold their own resource references.
@@ -285,9 +312,9 @@ public:
     RTXPTEmbeddedView& operator=(const RTXPTEmbeddedView&) = delete;
     //Creates new targets and history and waits for the GPU. Reinitialization invalidates previous outputs even on failure.
     RTXPTErrorCode Initialize(IRenderDevice* Device, IDeviceContext* Context, const RTXPTEmbeddedViewCreateInfo& CreateInfo);
-    //Exposure is a linear display multiplier in [2^-32, 2^32]; it never rescales accumulated/noisy HDR. Camera and View
-    //describe the render size without jitter; DLSSSR and DLSSRR add their own.
-    RTXPTErrorCode Render(const PathTracerCameraData& Camera, const PathTracerViewData& View, double Time, bool ResetHistory, float Exposure = 1.0f);
+    //Display is applied to this frame alone (RTXPTViewDisplaySettings). Camera and View describe the render size without
+    //jitter; DLSSSR and DLSSRR add their own.
+    RTXPTErrorCode Render(const PathTracerCameraData& Camera, const PathTracerViewData& View, double Time, bool ResetHistory, const RTXPTViewDisplaySettings& Display = {});
     // Revokes submitted output and temporal history after the host observes an execution failure.
     // Does not wait for the GPU or release resources that submitted commands may still reference.
     void InvalidateOutput();

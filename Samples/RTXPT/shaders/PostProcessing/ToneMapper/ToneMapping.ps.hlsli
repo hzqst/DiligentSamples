@@ -26,13 +26,14 @@ float3 ToneMapReinhard(float3 Color)
     return Color * ((Luminance / (Luminance + 1.0)) / Luminance);
 }
 
+// Reinhard et al. 2002, Eq. (4): Ld = L * (1 + L / White^2) / (1 + L). Ld / L scales the color directly, so very bright
+// pixels never form L * L. NVIDIA's RTXPT multiplies by (1 + L) instead of dividing; this port corrects it.
 float3 ToneMapReinhardModified(float3 Color)
 {
     const float Luminance = max(CalcLuminance(Color), 1.0e-6);
     const float WhiteMax  = max(g_Params.WhiteMaxLuminance, 1.0e-6);
     const float White2    = WhiteMax * WhiteMax;
-    const float Mapped    = Luminance * (1.0 + Luminance / White2) * (1.0 + Luminance);
-    return Color * (Mapped / Luminance);
+    return Color * ((1.0 + Luminance / White2) / (1.0 + Luminance));
 }
 
 float3 ToneMapHejiHableAlu(float3 Color)

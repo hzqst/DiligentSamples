@@ -185,11 +185,13 @@ void RTXPTSample::RunSuperResolutionValidation()
         return Check(Scene.Prepare(m_pImmediateContext) == RTXPTErrorCode::Ok, "the scene frame could not be prepared");
     };
     const auto Render = [&](RTXPTEmbeddedView& View, bool Reset = false, float Exposure = 1.0f, float2 HostJitter = float2{0, 0}) {
-        const RTXPTViewSize R          = View.GetRenderSize();
-        const RTXPTViewSize D          = View.GetDisplaySize();
-        const auto          CameraData = MakePathTracerCameraData(Camera, R.Width, R.Height, D.Width, D.Height, 1, 0, HostJitter);
-        const auto          ViewData   = MakePathTracerViewData(Camera.GetViewMatrix(), Camera.GetProjMatrix(), R.Width, R.Height, HostJitter);
-        return View.Render(CameraData, ViewData, Time, Reset, Exposure);
+        const RTXPTViewSize      R          = View.GetRenderSize();
+        const RTXPTViewSize      D          = View.GetDisplaySize();
+        const auto               CameraData = MakePathTracerCameraData(Camera, R.Width, R.Height, D.Width, D.Height, 1, 0, HostJitter);
+        const auto               ViewData   = MakePathTracerViewData(Camera.GetViewMatrix(), Camera.GetProjMatrix(), R.Width, R.Height, HostJitter);
+        RTXPTViewDisplaySettings Display;
+        Display.Exposure = Exposure;
+        return View.Render(CameraData, ViewData, Time, Reset, Display);
     };
     const auto CheckCode = [&](RTXPTErrorCode Expected, RTXPTErrorCode Actual, const std::string& What) {
         return Check(Expected == Actual, What + ": expected '" + GetRTXPTErrorCodeString(Expected) + "', got '" + GetRTXPTErrorCodeString(Actual) + "'");
