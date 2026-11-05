@@ -66,6 +66,7 @@ set(INCLUDE
     src/RTXPTSuperResolutionInputs.hpp
     src/RTXPTTemporalAAPass.hpp
     src/RTXPTToneMappingPass.hpp
+    src/RTXPTViewPostProcess.hpp
     src/RTXPTBlitPass.hpp
     src/RTXPTPipelineStateCache.hpp
     RTXPT_FORK_MAPPING.md

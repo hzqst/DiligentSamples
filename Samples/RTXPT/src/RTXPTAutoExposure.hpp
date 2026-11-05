@@ -178,4 +178,24 @@ private:
     Uint32 m_TileCount    = 0;
     bool   m_Ready        = false;
 };
+
+//Aborts the frame of AutoExposure, when not null, unless the frame that began it succeeds.
+class RTXPTAutoExposureFrame
+{
+public:
+    explicit RTXPTAutoExposureFrame(RTXPTAutoExposure* AutoExposure) :
+        m_AutoExposure{AutoExposure} {}
+    ~RTXPTAutoExposureFrame()
+    {
+        if (m_AutoExposure && !m_Succeeded)
+            m_AutoExposure->Abort();
+    }
+    RTXPTAutoExposureFrame(const RTXPTAutoExposureFrame&) = delete;
+    RTXPTAutoExposureFrame& operator=(const RTXPTAutoExposureFrame&) = delete;
+    void                    Succeed() { m_Succeeded = true; }
+
+private:
+    RTXPTAutoExposure* m_AutoExposure;
+    bool               m_Succeeded = false;
+};
 } // namespace Diligent

@@ -9,8 +9,7 @@
 #include "RTXPTSceneRuntime.hpp"
 #include "RTXPTRayTracingPass.hpp"
 #include "RTXPTAccumulationPass.hpp"
-#include "RTXPTDisplayBloom.hpp"
-#include "RTXPTToneMappingPass.hpp"
+#include "RTXPTViewPostProcess.hpp"
 #include "RTXPTRealtimePipeline.hpp"
 #include "RTXPTNrdConfig.hpp"
 #include "RTXPTShaderSource.hpp"
@@ -44,26 +43,6 @@ SUPER_RESOLUTION_OPTIMIZATION_TYPE ToOptimizationType(RTXPTUpscaleQuality Qualit
     }
     return SUPER_RESOLUTION_OPTIMIZATION_TYPE_COUNT;
 }
-
-//Aborts the auto exposure frame of a Render that fails once it has begun it.
-class AutoExposureFrame
-{
-public:
-    explicit AutoExposureFrame(RTXPTAutoExposure* AutoExposure) :
-        m_AutoExposure{AutoExposure} {}
-    ~AutoExposureFrame()
-    {
-        if (m_AutoExposure && !m_Succeeded)
-            m_AutoExposure->Abort();
-    }
-    AutoExposureFrame(const AutoExposureFrame&) = delete;
-    AutoExposureFrame& operator=(const AutoExposureFrame&) = delete;
-    void               Succeed() { m_Succeeded = true; }
-
-private:
-    RTXPTAutoExposure* m_AutoExposure;
-    bool               m_Succeeded = false;
-};
 
 #if RTXPT_HAS_RAY_RECONSTRUCTION
 RAY_RECONSTRUCTION_QUALITY ToReconstructionQuality(RTXPTRayReconstructionQuality Quality)
@@ -224,9 +203,8 @@ struct RTXPTEmbeddedView::Impl
     RTXPTLightsBaker                   LightsBaker;
     RTXPTRayTracingPass                Rays;
     RTXPTAccumulationPass              Accumulation;
-    //Reference only: the realtime pipeline keeps its own Bloom and tone mapping.
-    RTXPTDisplayBloom     Bloom;
-    RTXPTToneMappingPass  ToneMapping;
+    //Reference only: the realtime pipeline keeps its own display post processing.
+    RTXPTViewPostProcess  PostProcess;
     RTXPTRealtimePipeline Realtime;
     //RealtimeDLSSSR: the factory that created the upscaler is kept for the feature's lifetime.
     RefCntAutoPtr<ISuperResolutionFactory> SuperResolutionFactory;
@@ -545,14 +523,7 @@ RTXPTErrorCode RTXPTEmbeddedView::Initialize(IRenderDevice* Device, IDeviceConte
          !R.CreateTarget("RTXPT accumulated", TEX_FORMAT_RGBA32_FLOAT, BIND_UNORDERED_ACCESS, R.Accumulated) ||
          !R.CreateTarget("RTXPT processed", TEX_FORMAT_RGBA16_FLOAT, BIND_UNORDERED_ACCESS, R.Processed)))
         return RTXPTErrorCode::FrameTargetsFailed;
-    if (!R.CreateTarget("RTXPT display output", TEX_FORMAT_RGBA8_TYPELESS, BIND_RENDER_TARGET, R.DisplayWidth, R.DisplayHeight, R.Output))
-        return RTXPTErrorCode::FrameTargetsFailed;
-    //Encode once on the RTV. The UNORM SRV lets the host copy encoded display bytes without decoding them again.
-    TextureViewDesc DisplayView;
-    DisplayView.ViewType = TEXTURE_VIEW_RENDER_TARGET;
-    DisplayView.Format   = CreateInfo.DisplayRTVFormat;
-    R.Output->CreateView(DisplayView, &R.DisplayRTV);
-    if (!R.DisplayRTV)
+    if (!CreateRTXPTDisplayTarget(Device, R.DisplayWidth, R.DisplayHeight, "RTXPT display output", &R.Output, &R.DisplayRTV))
         return RTXPTErrorCode::FrameTargetsFailed;
 
     //Light sampling keeps screen-sized feedback and reads this view's depth and motion every frame, so it is per view.
@@ -602,24 +573,12 @@ RTXPTErrorCode RTXPTEmbeddedView::Initialize(IRenderDevice* Device, IDeviceConte
             R.Radiance = R.Realtime.GetTargets().GetOutputColorSRV()->GetTexture();
     }
     else if (!R.Accumulation.Initialize(Device, Factory, R.Cache, R.PSOCache, true) ||
-             !R.Bloom.Initialize(Device, R.Cache, Width, Height) ||
-             !R.ToneMapping.Initialize(Device, Factory, R.Cache, R.PSOCache, CreateInfo.DisplayRTVFormat, true) ||
-             !R.ToneMapping.ResizeResources(Device, Width, Height, TEX_FORMAT_RGBA32_FLOAT))
+             !R.PostProcess.Initialize(Device, R.Cache, R.PSOCache, Width, Height, CreateInfo.DisplayRTVFormat))
         return RTXPTErrorCode::PostProcessSetupFailed;
     Context->Flush();
     Context->WaitForIdle();
     R.Ready = true;
     return RTXPTErrorCode::Ok;
-}
-
-RTXPTToneMappingParameters MakeRTXPTToneMappingParameters(const RTXPTViewDisplaySettings& Display)
-{
-    RTXPTToneMappingParameters Params;
-    Params.ToneMapOperator      = Display.ToneMapOperator;
-    Params.ExposureCompensation = Display.AutoExposure.Enabled ? 0.0f : std::log2(Display.Exposure);
-    Params.WhiteMaxLuminance    = Display.WhiteMaxLuminance;
-    Params.WhiteScale           = Display.WhiteScale;
-    return Params;
 }
 
 RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, const PathTracerViewData& View, double Time, bool ResetHistory, const RTXPTViewDisplaySettings& Display, RTXPTAutoExposure* AutoExposure)
@@ -633,19 +592,8 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
     R.Realtime.InvalidateOutput();
     if (!R.Ready)
         return RTXPTErrorCode::NotInitialized;
-    //NaN fails every comparison, so it is rejected like a value out of range.
-    const auto IsWhitePoint = [](float White) {
-        return White >= RTXPTMinToneMappingWhite && White <= RTXPTMaxToneMappingWhite;
-    };
-    const auto IsBloomValue = [](float Value, float Max) {
-        return Value >= 0.0f && Value <= Max;
-    };
-    const bool bBloomValid = IsBloomValue(Display.Bloom.Radius, RTXPTMaxBloomRadius) && IsBloomValue(Display.Bloom.Intensity, RTXPTMaxBloomIntensity);
-    const bool bAuto       = Display.AutoExposure.Enabled;
-    const bool bAutoValid  = IsValidRTXPTAutoExposure(Display.AutoExposure) && (!bAuto || (AutoExposure && AutoExposure->IsReady()));
-    if (!(Display.Exposure >= RTXPTMinDisplayExposure && Display.Exposure <= RTXPTMaxDisplayExposure) ||
-        Display.ToneMapOperator > RTXPTToneMapperOperator::Aces || !IsWhitePoint(Display.WhiteMaxLuminance) || !IsWhitePoint(Display.WhiteScale) ||
-        !bBloomValid || !bAutoValid)
+    const bool bAuto = Display.AutoExposure.Enabled;
+    if (!IsValidRTXPTViewDisplaySettings(Display) || (bAuto && (!AutoExposure || !AutoExposure->IsReady())))
         return RTXPTErrorCode::InvalidArgument;
     const auto ToneParameters = MakeRTXPTToneMappingParameters(Display);
     if (Camera.ViewportWidth != R.Width || Camera.ViewportHeight != R.Height ||
@@ -672,7 +620,7 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
         return RTXPTErrorCode::SceneBindingsFailed;
     //The exposure of the frame is written before anything reads it; a later failure aborts the frame's meter.
     RTXPTAutoExposure* const FrameAutoExposure = bAuto ? AutoExposure : nullptr;
-    AutoExposureFrame        AutoExposureGuard{FrameAutoExposure};
+    RTXPTAutoExposureFrame   AutoExposureGuard{FrameAutoExposure};
     if (FrameAutoExposure)
     {
         const auto BeginCode = FrameAutoExposure->BeginFrame(R.Context, Display.AutoExposure, Time);
@@ -790,28 +738,11 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
     Accumulation.BlendFactor                             = 1.0f / Samples;
     if (!R.Accumulation.Render(R.Context, Accumulation))
         return RTXPTErrorCode::AccumulationFailed;
-    //Auto exposure meters the processed radiance, the accumulated HDR tone mapping reads, before Bloom.
-    if (FrameAutoExposure)
-    {
-        const auto MeterCode = FrameAutoExposure->Meter(R.Context, R.Processed, R.Width, R.Height, nullptr);
-        if (MeterCode != RTXPTErrorCode::Ok)
-            return MeterCode;
-    }
-    //Bloom reads the processed radiance and leaves it, and the accumulated radiance, unchanged.
-    ITextureView* ToneSource = nullptr;
-    const auto    BloomCode  = R.Bloom.Apply(R.Context, R.Processed, Display.Bloom, nullptr, ToneSource);
-    if (BloomCode != RTXPTErrorCode::Ok)
-        return BloomCode;
-    RTXPTToneMappingRenderAttribs Tone;
-    Tone.pSourceSRV = ToneSource;
-    Tone.pLdrRTV    = R.DisplayRTV;
-    Tone.Width      = R.Width;
-    Tone.Height     = R.Height;
-    Tone.pParams    = &ToneParameters;
-    if (FrameAutoExposure)
-        Tone.pExposureSRV = FrameAutoExposure->GetUsedExposure()->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
-    if (!R.ToneMapping.Render(R.Context, Tone))
-        return RTXPTErrorCode::ToneMappingFailed;
+    //The display post processing meters, blooms and tone maps the processed radiance, the accumulated HDR, and leaves it
+    //and the accumulated radiance unchanged.
+    const auto PostCode = R.PostProcess.Apply(R.Context, R.Processed, ToneParameters, Display.Bloom, FrameAutoExposure, R.DisplayRTV);
+    if (PostCode != RTXPTErrorCode::Ok)
+        return PostCode;
     R.AcceptFrame(Camera, View, Time, Samples, Frame.Snapshot->ContentRevision, Frame.Prepared);
     R.PublishAutoExposure(FrameAutoExposure);
     AutoExposureGuard.Succeed();
@@ -879,7 +810,7 @@ RTXPTViewOutputInfo RTXPTEmbeddedView::GetOutputInfo(RTXPTViewOutput Output, Uin
         case RTXPTViewOutput::RayReconstructionDiffuseAlbedo: Texture = ReconstructionTexture(Targets.GetRRDiffuseAlbedoSRV()); break;
         case RTXPTViewOutput::RayReconstructionSpecularAlbedo: Texture = ReconstructionTexture(Targets.GetRRSpecAlbedoSRV()); break;
         case RTXPTViewOutput::RayReconstructionExposure: Texture = bReconstruction ? R.Realtime.GetReconstructionExposure() : nullptr; break;
-        case RTXPTViewOutput::BloomRadiance: Texture = R.IsRealtime() ? R.Realtime.GetBloom().GetOutput() : R.Bloom.GetOutput(); break;
+        case RTXPTViewOutput::BloomRadiance: Texture = R.IsRealtime() ? R.Realtime.GetBloom().GetOutput() : R.PostProcess.GetBloom().GetOutput(); break;
         case RTXPTViewOutput::AutoExposureUsed: Texture = R.AutoExposureUsed; break;
         case RTXPTViewOutput::AutoExposureState: Texture = R.AutoExposureState; break;
         default: return Info;
@@ -911,7 +842,7 @@ IBuffer*                              RTXPTEmbeddedView::GetRealtimeLayerBuffer(
 }
 const RTXPTDisplayBloomStats& RTXPTEmbeddedView::GetBloomStats() const
 {
-    return m_Impl->IsRealtime() ? m_Impl->Realtime.GetBloom().GetStats() : m_Impl->Bloom.GetStats();
+    return m_Impl->IsRealtime() ? m_Impl->Realtime.GetBloom().GetStats() : m_Impl->PostProcess.GetBloom().GetStats();
 }
 
 void CreateRTXPTEmbeddedStateCache(IRenderDevice* Device, IRenderStateCache** Cache)
