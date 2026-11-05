@@ -11,12 +11,10 @@
 
 StructuredBuffer<MaterialPTData> t_PTMaterialData;
 
-#ifdef ENABLE_MATERIAL_TEXTURES
 // Texture2DArray views per material texture usage: glTF color slots decode sRGB in the SRV; data slots stay linear.
-// MATERIAL_TEXTURE_COUNT is supplied at compile time and equals RTXPTMaterials::GetTextureCount().
+// MATERIAL_TEXTURE_COUNT is the nonzero capacity of the bound table, including placeholder entries.
 Texture2DArray t_BindlessTextures[MATERIAL_TEXTURE_COUNT];
 SamplerState   s_MaterialSampler;
-#endif
 
 namespace Bridge
 {
@@ -25,7 +23,6 @@ namespace Bridge
         return t_PTMaterialData[materialID];
     }
 
-#ifdef ENABLE_MATERIAL_TEXTURES
     // Ray tracing shaders cannot derive LOD, so we sample the most detailed level. Slice is 0 for the
     // non-atlas bistro load; it is carried so an atlas path can be added later without touching call sites.
     float4 sampleMaterialTexture(uint textureIndex, float slice, float2 uv)
@@ -108,17 +105,6 @@ namespace Bridge
             thickness *= sampleMaterialTexture(material.thicknessTextureIndex, material.thicknessTextureSlice, uv).g;
         return max(thickness, 0.0);
     }
-#else
-    // Factor-only fallback (bindless material textures unavailable): no texture sampling, never alpha tested.
-    float4 getBaseColor(MaterialPTData material, float2 uv) { return material.baseColorFactor; }
-    float3 getEmission(MaterialPTData material, float2 uv) { return material.emissiveFactor; }
-    bool   alphaTestPasses(MaterialPTData material, float2 uv) { return true; }
-    float2 getMetallicRoughness(MaterialPTData material, float2 uv) { return float2(material.metallicFactor, material.roughnessFactor); }
-    float3 getTangentNormal(MaterialPTData material, float2 uv) { return float3(0.0, 0.0, 1.0); }
-    float  getTransmission(MaterialPTData material, float2 uv) { return saturate(material.transmissionFactor); }
-    float  getDiffuseTransmission(MaterialPTData material, float2 uv) { return saturate(material.diffuseTransmissionFactor); }
-    float  getThickness(MaterialPTData material, float2 uv) { return max(material.thicknessFactor, 0.0); }
-#endif
 
     float loadIoR(uint materialID)
     {

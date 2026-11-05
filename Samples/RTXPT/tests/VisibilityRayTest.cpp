@@ -395,7 +395,6 @@ RWStructuredBuffer<uint4> u_Hits;
 )";
     auto        Compile            = [&](SHADER_TYPE Stage, const char* Entry, const char* File = nullptr) {
         ShaderMacroHelper Macros;
-        Macros.Add("ENABLE_MATERIAL_TEXTURES", 1);
         Macros.Add("MATERIAL_TEXTURE_COUNT", 1);
         Macros.Add("RTXPT_USE_INLINE_VISIBILITY", 1);
         Macros.Add("USE_DX_HIT_OBJECT_EXTENSION", UseHitObject ? 1 : 0);

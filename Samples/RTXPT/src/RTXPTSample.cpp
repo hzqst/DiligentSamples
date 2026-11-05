@@ -1536,7 +1536,6 @@ void RTXPTSample::CreateSceneDependentPasses()
     // geometry flags of each material binding.
     RaysCI.IndexValueType               = VT_UINT32;
     RaysCI.MaterialTextureCount         = m_SceneFrames.GetFrame().MaterialTextureCount;
-    RaysCI.EnableMaterialTextures       = true;
     RaysCI.EnableAnyHit                 = true;
     RaysCI.EnableLDSamplerForBSDF       = m_ReferenceUI.EnableLDSamplerForBSDF;
     RaysCI.RayTracingSupported          = m_FeatureCaps.RayTracing;

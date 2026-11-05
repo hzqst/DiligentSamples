@@ -63,9 +63,9 @@ void RTXPTEmissiveTrianglePass::Reset()
     m_Constants.Release();
     m_Bound = {};
     m_BoundTextures.clear();
-    m_IndexValueType = VT_UNDEFINED;
-    m_UseTextures    = false;
-    m_Stats          = {};
+    m_IndexValueType       = VT_UNDEFINED;
+    m_MaterialTextureCount = 0;
+    m_Stats                = {};
 }
 
 bool RTXPTEmissiveTrianglePass::Initialize(IRenderDevice* pDevice, const RTXPTEmissiveTrianglePassCreateInfo& CreateInfo)
@@ -78,10 +78,11 @@ bool RTXPTEmissiveTrianglePass::Initialize(IRenderDevice* pDevice, const RTXPTEm
         return false;
     }
 
-    // Sample emissive textures on the GPU (matching the closest-hit material bridge) when the scene carries
-    // material textures. Bindless is mandatory, so the only factor-only case is a texture-less table
-    // (CreateInfo.MaterialTextureCount == 0), where the textured variant cannot be compiled.
-    const bool UseTextures = CreateInfo.EnableMaterialTextures && CreateInfo.MaterialTextureCount > 0;
+    if (CreateInfo.MaterialTextureCount == 0)
+    {
+        LOG_ERROR_MESSAGE("RTXPT emissive triangle pass requires a non-empty bindless material texture table");
+        return false;
+    }
 
     if (pDevice == nullptr || CreateInfo.pEngineFactory == nullptr)
     {
@@ -94,8 +95,8 @@ bool RTXPTEmissiveTrianglePass::Initialize(IRenderDevice* pDevice, const RTXPTEm
         DEV_ERROR("RTXPT emissive triangle pass requires VT_UINT16 or VT_UINT32 indices");
         return false;
     }
-    m_IndexValueType = CreateInfo.IndexValueType;
-    m_UseTextures    = UseTextures;
+    m_IndexValueType       = CreateInfo.IndexValueType;
+    m_MaterialTextureCount = CreateInfo.MaterialTextureCount;
 
     RefCntAutoPtr<IShaderSourceInputStreamFactory> pShaderSourceFactory;
     CreateRTXPTShaderSourceFactory(CreateInfo.pEngineFactory, "shaders;shaders\\PathTracer", &pShaderSourceFactory);
@@ -112,11 +113,7 @@ bool RTXPTEmissiveTrianglePass::Initialize(IRenderDevice* pDevice, const RTXPTEm
     ShaderCI.pShaderSourceStreamFactory = pShaderSourceFactory;
 
     ShaderMacroHelper Macros;
-    if (UseTextures)
-    {
-        Macros.Add("ENABLE_MATERIAL_TEXTURES", 1);
-        Macros.Add("MATERIAL_TEXTURE_COUNT", static_cast<int>(CreateInfo.MaterialTextureCount));
-    }
+    Macros.Add("MATERIAL_TEXTURE_COUNT", static_cast<int>(CreateInfo.MaterialTextureCount));
     ShaderCI.Macros = Macros;
 
     RefCntAutoPtr<IShader> pCS;
@@ -139,18 +136,15 @@ bool RTXPTEmissiveTrianglePass::Initialize(IRenderDevice* pDevice, const RTXPTEm
     ResourceLayout.AddVariable(SHADER_TYPE_COMPUTE, "g_EmissiveTriangleBuildConstants", SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE);
     for (const char* Name : {"t_PTMaterialData", "t_SubInstanceData", "t_SubInstanceTransforms", "t_VertexBuffer", "t_SkinnedVertexBuffer", "u_EmissiveTriangles"})
         ResourceLayout.AddVariable(SHADER_TYPE_COMPUTE, Name, SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE, SHADER_VARIABLE_FLAG_NO_DYNAMIC_BUFFERS);
-    if (UseTextures)
-    {
-        // The bindless material-texture array is bound per-build on the SRB (mutable); the sampler matches
-        // the closest-hit material sampler (BSDFs/MaterialBridge.hlsli) so baked emissive
-        // radiance is consistent with the BSDF-path emission.
-        ResourceLayout.AddVariable(SHADER_TYPE_COMPUTE, "t_BindlessTextures", SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE);
+    // The bindless material-texture array is bound per-build on the SRB (mutable); the sampler matches
+    // the closest-hit material sampler (BSDFs/MaterialBridge.hlsli) so baked emissive
+    // radiance is consistent with the BSDF-path emission.
+    ResourceLayout.AddVariable(SHADER_TYPE_COMPUTE, "t_BindlessTextures", SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE);
 
-        const SamplerDesc MaterialSamplerDesc{
-            FILTER_TYPE_LINEAR, FILTER_TYPE_LINEAR, FILTER_TYPE_LINEAR,
-            TEXTURE_ADDRESS_WRAP, TEXTURE_ADDRESS_WRAP, TEXTURE_ADDRESS_WRAP};
-        ResourceLayout.AddImmutableSampler(SHADER_TYPE_COMPUTE, "s_MaterialSampler", MaterialSamplerDesc);
-    }
+    const SamplerDesc MaterialSamplerDesc{
+        FILTER_TYPE_LINEAR, FILTER_TYPE_LINEAR, FILTER_TYPE_LINEAR,
+        TEXTURE_ADDRESS_WRAP, TEXTURE_ADDRESS_WRAP, TEXTURE_ADDRESS_WRAP};
+    ResourceLayout.AddImmutableSampler(SHADER_TYPE_COMPUTE, "s_MaterialSampler", MaterialSamplerDesc);
     PSOCreateInfo.PSODesc.ResourceLayout = ResourceLayout;
 
     PSOCreateInfo.pPSOCache = SelectRTXPTPipelineStateCache(pDevice, PSOCreateInfo, CreateInfo.pPSOCache);
@@ -186,8 +180,8 @@ bool RTXPTEmissiveTrianglePass::Bind(const RTXPTEmissiveTriangleBindings& Bindin
         DEV_ERROR("RTXPT emissive triangle pass requires all scene buffers");
         return false;
     }
-    const Uint32 TextureCount = m_UseTextures ? Bindings.MaterialTextureCount : 0;
-    if (m_UseTextures && Bindings.pMaterialTextures == nullptr)
+    const Uint32 TextureCount = Bindings.MaterialTextureCount;
+    if (Bindings.pMaterialTextures == nullptr || TextureCount != m_MaterialTextureCount)
     {
         DEV_ERROR("RTXPT emissive triangle pass requires the material textures it was compiled for");
         return false;
@@ -248,16 +242,13 @@ bool RTXPTEmissiveTrianglePass::Bind(const RTXPTEmissiveTriangleBindings& Bindin
         pVar->Set(Resource.second);
     }
 
-    if (m_UseTextures)
+    IShaderResourceVariable* pTexVar = pSRB->GetVariableByName(SHADER_TYPE_COMPUTE, "t_BindlessTextures");
+    if (pTexVar == nullptr)
     {
-        IShaderResourceVariable* pTexVar = pSRB->GetVariableByName(SHADER_TYPE_COMPUTE, "t_BindlessTextures");
-        if (pTexVar == nullptr)
-        {
-            UNEXPECTED("RTXPT emissive triangle pass material texture array binding is missing");
-            return false;
-        }
-        pTexVar->SetArray(Bindings.pMaterialTextures, 0, Bindings.MaterialTextureCount);
+        UNEXPECTED("RTXPT emissive triangle pass material texture array binding is missing");
+        return false;
     }
+    pTexVar->SetArray(Bindings.pMaterialTextures, 0, Bindings.MaterialTextureCount);
 
     m_SRB   = std::move(pSRB);
     m_Bound = Key;

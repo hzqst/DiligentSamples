@@ -29,6 +29,7 @@
 #include "RTXPTLightPacking.hpp"
 #include "RTXPTMaterialData.hpp"
 #include "RTXPTPostProcessPass.hpp"
+#include "RTXPTRayTracingPass.hpp"
 #include "RTXPTShaderSource.hpp"
 #include "RTXPTSkinnedGeometry.hpp"
 #include "RTXPTSubInstanceData.hpp"
@@ -41,14 +42,17 @@ using namespace Diligent;
 namespace
 {
 std::atomic<Uint32> ValidationErrors{0};
-constexpr Uint32    kPrimaryCount   = 2;
-constexpr Uint32    kNeighborCount  = 1;
-constexpr Uint32    kAlternations   = 3;
-constexpr float     kPrimaryOffset  = 2;
-constexpr float     kNeighborOffset = 7;
-constexpr Uint32    kViewWidth      = 8;
-constexpr Uint32    kViewHeight     = 8;
-constexpr Uint32    kViewFrames     = 4;
+const char*         ExpectedError         = nullptr;
+Uint32              ExpectedErrorCount    = 0;
+constexpr Uint32    kPrimaryCount         = 2;
+constexpr Uint32    kNeighborCount        = 1;
+constexpr Uint32    kAlternations         = 3;
+constexpr float     kPrimaryOffset        = 2;
+constexpr float     kNeighborOffset       = 7;
+constexpr Uint32    kViewWidth            = 8;
+constexpr Uint32    kViewHeight           = 8;
+constexpr Uint32    kViewFrames           = 4;
+constexpr Uint32    kMaterialTextureCount = 256;
 
 void Require(bool Condition, const std::string& Message)
 {
@@ -59,9 +63,27 @@ void Require(bool Condition, const std::string& Message)
 void DILIGENT_CALL_TYPE TestMessageCallback(DEBUG_MESSAGE_SEVERITY Severity, const Char* Message, const Char*, const Char*, int)
 {
     if (Severity >= DEBUG_MESSAGE_SEVERITY_ERROR)
+    {
+        if (ExpectedError != nullptr && std::strstr(Message, ExpectedError) != nullptr)
+        {
+            ++ExpectedErrorCount;
+            return;
+        }
         ++ValidationErrors;
+    }
     if (Severity >= DEBUG_MESSAGE_SEVERITY_WARNING)
         std::cerr << Message << '\n';
+}
+
+template <typename Action>
+void RequireRejected(Action Attempt, const char* Diagnostic)
+{
+    const Uint32 Before = ExpectedErrorCount;
+    ExpectedError       = Diagnostic;
+    const bool Accepted = Attempt();
+    ExpectedError       = nullptr;
+    Require(!Accepted, "Invalid material texture table was accepted");
+    Require(Before + 1 == ExpectedErrorCount, "Missing material texture table diagnostic");
 }
 
 struct GPU
@@ -460,10 +482,12 @@ struct SkinningFixture
 
 struct EmissiveFixture
 {
-    Uint32                 Count;
-    RefCntAutoPtr<IBuffer> Vertices, Materials, Instances, Transforms, Indices, Output;
+    Uint32                      Count;
+    RefCntAutoPtr<IBuffer>      Vertices, Materials, Instances, Transforms, Indices, Output;
+    RefCntAutoPtr<ITexture>     Placeholder, EmissiveTexture;
+    std::vector<IDeviceObject*> Textures;
 
-    EmissiveFixture(const GPU& Gpu, Uint32 InstanceCount, float Offset) :
+    EmissiveFixture(const GPU& Gpu, Uint32 InstanceCount, float Offset, Uint32 TextureCount = kMaterialTextureCount, bool Textured = false) :
         Count{InstanceCount}
     {
         constexpr Uint32                                   kTriangleVertices = 3;
@@ -474,6 +498,11 @@ struct EmissiveFixture
         std::array<MaterialPTData, 1> Material{};
         Material[0].emissiveFactor = float3{Offset, 1, 1};
         Material[0].flags          = kMaterialFlag_EmissiveAreaLight;
+        if (Textured)
+        {
+            Material[0].flags |= kMaterialFlag_HasEmissiveTexture;
+            Material[0].emissiveTextureIndex = TextureCount - 1;
+        }
         std::array<SubInstanceData, kPrimaryCount> Rows{};
         std::array<float4x4, kPrimaryCount>        Matrices{};
         for (Uint32 Index = 0; Index < kPrimaryCount; ++Index)
@@ -482,11 +511,29 @@ struct EmissiveFixture
             Rows[Index].EmissiveTriangleOffset = Index;
             Matrices[Index]                    = float4x4::Translation(0, static_cast<float>(Index), 0);
         }
-        Vertices   = MakeBuffer(Gpu, "Instance emitter vertices", Triangle, BIND_SHADER_RESOURCE);
-        Materials  = MakeBuffer(Gpu, "Instance emitter materials", Material, BIND_SHADER_RESOURCE);
-        Instances  = MakeBuffer(Gpu, "Instance emitter rows", Rows, BIND_SHADER_RESOURCE);
-        Transforms = MakeBuffer(Gpu, "Instance emitter transforms", Matrices, BIND_SHADER_RESOURCE);
-        Indices    = MakeBuffer(Gpu, "Instance emitter indices", std::array<Uint32, kTriangleVertices>{0, 1, 2}, BIND_SHADER_RESOURCE, BUFFER_MODE_FORMATTED);
+        Vertices               = MakeBuffer(Gpu, "Instance emitter vertices", Triangle, BIND_SHADER_RESOURCE);
+        Materials              = MakeBuffer(Gpu, "Instance emitter materials", Material, BIND_SHADER_RESOURCE);
+        Instances              = MakeBuffer(Gpu, "Instance emitter rows", Rows, BIND_SHADER_RESOURCE);
+        Transforms             = MakeBuffer(Gpu, "Instance emitter transforms", Matrices, BIND_SHADER_RESOURCE);
+        Indices                = MakeBuffer(Gpu, "Instance emitter indices", std::array<Uint32, kTriangleVertices>{0, 1, 2}, BIND_SHADER_RESOURCE, BUFFER_MODE_FORMATTED);
+        const auto MakeTexture = [&](Uint8 Value, RefCntAutoPtr<ITexture>& Texture) {
+            const std::array<Uint8, 4> Pixel{{Value, Value, Value, 255}};
+            TextureDesc                Desc;
+            Desc.Name  = "Instance emitter material texture";
+            Desc.Type  = RESOURCE_DIM_TEX_2D_ARRAY;
+            Desc.Width = Desc.Height = Desc.ArraySize = Desc.MipLevels = 1;
+            Desc.Format                                                = TEX_FORMAT_RGBA8_UNORM;
+            Desc.BindFlags                                             = BIND_SHADER_RESOURCE;
+            Desc.Usage                                                 = USAGE_IMMUTABLE;
+            TextureSubResData Subresource{Pixel.data(), sizeof(Pixel)};
+            TextureData       Data{&Subresource, 1};
+            Gpu.Device->CreateTexture(Desc, &Data, &Texture);
+            Require(Texture != nullptr, "Cannot create emitter material texture");
+        };
+        MakeTexture(255, Placeholder);
+        MakeTexture(128, EmissiveTexture);
+        Textures.assign(TextureCount, Placeholder->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
+        Textures.back() = EmissiveTexture->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
         NewOutput(Gpu);
     }
 
@@ -495,7 +542,7 @@ struct EmissiveFixture
         Output = MakeBuffer(Gpu, "Instance emissive output", std::array<PolymorphicLightInfo, kPrimaryCount>{}, BIND_UNORDERED_ACCESS);
     }
 
-    void Render(const GPU& Gpu, RTXPTEmissiveTrianglePass& Pass) const
+    RTXPTEmissiveTriangleBindings GetBindings() const
     {
         RTXPTEmissiveTriangleBindings Bindings;
         Bindings.pMaterialBuffer             = Materials;
@@ -504,10 +551,70 @@ struct EmissiveFixture
         Bindings.pVertexBuffer = Bindings.pSkinnedVertexBuffer = Vertices;
         Bindings.pIndexBuffer                                  = Indices;
         Bindings.pEmissiveTriangleBuffer                       = Output;
+        Bindings.pMaterialTextures                             = Textures.data();
+        Bindings.MaterialTextureCount                          = static_cast<Uint32>(Textures.size());
+        return Bindings;
+    }
+
+    void Render(const GPU& Gpu, RTXPTEmissiveTrianglePass& Pass) const
+    {
+        const auto Bindings = GetBindings();
         Require(Pass.Bind(Bindings), "Cannot bind emissive fixture");
         Require(Pass.Dispatch(Gpu.Context, Count), "Cannot dispatch emissive fixture");
     }
 };
+
+void CheckMaterialTextureTables(const GPU& Gpu)
+{
+    auto                                Cache = Gpu.MakeCache();
+    RTXPTEmissiveTrianglePass           Pass;
+    RTXPTEmissiveTrianglePassCreateInfo CI;
+    CI.pEngineFactory   = Gpu.Factory;
+    CI.pStateCache      = Cache;
+    CI.IndexValueType   = VT_UINT32;
+    CI.ComputeSupported = true;
+    RequireRejected([&] { return Pass.Initialize(Gpu.Device, CI); }, "requires a non-empty bindless material texture table");
+    ViewFixture                   View{Gpu, 1};
+    RTXPTRayTracingPass           Rays;
+    RTXPTRayTracingPassCreateInfo RaysCI;
+    RaysCI.pEngineFactory      = Gpu.Factory;
+    RaysCI.pStateCache         = Cache;
+    RaysCI.pFrameConstants     = View.Constants;
+    RaysCI.IndexValueType      = VT_UINT32;
+    RaysCI.RayTracingSupported = RaysCI.StandaloneRTShadersSupported = true;
+    RequireRejected([&] { return Rays.Initialize(Gpu.Device, Gpu.Context, RaysCI); }, "requires a non-empty bindless material texture table");
+
+    constexpr std::array<Uint32, 3> Capacities{{kMaterialTextureCount, 1024, 4096}};
+    std::vector<Uint8>              Expected;
+    for (Uint32 Capacity : Capacities)
+    {
+        CI.MaterialTextureCount = Capacity;
+        Require(Pass.Initialize(Gpu.Device, CI), "Cannot initialize bindless emissive pass");
+        EmissiveFixture Plain{Gpu, kPrimaryCount, kPrimaryOffset, Capacity};
+        EmissiveFixture Textured{Gpu, kPrimaryCount, kPrimaryOffset, Capacity, true};
+        auto            Bindings   = Textured.GetBindings();
+        Bindings.pMaterialTextures = nullptr;
+        RequireRejected([&] { return Pass.Bind(Bindings); }, "requires the material textures it was compiled for");
+        Bindings = Textured.GetBindings();
+        for (Uint32 Count : {0u, Capacity - 1, Capacity + 1})
+        {
+            Bindings.MaterialTextureCount = Count;
+            RequireRejected([&] { return Pass.Bind(Bindings); }, "requires the material textures it was compiled for");
+        }
+        Plain.Render(Gpu, Pass);
+        const auto PlainOutput = Readback(Gpu, Plain.Output);
+        Textured.Render(Gpu, Pass);
+        const auto TexturedOutput = Readback(Gpu, Textured.Output);
+        Require(PlainOutput != TexturedOutput, "Emissive texture must modulate the factor");
+        if (!Expected.empty())
+            Require(Expected == TexturedOutput, "Emissive output changed with table capacity");
+        Expected = TexturedOutput;
+        // Rebind the placeholder table after a textured dispatch, as when materials are unloaded.
+        Plain.NewOutput(Gpu);
+        Plain.Render(Gpu, Pass);
+        Require(PlainOutput == Readback(Gpu, Plain.Output), "Placeholder table rebind changed a texture-less material");
+    }
+}
 
 // Keep A alive while B requests the same cached PSO. Prime B immediately before A so even a wrong dynamic
 // buffer is valid on this frame: the old implementation must fail the output comparison, not a mapping check.
@@ -573,7 +680,8 @@ try
         Factory->SetMessageCallback(TestMessageCallback);
         Factory->SetBreakOnError(false);
         EngineD3D12CreateInfo CI;
-        CI.EnableValidation = true;
+        CI.EnableValidation           = true;
+        CI.Features.BindlessResources = DEVICE_FEATURE_STATE_ENABLED;
         Factory->CreateDeviceAndContextsD3D12(CI, &Gpu.Device, &Gpu.Context);
     }
     else
@@ -585,7 +693,10 @@ try
         Factory->SetMessageCallback(TestMessageCallback);
         Factory->SetBreakOnError(false);
         EngineVkCreateInfo CI;
-        CI.EnableValidation = true;
+        CI.EnableValidation           = true;
+        CI.Features.BindlessResources = DEVICE_FEATURE_STATE_ENABLED;
+        // This compute-only device needs descriptor indexing without enabling ray tracing.
+        CI.Features.ShaderResourceRuntimeArrays = DEVICE_FEATURE_STATE_ENABLED;
         Factory->CreateDeviceAndContextsVk(CI, &Gpu.Device, &Gpu.Context);
     }
     Require(Gpu.Device && Gpu.Context, "Cannot create GPU device");
@@ -622,10 +733,11 @@ try
     {
         const auto Init = [&](RTXPTEmissiveTrianglePass& Pass, IRenderStateCache* Cache) {
             RTXPTEmissiveTrianglePassCreateInfo CI;
-            CI.pEngineFactory   = Gpu.Factory;
-            CI.pStateCache      = Cache;
-            CI.IndexValueType   = VT_UINT32;
-            CI.ComputeSupported = true;
+            CI.pEngineFactory       = Gpu.Factory;
+            CI.pStateCache          = Cache;
+            CI.IndexValueType       = VT_UINT32;
+            CI.MaterialTextureCount = kMaterialTextureCount;
+            CI.ComputeSupported     = true;
             Require(Pass.Initialize(Gpu.Device, CI), "Cannot initialize emissive pass");
         };
         for (bool Delayed : {false, true})
@@ -633,8 +745,10 @@ try
                 CheckRebinding<RTXPTEmissiveTrianglePass, EmissiveFixture>(Gpu, "emissive", Delayed, Init);
             });
     }
+    if (Filter == "all" || Filter == "bindless")
+        Run("material texture table contracts and capacities", [&] { CheckMaterialTextureTables(Gpu); });
     CheckViewPasses(Gpu, Filter, Run);
-    const std::array<const char*, 10> Filters{{"all", "skinning", "emissive", "accumulation", "compute", "guides", "postprocess", "srinputs", "taa", "tonemapping"}};
+    const std::array<const char*, 11> Filters{{"all", "skinning", "emissive", "bindless", "accumulation", "compute", "guides", "postprocess", "srinputs", "taa", "tonemapping"}};
     Require(std::any_of(Filters.begin(), Filters.end(), [&](const char* Name) { return Filter == Name; }), "Unknown test filter");
     std::cout << "Instance resource validation: failures=" << Failures << ", validation errors=" << ValidationErrors.load() << '\n';
     return Failures == 0 && ValidationErrors == 0 ? 0 : 1;

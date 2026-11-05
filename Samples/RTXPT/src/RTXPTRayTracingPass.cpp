@@ -98,7 +98,6 @@ void RTXPTRayTracingPass::Reset()
     m_HasBindings = false;
     m_BoundTextures.clear();
     m_IndexValueType      = VT_UNDEFINED;
-    m_UseTextures         = false;
     m_UseAnyHitTextures   = false;
     m_UseHitObject        = false;
     m_UseInlineVisibility = false;
@@ -155,7 +154,12 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice* pDevice, IDeviceContext* pCo
         return false;
     }
 
-    const bool UseTextures         = CreateInfo.EnableMaterialTextures && CreateInfo.MaterialTextureCount > 0;
+    if (CreateInfo.MaterialTextureCount == 0)
+    {
+        LOG_ERROR_MESSAGE("RTXPT path tracer requires a non-empty bindless material texture table");
+        return false;
+    }
+
     const bool UseAnyHit           = CreateInfo.EnableAnyHit;
     const bool UseInlineVisibility = CreateInfo.EnableInlineVisibility &&
         (pDevice->GetAdapterInfo().RayTracing.CapFlags & RAY_TRACING_CAP_FLAG_INLINE_RAY_TRACING) != 0;
@@ -167,8 +171,7 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice* pDevice, IDeviceContext* pCo
     LOG_INFO_MESSAGE("RTXPT scatter rays: ", UseHitObject ? (UseThreadReorder ? "HitObject + reorder" : "HitObject") : "TraceRay");
 
     m_IndexValueType      = CreateInfo.IndexValueType;
-    m_UseTextures         = UseTextures;
-    m_UseAnyHitTextures   = UseTextures && UseAnyHit && (!UseHitObject || !UseInlineVisibility);
+    m_UseAnyHitTextures   = UseAnyHit && (!UseHitObject || !UseInlineVisibility);
     m_UseHitObject        = UseHitObject;
     m_UseInlineVisibility = UseInlineVisibility;
 
@@ -204,7 +207,7 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice* pDevice, IDeviceContext* pCo
     const SHADER_TYPE ConstStages   = EnvStages | HitStages;
     const SHADER_TYPE DynamicStages = EnvStages;
 
-    m_Stats.MaterialTextureCount = UseTextures ? CreateInfo.MaterialTextureCount : 0;
+    m_Stats.MaterialTextureCount = CreateInfo.MaterialTextureCount;
 
     auto CreateVariant = [&](RTXPTPathTraceVariant Variant) {
         VariantState& State = m_Variants[GetVariantIndex(Variant)];
@@ -234,11 +237,7 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice* pDevice, IDeviceContext* pCo
         Macros.Add("RTXPT_USE_APPROXIMATE_MIS", CreateInfo.NEEMISType == 2 || (CreateInfo.NEEMISType == 1 && Variant != RTXPTPathTraceVariant::Reference) ? 1 : 0);
         Macros.Add("RTXPT_USE_INLINE_VISIBILITY", UseInlineVisibility ? 1 : 0);
         Macros.Add("RTXPT_INDEX_BUFFER_UINT16", CreateInfo.IndexValueType == VT_UINT16 ? 1 : 0);
-        if (UseTextures)
-        {
-            Macros.Add("ENABLE_MATERIAL_TEXTURES", 1);
-            Macros.Add("MATERIAL_TEXTURE_COUNT", static_cast<int>(CreateInfo.MaterialTextureCount));
-        }
+        Macros.Add("MATERIAL_TEXTURE_COUNT", static_cast<int>(CreateInfo.MaterialTextureCount));
         Macros.Add("RTXPT_ENABLE_LOW_DISCREPANCY_SAMPLER_FOR_BSDF", CreateInfo.EnableLDSamplerForBSDF ? 1 : 0);
         ShaderCI.Macros = Macros;
 
@@ -371,15 +370,12 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice* pDevice, IDeviceContext* pCo
                                  "t_LightingControl", "t_LightProxyCounters", "t_LightSamplingProxies", "t_LocalSamplingBuffer"})
             ResourceLayout.AddVariable(ConstStages, Name, SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE, SHADER_VARIABLE_FLAG_NO_DYNAMIC_BUFFERS);
 
-        if (UseTextures)
-        {
-            ResourceLayout.AddVariable(HitStages, "t_BindlessTextures", SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE);
+        ResourceLayout.AddVariable(HitStages, "t_BindlessTextures", SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE);
 
-            const SamplerDesc MaterialSamplerDesc{
-                FILTER_TYPE_LINEAR, FILTER_TYPE_LINEAR, FILTER_TYPE_LINEAR,
-                TEXTURE_ADDRESS_WRAP, TEXTURE_ADDRESS_WRAP, TEXTURE_ADDRESS_WRAP};
-            ResourceLayout.AddImmutableSampler(HitStages, "s_MaterialSampler", MaterialSamplerDesc);
-        }
+        const SamplerDesc MaterialSamplerDesc{
+            FILTER_TYPE_LINEAR, FILTER_TYPE_LINEAR, FILTER_TYPE_LINEAR,
+            TEXTURE_ADDRESS_WRAP, TEXTURE_ADDRESS_WRAP, TEXTURE_ADDRESS_WRAP};
+        ResourceLayout.AddImmutableSampler(HitStages, "s_MaterialSampler", MaterialSamplerDesc);
         PSOCreateInfo.PSODesc.ResourceLayout = ResourceLayout;
 
         PSOCreateInfo.pPSOCache = SelectRTXPTPipelineStateCache(pDevice, PSOCreateInfo, CreateInfo.pPSOCache);
@@ -451,14 +447,14 @@ bool RTXPTRayTracingPass::Bind(IDeviceContext* pContext, const RTXPTRayTracingBi
         DEV_ERROR("RTXPT path tracer requires a TLAS and the material, sub-instance, vertex, skinned vertex and index buffers");
         return false;
     }
-    if (m_UseTextures && (Bindings.pMaterialTextures == nullptr || Bindings.MaterialTextureCount != m_Stats.MaterialTextureCount))
+    if (Bindings.pMaterialTextures == nullptr || Bindings.MaterialTextureCount != m_Stats.MaterialTextureCount)
     {
         DEV_ERROR("RTXPT path tracer was compiled for ", m_Stats.MaterialTextureCount, " material textures, but ",
                   Bindings.MaterialTextureCount, " are bound");
         return false;
     }
 
-    const Uint32 TextureCount  = m_UseTextures ? Bindings.MaterialTextureCount : 0;
+    const Uint32 TextureCount  = Bindings.MaterialTextureCount;
     const bool   TexturesEqual = m_BoundTextures.size() == TextureCount &&
         std::equal(m_BoundTextures.begin(), m_BoundTextures.end(), Bindings.pMaterialTextures);
     RTXPTRayTracingBindings Key = Bindings;
@@ -594,26 +590,23 @@ bool RTXPTRayTracingPass::CreateBindings(const RTXPTRayTracingBindings& Bindings
                 EnvironmentReflected = true;
         }
 
-        if (m_UseTextures)
+        IShaderResourceVariable* pClosestHitTexVar = pSRB->GetVariableByName(SHADER_TYPE_RAY_CLOSEST_HIT, "t_BindlessTextures");
+        IShaderResourceVariable* pAnyHitTexVar     = m_UseAnyHitTextures ?
+            pSRB->GetVariableByName(SHADER_TYPE_RAY_ANY_HIT, "t_BindlessTextures") :
+            nullptr;
+        if (pClosestHitTexVar == nullptr || (m_UseAnyHitTextures && pAnyHitTexVar == nullptr))
         {
-            IShaderResourceVariable* pClosestHitTexVar = pSRB->GetVariableByName(SHADER_TYPE_RAY_CLOSEST_HIT, "t_BindlessTextures");
-            IShaderResourceVariable* pAnyHitTexVar     = m_UseAnyHitTextures ?
-                pSRB->GetVariableByName(SHADER_TYPE_RAY_ANY_HIT, "t_BindlessTextures") :
-                nullptr;
-            if (pClosestHitTexVar == nullptr || (m_UseAnyHitTextures && pAnyHitTexVar == nullptr))
-            {
-                UNEXPECTED("Failed to find RTXPT material texture array binding");
-                return false;
-            }
-            pClosestHitTexVar->SetArray(Bindings.pMaterialTextures, 0, Bindings.MaterialTextureCount);
-            if (m_UseHitObject)
-            {
-                if (IShaderResourceVariable* pRayGenTexVar = pSRB->GetVariableByName(SHADER_TYPE_RAY_GEN, "t_BindlessTextures"))
-                    pRayGenTexVar->SetArray(Bindings.pMaterialTextures, 0, Bindings.MaterialTextureCount);
-            }
-            if (pAnyHitTexVar != nullptr)
-                pAnyHitTexVar->SetArray(Bindings.pMaterialTextures, 0, Bindings.MaterialTextureCount);
+            UNEXPECTED("Failed to find RTXPT material texture array binding");
+            return false;
         }
+        pClosestHitTexVar->SetArray(Bindings.pMaterialTextures, 0, Bindings.MaterialTextureCount);
+        if (m_UseHitObject)
+        {
+            if (IShaderResourceVariable* pRayGenTexVar = pSRB->GetVariableByName(SHADER_TYPE_RAY_GEN, "t_BindlessTextures"))
+                pRayGenTexVar->SetArray(Bindings.pMaterialTextures, 0, Bindings.MaterialTextureCount);
+        }
+        if (pAnyHitTexVar != nullptr)
+            pAnyHitTexVar->SetArray(Bindings.pMaterialTextures, 0, Bindings.MaterialTextureCount);
         State.SRB = std::move(pSRB);
     }
 
@@ -626,7 +619,7 @@ bool RTXPTRayTracingPass::CreateBindings(const RTXPTRayTracingBindings& Bindings
     m_Stats.LightsBakerBridgeBound   = true;
     m_Stats.EmissiveLightBridgeBound = true;
     m_Stats.EnvironmentBridgeBound   = EnvironmentReflected;
-    m_Stats.MaterialTexturesBound    = m_UseTextures;
+    m_Stats.MaterialTexturesBound    = true;
     ++m_Stats.BindingCount;
     return true;
 }

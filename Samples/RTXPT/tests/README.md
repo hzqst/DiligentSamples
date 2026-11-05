@@ -29,8 +29,15 @@ dispatch counts and replacement output buffers. The pre-fix implementation fails
 all four EmissiveTriangle/Skinning cases on both APIs. Assertion/validation errors
 are counted and cause a nonzero exit without a modal assertion dialog.
 
-An optional final argument selects `skinning`, `emissive`, `accumulation`,
+An optional final argument selects `skinning`, `emissive`, `bindless`, `accumulation`,
 `compute`, `guides`, `postprocess`, `srinputs`, `taa` or `tonemapping`.
+
+The `bindless` cases reject zero-capacity pass creation, missing texture tables and
+binding counts different from the compiled capacity. GPU readbacks compare materials
+without textures and textured emitters at the last slot of 256/1024/4096-entry tables,
+including rebinding placeholder tables after textured dispatches. Both path-tracing
+and emissive passes require a nonempty table; materials without textures retain their
+factor values through material flags rather than a separate shader variant.
 
 ## Vulkan RGB10A2 UAV status
 
