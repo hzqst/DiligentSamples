@@ -91,10 +91,11 @@ bool RTXPTSkinningPass::Initialize(IRenderDevice* pDevice, IEngineFactory* pEngi
     PSOCreateInfo.PSODesc.ImmediateContextMask = kRTXPTImmediateContextMask;
     PSOCreateInfo.pCS                          = pCS;
 
-    // The buffers are mutable: Bind creates a new resource binding when they change. None of them is USAGE_DYNAMIC.
+    // Geometry buffers are mutable: Bind creates a new resource binding when they change. None of them is USAGE_DYNAMIC.
     PipelineResourceLayoutDescX ResourceLayout;
     ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE;
-    ResourceLayout.AddVariable(SHADER_TYPE_COMPUTE, "cbSkinningConstants", SHADER_RESOURCE_VARIABLE_TYPE_STATIC);
+    // Constants belong to the pass instance, including after Bind recreates its SRB.
+    ResourceLayout.AddVariable(SHADER_TYPE_COMPUTE, "cbSkinningConstants", SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE);
     for (const char* Name : {"t_SourceVertices", "t_SourceSkinData", "t_JointMatrices", "u_SkinnedVertices"})
         ResourceLayout.AddVariable(SHADER_TYPE_COMPUTE, Name, SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE, SHADER_VARIABLE_FLAG_NO_DYNAMIC_BUFFERS);
     PSOCreateInfo.PSODesc.ResourceLayout = ResourceLayout;
@@ -103,13 +104,6 @@ bool RTXPTSkinningPass::Initialize(IRenderDevice* pDevice, IEngineFactory* pEngi
     pStateCache->CreateComputePipelineState(PSOCreateInfo, &m_PSO);
     if (!m_PSO)
         return false;
-    IShaderResourceVariable* pConstantsVar = m_PSO->GetStaticVariableByName(SHADER_TYPE_COMPUTE, "cbSkinningConstants");
-    if (pConstantsVar == nullptr)
-    {
-        m_PSO.Release();
-        return false;
-    }
-    pConstantsVar->Set(m_Constants, SET_SHADER_RESOURCE_FLAG_ALLOW_OVERWRITE);
     return true;
 }
 
@@ -127,6 +121,7 @@ bool RTXPTSkinningPass::Bind(const RTXPTSkinningBindings& Bindings)
     if (!pSRB)
         return false;
     const std::pair<const char*, IDeviceObject*> Resources[] = {
+        {"cbSkinningConstants", m_Constants},
         {"t_SourceVertices", Bindings.pSourceVertices->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE)},
         {"t_SourceSkinData", Bindings.pSkinData->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE)},
         {"t_JointMatrices", Bindings.pJointMatrices->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE)},

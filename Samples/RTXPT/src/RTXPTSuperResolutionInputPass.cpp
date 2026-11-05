@@ -89,7 +89,7 @@ bool RTXPTSuperResolutionInputPass::Initialize(IRenderDevice* Device, IEngineFac
     PSOCreateInfo.pCS                          = CS;
     PipelineResourceLayoutDescX ResourceLayout;
     ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC;
-    ResourceLayout.AddVariable(SHADER_TYPE_COMPUTE, "g_Const", SHADER_RESOURCE_VARIABLE_TYPE_STATIC);
+    ResourceLayout.AddVariable(SHADER_TYPE_COMPUTE, "g_Const", SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE);
     PSOCreateInfo.PSODesc.ResourceLayout = ResourceLayout;
     if (Cache != nullptr)
         Cache->CreateComputePipelineState(PSOCreateInfo, &m_PSO);
@@ -97,8 +97,11 @@ bool RTXPTSuperResolutionInputPass::Initialize(IRenderDevice* Device, IEngineFac
         Device->CreateComputePipelineState(PSOCreateInfo, &m_PSO);
     if (!m_PSO)
         return false;
-    m_PSO->GetStaticVariableByName(SHADER_TYPE_COMPUTE, "g_Const")->Set(FrameConstants, SET_SHADER_RESOURCE_FLAG_ALLOW_OVERWRITE);
     m_PSO->CreateShaderResourceBinding(&m_SRB, true);
+    auto* ConstantsVar = m_SRB ? m_SRB->GetVariableByName(SHADER_TYPE_COMPUTE, "g_Const") : nullptr;
+    if (ConstantsVar == nullptr)
+        return false;
+    ConstantsVar->Set(FrameConstants);
 
     const Uint16      One = Float16{1.0f}.Raw();
     TextureSubResData ExposureData{&One, sizeof(One)};

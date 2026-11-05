@@ -497,7 +497,7 @@ bool RTXPTToneMappingPass::Initialize(IRenderDevice*       pDevice,
     PipelineResourceLayoutDescX ToneMapLayout;
     ToneMapLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE;
     ToneMapLayout
-        .AddVariable(SHADER_TYPE_PIXEL, "g_ToneMappingConstants", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
+        .AddVariable(SHADER_TYPE_PIXEL, "g_ToneMappingConstants", SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE)
         .AddVariable(SHADER_TYPE_PIXEL, "s_ColorSampler", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
         .AddVariable(SHADER_TYPE_PIXEL, "s_LuminanceSampler", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
         .AddVariable(SHADER_TYPE_PIXEL, "t_Color", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
@@ -514,7 +514,6 @@ bool RTXPTToneMappingPass::Initialize(IRenderDevice*       pDevice,
     }
 
     const bool StaticBound =
-        SetStaticVariable(m_ToneMapPSO, SHADER_TYPE_PIXEL, "g_ToneMappingConstants", m_ToneMappingCB, true) &&
         SetStaticVariable(m_ToneMapPSO, SHADER_TYPE_PIXEL, "s_ColorSampler", m_PointSampler, true) &&
         SetStaticVariable(m_ToneMapPSO, SHADER_TYPE_PIXEL, "s_LuminanceSampler", m_LinearSampler, false);
     if (!StaticBound)
@@ -527,6 +526,12 @@ bool RTXPTToneMappingPass::Initialize(IRenderDevice*       pDevice,
     if (!m_ToneMapSRB)
     {
         DEV_ERROR("RTXPT tone mapping pass failed to create SRBs");
+        return false;
+    }
+
+    if (!SetSRBVariable(m_ToneMapSRB, SHADER_TYPE_PIXEL, "g_ToneMappingConstants", m_ToneMappingCB, true))
+    {
+        DEV_ERROR("RTXPT tone mapping pass failed to bind instance constants");
         return false;
     }
 

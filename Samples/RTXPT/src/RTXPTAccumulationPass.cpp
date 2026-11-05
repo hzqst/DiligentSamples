@@ -112,7 +112,7 @@ bool RTXPTAccumulationPass::Initialize(IRenderDevice* pDevice, IEngineFactory* p
     PipelineResourceLayoutDescX ResourceLayout;
     ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE;
     ResourceLayout
-        .AddVariable(SHADER_TYPE_COMPUTE, "g_AccumulationConstants", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
+        .AddVariable(SHADER_TYPE_COMPUTE, "g_AccumulationConstants", SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE)
         .AddVariable(SHADER_TYPE_COMPUTE, "t_InputColor", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_AccumulatedColor", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_OutputColor", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
@@ -167,9 +167,7 @@ bool RTXPTAccumulationPass::Initialize(IRenderDevice* pDevice, IEngineFactory* p
         return true;
     };
 
-    const bool Bound =
-        SetStatic("g_AccumulationConstants", m_Constants) &&
-        SetStatic("s_LinearSampler", m_LinearSampler);
+    const bool Bound = SetStatic("s_LinearSampler", m_LinearSampler);
     VERIFY(Bound, "Failed to bind RTXPT accumulation static resources");
     if (!Bound)
         return false;
@@ -178,6 +176,14 @@ bool RTXPTAccumulationPass::Initialize(IRenderDevice* pDevice, IEngineFactory* p
     VERIFY(m_SRB, "Failed to create RTXPT accumulation SRB");
     if (!m_SRB)
         return false;
+
+    auto* pConstantsVar = m_SRB->GetVariableByName(SHADER_TYPE_COMPUTE, "g_AccumulationConstants");
+    if (pConstantsVar == nullptr)
+    {
+        UNEXPECTED("RTXPT accumulation constants are missing");
+        return false;
+    }
+    pConstantsVar->Set(m_Constants);
 
     m_Stats.Ready = true;
     return true;

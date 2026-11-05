@@ -131,30 +131,12 @@ ITextureView* GetDefaultView(const RefCntAutoPtr<ITexture>& Texture, TEXTURE_VIE
     return Texture ? Texture->GetDefaultView(ViewType) : nullptr;
 }
 
-bool SetStaticVariable(IPipelineState* pPSO, const char* Name, IDeviceObject* pObject)
-{
-    IShaderResourceVariable* pVar = pPSO != nullptr ? pPSO->GetStaticVariableByName(SHADER_TYPE_COMPUTE, Name) : nullptr;
-    if (pVar == nullptr)
-    {
-        UNEXPECTED("RTXPT Temporal AA input conversion static variable is missing: ", Name);
-        return false;
-    }
-    if (pObject == nullptr)
-    {
-        DEV_ERROR("RTXPT Temporal AA input conversion static resource is null: ", Name);
-        return false;
-    }
-
-    pVar->Set(pObject, SET_SHADER_RESOURCE_FLAG_ALLOW_OVERWRITE);
-    return true;
-}
-
-bool SetDynamicVariable(IShaderResourceBinding* pSRB, const char* Name, IDeviceObject* pObject)
+bool SetSRBVariable(IShaderResourceBinding* pSRB, const char* Name, IDeviceObject* pObject)
 {
     IShaderResourceVariable* pVar = pSRB != nullptr ? pSRB->GetVariableByName(SHADER_TYPE_COMPUTE, Name) : nullptr;
     if (pVar == nullptr)
     {
-        UNEXPECTED("RTXPT Temporal AA input conversion dynamic variable is missing: ", Name);
+        UNEXPECTED("RTXPT Temporal AA input conversion variable is missing: ", Name);
         return false;
     }
     if (pObject == nullptr)
@@ -284,7 +266,7 @@ bool RTXPTTemporalAAPass::CreateInputConversionPipeline(IRenderDevice* pDevice, 
     PipelineResourceLayoutDescX ResourceLayout;
     ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE;
     ResourceLayout
-        .AddVariable(SHADER_TYPE_COMPUTE, "g_Const", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
+        .AddVariable(SHADER_TYPE_COMPUTE, "g_Const", SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE)
         .AddVariable(SHADER_TYPE_COMPUTE, "t_RTXPTDepth", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "t_RTXPTMotionVectors", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_TAADepth", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
@@ -299,17 +281,17 @@ bool RTXPTTemporalAAPass::CreateInputConversionPipeline(IRenderDevice* pDevice, 
         return false;
     }
 
-    if (!SetStaticVariable(m_InputConversionPSO, "g_Const", m_FrameConstantsBuffer))
-    {
-        DEV_ERROR("RTXPT Temporal AA input conversion failed to bind frame constants");
-        return false;
-    }
-
     m_InputConversionPSO->CreateShaderResourceBinding(&m_InputConversionSRB, true);
     VERIFY(m_InputConversionSRB, "Failed to create RTXPT Temporal AA input conversion SRB");
     if (!m_InputConversionSRB)
     {
         DEV_ERROR("Failed to create RTXPT Temporal AA input conversion SRB");
+        return false;
+    }
+
+    if (!SetSRBVariable(m_InputConversionSRB, "g_Const", m_FrameConstantsBuffer))
+    {
+        DEV_ERROR("RTXPT Temporal AA input conversion failed to bind frame constants");
         return false;
     }
 
@@ -417,10 +399,10 @@ bool RTXPTTemporalAAPass::ConvertInputs(const RTXPTTemporalAAFrameAttribs& Attri
     }
 
     const bool Bound =
-        SetDynamicVariable(m_InputConversionSRB, "t_RTXPTDepth", Attribs.pRenderTargets->GetDepthSRV()) &&
-        SetDynamicVariable(m_InputConversionSRB, "t_RTXPTMotionVectors", Attribs.pRenderTargets->GetScreenMotionVectorsSRV()) &&
-        SetDynamicVariable(m_InputConversionSRB, "u_TAADepth", GetTAADepthUAV()) &&
-        SetDynamicVariable(m_InputConversionSRB, "u_TAAMotion", GetTAAMotionUAV());
+        SetSRBVariable(m_InputConversionSRB, "t_RTXPTDepth", Attribs.pRenderTargets->GetDepthSRV()) &&
+        SetSRBVariable(m_InputConversionSRB, "t_RTXPTMotionVectors", Attribs.pRenderTargets->GetScreenMotionVectorsSRV()) &&
+        SetSRBVariable(m_InputConversionSRB, "u_TAADepth", GetTAADepthUAV()) &&
+        SetSRBVariable(m_InputConversionSRB, "u_TAAMotion", GetTAAMotionUAV());
     if (!Bound)
     {
         DEV_ERROR("RTXPT Temporal AA input conversion failed to bind resources");

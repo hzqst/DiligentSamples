@@ -116,29 +116,29 @@ bool IsPassInSet(RTXPTPostProcessPassId Pass, RTXPTPostProcessPassSet PassSet)
     }
 }
 
-bool SetStaticVariable(IPipelineState*        pPSO,
-                       SHADER_TYPE            ShaderType,
-                       const char*            Name,
-                       IDeviceObject*         pObject,
-                       bool                   Required,
-                       RTXPTPostProcessPassId Pass,
-                       const char*            ResourceName)
+bool SetInstanceVariable(IShaderResourceBinding* pSRB,
+                         SHADER_TYPE             ShaderType,
+                         const char*             Name,
+                         IDeviceObject*          pObject,
+                         bool                    Required,
+                         RTXPTPostProcessPassId  Pass,
+                         const char*             ResourceName)
 {
-    IShaderResourceVariable* pVar = pPSO != nullptr ? pPSO->GetStaticVariableByName(ShaderType, Name) : nullptr;
+    IShaderResourceVariable* pVar = pSRB != nullptr ? pSRB->GetVariableByName(ShaderType, Name) : nullptr;
     if (pVar == nullptr)
     {
         if (Required)
-            UNEXPECTED("RTXPT static shader variable is missing: ", ResourceName, " (", Name, ") for pass: ", GetPassName(Pass));
+            UNEXPECTED("RTXPT instance shader variable is missing: ", ResourceName, " (", Name, ") for pass: ", GetPassName(Pass));
         return !Required;
     }
     if (pObject == nullptr)
     {
         if (Required)
-            DEV_ERROR("RTXPT static resource object is null: ", ResourceName, " (", Name, ") for pass: ", GetPassName(Pass));
+            DEV_ERROR("RTXPT instance resource object is null: ", ResourceName, " (", Name, ") for pass: ", GetPassName(Pass));
         return !Required;
     }
 
-    pVar->Set(pObject, SET_SHADER_RESOURCE_FLAG_ALLOW_OVERWRITE);
+    pVar->Set(pObject);
     return true;
 }
 
@@ -391,8 +391,8 @@ bool RTXPTPostProcessPass::CreatePostProcessPSO(IRenderDevice*          pDevice,
     PipelineResourceLayoutDescX ResourceLayout;
     ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE;
     ResourceLayout
-        .AddVariable(SHADER_TYPE_COMPUTE, "g_Const", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
-        .AddVariable(SHADER_TYPE_COMPUTE, "g_MiniConst", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
+        .AddVariable(SHADER_TYPE_COMPUTE, "g_Const", SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE)
+        .AddVariable(SHADER_TYPE_COMPUTE, "g_MiniConst", SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE)
         .AddVariable(SHADER_TYPE_COMPUTE, "t_Depth", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "t_MotionVectors", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "t_SpecularHitT", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
@@ -430,22 +430,25 @@ bool RTXPTPostProcessPass::CreatePostProcessPSO(IRenderDevice*          pDevice,
     if (!State.PSO)
         return false;
 
+    State.PSO->CreateShaderResourceBinding(&State.SRB, true);
+    VERIFY(State.SRB, "Failed to create RTXPT post-process SRB: ", GetPassName(Pass));
+    if (!State.SRB)
+        return false;
+
     const bool MiniConstantsRequired =
         IsDenoiserPreparePass(Pass) ||
         IsDenoiserFinalMergePass(Pass) ||
         Pass == RTXPTPostProcessPassId::DenoisingLayersDebugViz;
-    const bool StaticBound =
-        SetStaticVariable(State.PSO, SHADER_TYPE_COMPUTE, "g_Const", m_FrameConstants, true, Pass, "frame constants") &&
-        SetStaticVariable(State.PSO, SHADER_TYPE_COMPUTE, "g_MiniConst", m_MiniConstants, MiniConstantsRequired, Pass, "mini constants");
-    if (!StaticBound)
+    const bool InstanceBound =
+        SetInstanceVariable(State.SRB, SHADER_TYPE_COMPUTE, "g_Const", m_FrameConstants, true, Pass, "frame constants") &&
+        SetInstanceVariable(State.SRB, SHADER_TYPE_COMPUTE, "g_MiniConst", m_MiniConstants, MiniConstantsRequired, Pass, "mini constants");
+    if (!InstanceBound)
     {
-        DEV_ERROR("RTXPT post-process pass failed to bind static constants for ", GetPassName(Pass));
+        DEV_ERROR("RTXPT post-process pass failed to bind instance constants for ", GetPassName(Pass));
         return false;
     }
 
-    State.PSO->CreateShaderResourceBinding(&State.SRB, true);
-    VERIFY(State.SRB, "Failed to create RTXPT post-process SRB: ", GetPassName(Pass));
-    return State.SRB != nullptr;
+    return true;
 }
 
 bool RTXPTPostProcessPass::DispatchPass(IDeviceContext*                        pContext,
