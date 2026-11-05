@@ -2,7 +2,6 @@
 
 #include "RTXPTAutoExposure.hpp"
 #include "RTXPTDenoisingGuidesBaker.hpp"
-#include "RTXPTDisplayBloom.hpp"
 #include "RTXPTFrameConstants.hpp"
 #include "RTXPTLightsBaker.hpp"
 #include "RTXPTNrdDenoiser.hpp"
@@ -10,7 +9,7 @@
 #include "RTXPTRayTracingPass.hpp"
 #include "RTXPTSceneRuntime.hpp"
 #include "RTXPTSuperResolutionInputPass.hpp"
-#include "RTXPTToneMappingPass.hpp"
+#include "RTXPTViewPostProcess.hpp"
 #include "RTXPTGpuProfiler.hpp"
 
 namespace Diligent
@@ -139,7 +138,7 @@ public:
     //view's auto exposure.
     ITexture* GetReconstructionExposure() const { return m_ReconstructionExposureRead; }
     //The display Bloom of the current successful Render.
-    const RTXPTDisplayBloom& GetBloom() const { return m_Bloom; }
+    const RTXPTDisplayBloom& GetBloom() const { return m_PostProcess.GetBloom(); }
 
 private:
     RTXPTErrorCode Denoise(IDeviceContext* Context, const SampleConstants& Constants, const RTXPTRealtimeHistoryAttribs& History, RTXPTGpuProfiler* Profiler);
@@ -151,8 +150,7 @@ private:
     RTXPTPostProcessPass          m_Merge;
     RTXPTNrdDenoiser              m_Nrd;
     RTXPTRealtimeSettings         m_NrdSettings;
-    RTXPTDisplayBloom             m_Bloom;
-    RTXPTToneMappingPass          m_ToneMapping;
+    RTXPTViewPostProcess          m_PostProcess;
     RTXPTSuperResolutionInputPass m_SuperResolutionInputs;
     RefCntAutoPtr<IBuffer>        m_Constants;
     RefCntAutoPtr<IBuffer>        m_PixelList;
