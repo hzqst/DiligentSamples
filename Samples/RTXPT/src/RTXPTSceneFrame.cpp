@@ -1249,14 +1249,13 @@ struct RTXPTSceneFrameBuilder::Impl
         {
             // The bindless table size is compiled into the pass.
             RTXPTEmissiveTrianglePassCreateInfo PassCI;
-            PassCI.pEngineFactory         = CreateInfo.pEngineFactory;
-            PassCI.pStateCache            = CreateInfo.pStateCache;
-            PassCI.pPSOCache              = CreateInfo.pPSOCache;
-            PassCI.IndexValueType         = VT_UINT32;
-            PassCI.MaterialTextureCount   = TextureCount;
-            PassCI.EnableMaterialTextures = true;
-            PassCI.ComputeSupported       = true;
-            EmissivePassTextureCount      = 0;
+            PassCI.pEngineFactory       = CreateInfo.pEngineFactory;
+            PassCI.pStateCache          = CreateInfo.pStateCache;
+            PassCI.pPSOCache            = CreateInfo.pPSOCache;
+            PassCI.IndexValueType       = VT_UINT32;
+            PassCI.MaterialTextureCount = TextureCount;
+            PassCI.ComputeSupported     = true;
+            EmissivePassTextureCount    = 0;
             if (!EmissivePass.Initialize(Device, PassCI))
                 return RTXPTErrorCode::EmissivePassFailed;
             EmissivePassTextureCount = TextureCount;

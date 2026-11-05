@@ -8,7 +8,7 @@ static std::vector<float4> SampleColorMaterials(IRenderDevice* Device, IDeviceCo
     const std::string                              ShaderRoot = (std::filesystem::absolute(__FILE__).parent_path().parent_path() / "shaders").string();
     RefCntAutoPtr<IShaderSourceInputStreamFactory> Streams;
     Factory->CreateDefaultShaderSourceStreamFactory(ShaderRoot.c_str(), &Streams);
-    const std::string Prefix = "#define ENABLE_MATERIAL_TEXTURES 1\n#define NON_PATH_TRACING_PASS 1\n#define MATERIAL_TEXTURE_COUNT " +
+    const std::string Prefix = "#define NON_PATH_TRACING_PASS 1\n#define MATERIAL_TEXTURE_COUNT " +
         std::to_string(Materials.GetTextureCount()) + "\n#define COLOR_SAMPLES_PER_MATERIAL " + std::to_string(ColorSamplesPerMaterial) + "\n";
     const std::string Source = Prefix + (Triangle ? R"(
 #define main UnusedTriangleBuild

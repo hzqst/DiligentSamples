@@ -89,10 +89,9 @@ struct RTXPTRayTracingPassCreateInfo
     IPipelineStateCache* pPSOCache       = nullptr;
     IBuffer*             pFrameConstants = nullptr;
     VALUE_TYPE           IndexValueType  = VT_UNDEFINED;
-    // The size of the bindless material-texture table the pipelines are compiled for. Bind requires a table of
-    // exactly this size.
+    // The nonzero size of the bindless material-texture table the pipelines are compiled for. Bind requires a
+    // table of exactly this size, including placeholder entries for materials without textures.
     Uint32 MaterialTextureCount         = 0;
-    bool   EnableMaterialTextures       = false;
     bool   EnableAnyHit                 = false;
     bool   EnableLDSamplerForBSDF       = false;
     bool   RayTracingSupported          = false;
@@ -218,7 +217,6 @@ private:
     std::vector<IDeviceObject*>                                                 m_BoundTextures;
     bool                                                                        m_HasBindings         = false;
     VALUE_TYPE                                                                  m_IndexValueType      = VT_UNDEFINED;
-    bool                                                                        m_UseTextures         = false;
     bool                                                                        m_UseAnyHitTextures   = false;
     bool                                                                        m_UseHitObject        = false;
     bool                                                                        m_UseInlineVisibility = false;

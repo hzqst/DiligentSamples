@@ -20,12 +20,10 @@ StructuredBuffer<PackedGeometryVertexData> t_SkinnedVertexBuffer;
 Buffer<uint>                         t_IndexBuffer;
 RWStructuredBuffer<PolymorphicLightInfo> u_EmissiveTriangles;
 
-#ifdef ENABLE_MATERIAL_TEXTURES
 // Texture2DArray views per material texture usage, mirroring BSDFs/MaterialBridge.hlsli (color SRVs decode sRGB).
-// MATERIAL_TEXTURE_COUNT is supplied at compile time and equals RTXPTMaterials::GetTextureCount().
+// MATERIAL_TEXTURE_COUNT is the nonzero capacity of the bound table, including placeholder entries.
 Texture2DArray t_BindlessTextures[MATERIAL_TEXTURE_COUNT];
 SamplerState   s_MaterialSampler;
-#endif
 
 uint3 getTriangleIndices(SubInstanceData subInstance, uint localPrimitiveIndex)
 {
@@ -59,14 +57,13 @@ float transformDeterminant(float4x4 transform)
     return determinant(float3x3(transform[0].xyz, transform[1].xyz, transform[2].xyz));
 }
 
-// Per-triangle emitted radiance. Without an emissive texture (or when material textures are unavailable) this
+// Per-triangle emitted radiance. Without an emissive texture this
 // is the constant emissive factor. With one, match RTXPT-fork PrepareLights.hlsl: sample the emissive texture
 // once at the triangle centroid using an anisotropic footprint roughly inscribed in the triangle (the sample
 // ellipse axes follow the short edge and the median from the opposite vertex), then modulate the factor.
 float3 computeTriangleRadiance(MaterialPTData material, float2 uv0, float2 uv1, float2 uv2)
 {
     float3 radiance = material.emissiveFactor;
-#ifdef ENABLE_MATERIAL_TEXTURES
     if ((material.flags & kMaterialFlagHasEmissiveTexture) != 0u)
     {
         float2 edges[3];
@@ -109,7 +106,6 @@ float3 computeTriangleRadiance(MaterialPTData material, float2 uv0, float2 uv1, 
             .SampleGrad(s_MaterialSampler, float3(centerUV, material.emissiveTextureSlice), shortGradient, longGradient).rgb;
         radiance *= emissiveMask;
     }
-#endif
     return max(0.0, radiance);
 }
 

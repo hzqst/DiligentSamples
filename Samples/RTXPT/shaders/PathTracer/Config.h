@@ -27,8 +27,8 @@
 #    define ENABLE_DEBUG_DELTA_TREE_VIZUALISATION 0
 #endif
 
-// ENABLE_MATERIAL_TEXTURES and MATERIAL_TEXTURE_COUNT are supplied by C++ when the
-// bindless material-texture table exists.
+// MATERIAL_TEXTURE_COUNT is supplied by C++ as the nonzero bindless table capacity.
+// Materials without textures use the same pipelines with placeholder table entries.
 
 #if NON_PATH_TRACING_PASS || defined(__cplusplus) || (__SHADER_TARGET_MAJOR < 6 || __SHADER_TARGET_MINOR < 6)
 #    define PAYLOAD_QUALIFIER

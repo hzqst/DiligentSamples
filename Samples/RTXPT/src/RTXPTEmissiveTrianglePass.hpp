@@ -58,10 +58,10 @@ struct RTXPTEmissiveTrianglePassCreateInfo
     IRenderStateCache*   pStateCache    = nullptr;
     IPipelineStateCache* pPSOCache      = nullptr;
     VALUE_TYPE           IndexValueType = VT_UNDEFINED;
-    // The size of the bindless material-texture table the pipeline is compiled for.
-    Uint32 MaterialTextureCount   = 0;
-    bool   EnableMaterialTextures = false;
-    bool   ComputeSupported       = false;
+    // The nonzero size of the bindless material-texture table the pipeline is compiled for. Bind requires a
+    // table of exactly this size, including placeholder entries for materials without textures.
+    Uint32 MaterialTextureCount = 0;
+    bool   ComputeSupported     = false;
 };
 
 // The scene resources the pass reads and the emissive triangle buffer it writes. Changing any object creates a new
@@ -102,8 +102,8 @@ private:
     RefCntAutoPtr<IBuffer>                m_Constants;
     RTXPTEmissiveTriangleBindings         m_Bound;
     std::vector<IDeviceObject*>           m_BoundTextures;
-    VALUE_TYPE                            m_IndexValueType = VT_UNDEFINED;
-    bool                                  m_UseTextures    = false;
+    VALUE_TYPE                            m_IndexValueType       = VT_UNDEFINED;
+    Uint32                                m_MaterialTextureCount = 0;
     RTXPTEmissiveTrianglePassStats        m_Stats;
 };
 

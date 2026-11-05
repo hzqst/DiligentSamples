@@ -309,7 +309,6 @@ struct RTXPTEmbeddedView::Impl
         RaysCI.pFrameConstants              = Constants;
         RaysCI.IndexValueType               = VT_UINT32;
         RaysCI.MaterialTextureCount         = MaterialTextureCount;
-        RaysCI.EnableMaterialTextures       = true;
         RaysCI.EnableAnyHit                 = true;
         RaysCI.RayTracingSupported          = true;
         RaysCI.StandaloneRTShadersSupported = true;

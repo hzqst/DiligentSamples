@@ -348,7 +348,6 @@ Hard constraints:
 | Current | New | Notes |
 |---|---|---|
 | `RTXPT_ENABLE_HIT_BRIDGE` | `ENABLE_HIT_BRIDGE` (style) | HLSL-only define |
-| `RTXPT_ENABLE_MATERIAL_TEXTURES` | `ENABLE_MATERIAL_TEXTURES` (style) | also a C++ `ShaderMacroHelper` string |
 | `RTXPT_MATERIAL_TEXTURE_COUNT` | `MATERIAL_TEXTURE_COUNT` (style) | also a C++ `ShaderMacroHelper` string |
 | include guards `RTXPT_*_HLSLI` | `__<NAME>_HLSLI__` (= RTXPT-fork form, e.g. `__BXDF_HLSLI__`) | RTXPT-fork uses `__NAME_HLSLI__` traditional guards |
 | `RTXPT_PI` | `K_PI` = RTXPT-fork | `Utils/Math/MathConstants.hlsli` |
