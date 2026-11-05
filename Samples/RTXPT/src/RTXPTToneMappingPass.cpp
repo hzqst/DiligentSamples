@@ -66,7 +66,7 @@ struct RTXPTToneMappingConstants
     float  WhiteMaxLuminance       = 1.0f;
     Uint32 ToneMapOperator         = 0;
     Uint32 Clamped                 = 1;
-    Uint32 AutoExposure            = 0;
+    Uint32 ExposureSource          = 0;
     float  AvgLuminance            = 0.0f;
     float  AutoExposureLumValueMin = 0.0f;
     float  AutoExposureLumValueMax = 0.0f;
@@ -205,9 +205,15 @@ float ComputeToneMappingExposureScale(const RTXPTToneMappingParameters& Params)
     return ExposureScale * (Params.AutoExposure ? 1.0f : ComputeManualExposureScale(Params));
 }
 
-float3x3 ComputeToneMappingColorTransform(const RTXPTToneMappingParameters& Params)
+//ExposureSource of RTXPTToneMappingConstants (ToneMappingShared.h).
+constexpr Uint32 kExposureFromParameters = 0;
+constexpr Uint32 kExposureMeasured       = 1;
+constexpr Uint32 kExposureResolved       = 2;
+
+//A resolved exposure replaces that of the parameters: the transform keeps the white balance alone.
+float3x3 ComputeToneMappingColorTransform(const RTXPTToneMappingParameters& Params, bool ResolvedExposure)
 {
-    return ComputeWhiteBalanceTransform(Params) * ComputeToneMappingExposureScale(Params);
+    return ComputeWhiteBalanceTransform(Params) * (ResolvedExposure ? 1.0f : ComputeToneMappingExposureScale(Params));
 }
 
 float ComputePreExposedGrayScale(const RTXPTToneMappingParameters& Params)
@@ -314,7 +320,8 @@ bool CreateShader(IRenderStateCache*      pStateCache,
     return Shader != nullptr;
 }
 
-bool CreateFallbackLuminanceTexture(IRenderDevice* pDevice, RefCntAutoPtr<ITexture>& Texture, RefCntAutoPtr<ITextureView>& SRV)
+//A 1x1 R32F texture of Value.
+bool CreateFallbackTexture(IRenderDevice* pDevice, const char* Name, float Value, RefCntAutoPtr<ITexture>& Texture, RefCntAutoPtr<ITextureView>& SRV)
 {
     Texture.Release();
     SRV.Release();
@@ -323,7 +330,7 @@ bool CreateFallbackLuminanceTexture(IRenderDevice* pDevice, RefCntAutoPtr<ITextu
         return false;
 
     TextureDesc Desc;
-    Desc.Name      = "RTXPT fallback luminance texture";
+    Desc.Name      = Name;
     Desc.Type      = RESOURCE_DIM_TEX_2D;
     Desc.Usage     = USAGE_IMMUTABLE;
     Desc.BindFlags = BIND_SHADER_RESOURCE;
@@ -332,8 +339,7 @@ bool CreateFallbackLuminanceTexture(IRenderDevice* pDevice, RefCntAutoPtr<ITextu
     Desc.Height    = 1;
     Desc.MipLevels = 1;
 
-    const float       LogLuminance = 0.0f;
-    TextureSubResData Subres{&LogLuminance, sizeof(LogLuminance)};
+    TextureSubResData Subres{&Value, sizeof(Value)};
     TextureData       InitData{&Subres, 1};
     pDevice->CreateTexture(Desc, &InitData, &Texture);
 
@@ -355,6 +361,8 @@ void RTXPTToneMappingPass::Reset()
     m_LuminanceSRV.Release();
     m_FallbackLuminanceTexture.Release();
     m_FallbackLuminanceSRV.Release();
+    m_FallbackExposureTexture.Release();
+    m_FallbackExposureSRV.Release();
     m_LinearSampler.Release();
     m_PointSampler.Release();
     m_FullscreenVS.Release();
@@ -423,9 +431,12 @@ bool RTXPTToneMappingPass::Initialize(IRenderDevice*       pDevice,
         DEV_ERROR("RTXPT tone mapping pass failed to create samplers");
         return false;
     }
-    if (!CreateFallbackLuminanceTexture(pDevice, m_FallbackLuminanceTexture, m_FallbackLuminanceSRV))
+    const float FallbackLogLuminance = 0.0f;
+    const float FallbackExposure     = 1.0f;
+    if (!CreateFallbackTexture(pDevice, "RTXPT fallback luminance texture", FallbackLogLuminance, m_FallbackLuminanceTexture, m_FallbackLuminanceSRV) ||
+        !CreateFallbackTexture(pDevice, "RTXPT fallback exposure texture", FallbackExposure, m_FallbackExposureTexture, m_FallbackExposureSRV))
     {
-        DEV_ERROR("RTXPT tone mapping pass failed to create fallback luminance");
+        DEV_ERROR("RTXPT tone mapping pass failed to create fallback textures");
         return false;
     }
 
@@ -490,7 +501,8 @@ bool RTXPTToneMappingPass::Initialize(IRenderDevice*       pDevice,
         .AddVariable(SHADER_TYPE_PIXEL, "s_ColorSampler", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
         .AddVariable(SHADER_TYPE_PIXEL, "s_LuminanceSampler", SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
         .AddVariable(SHADER_TYPE_PIXEL, "t_Color", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
-        .AddVariable(SHADER_TYPE_PIXEL, "t_Luminance", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC);
+        .AddVariable(SHADER_TYPE_PIXEL, "t_Luminance", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
+        .AddVariable(SHADER_TYPE_PIXEL, "t_Exposure", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC);
     ToneMapPSOCreateInfo.PSODesc.ResourceLayout = ToneMapLayout;
 
     ToneMapPSOCreateInfo.pPSOCache = SelectRTXPTPipelineStateCache(pDevice, ToneMapPSOCreateInfo, pPSOCache);
@@ -630,19 +642,19 @@ bool RTXPTToneMappingPass::ResizeResources(IRenderDevice* pDevice, Uint32 Width,
     return true;
 }
 
-bool RTXPTToneMappingPass::UpdateToneMappingConstants(IDeviceContext* pContext, const RTXPTToneMappingParameters& Params, bool Enabled)
+bool RTXPTToneMappingPass::UpdateToneMappingConstants(IDeviceContext* pContext, const RTXPTToneMappingParameters& Params, bool Enabled, bool ResolvedExposure)
 {
     if (pContext == nullptr || !m_ToneMappingCB)
         return false;
 
-    const float3x3 ColorTransform = ComputeToneMappingColorTransform(Params);
+    const float3x3 ColorTransform = ComputeToneMappingColorTransform(Params, ResolvedExposure);
 
     RTXPTToneMappingConstants Constants;
     Constants.WhiteScale              = Params.WhiteScale;
     Constants.WhiteMaxLuminance       = Params.WhiteMaxLuminance;
     Constants.ToneMapOperator         = static_cast<Uint32>(Params.ToneMapOperator);
     Constants.Clamped                 = Params.Clamped ? 1u : 0u;
-    Constants.AutoExposure            = Params.AutoExposure ? 1u : 0u;
+    Constants.ExposureSource          = ResolvedExposure ? kExposureResolved : Params.AutoExposure ? kExposureMeasured : kExposureFromParameters;
     Constants.AvgLuminance            = GetValidAverageLuminance(m_Stats.LastAvgLuminance);
     Constants.AutoExposureLumValueMin = std::pow(2.0f, Params.AutoExposure ? Params.ExposureValueMin : -16.0f);
     Constants.AutoExposureLumValueMax = std::pow(2.0f, Params.AutoExposure ? Params.ExposureValueMax : 16.0f);
@@ -698,8 +710,12 @@ bool RTXPTToneMappingPass::Render(IDeviceContext* pContext, const RTXPTToneMappi
 
     RTXPTToneMappingParameters Params          = PrepareToneMappingParameters(*Attribs.pParams, m_ComputeSupported);
     const bool                 UseAutoExposure = Params.AutoExposure;
+    const bool                 bResolved       = Attribs.pExposureSRV != nullptr;
+    //A resolved exposure is the only exposure: the Sample's auto exposure must not apply another.
+    if (bResolved && UseAutoExposure)
+        return false;
 
-    if (!UpdateToneMappingConstants(pContext, Params, Attribs.Enabled))
+    if (!UpdateToneMappingConstants(pContext, Params, Attribs.Enabled, bResolved))
         return false;
 
     if (UseAutoExposure)
@@ -728,7 +744,8 @@ bool RTXPTToneMappingPass::Render(IDeviceContext* pContext, const RTXPTToneMappi
     ITextureView* pToneMapLuminanceSRV = m_LuminanceSRV ? m_LuminanceSRV.RawPtr() : m_FallbackLuminanceSRV.RawPtr();
     const bool    ToneMapBound =
         SetSRBVariable(m_ToneMapSRB, SHADER_TYPE_PIXEL, "t_Color", Attribs.pSourceSRV, true) &&
-        SetSRBVariable(m_ToneMapSRB, SHADER_TYPE_PIXEL, "t_Luminance", pToneMapLuminanceSRV, false);
+        SetSRBVariable(m_ToneMapSRB, SHADER_TYPE_PIXEL, "t_Luminance", pToneMapLuminanceSRV, false) &&
+        SetSRBVariable(m_ToneMapSRB, SHADER_TYPE_PIXEL, "t_Exposure", bResolved ? Attribs.pExposureSRV : m_FallbackExposureSRV.RawPtr(), false);
     if (!ToneMapBound)
         return false;
 

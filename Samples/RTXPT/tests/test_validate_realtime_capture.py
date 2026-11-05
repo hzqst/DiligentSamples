@@ -88,6 +88,10 @@ class RRCaptureTest(unittest.TestCase):
     DISPLAY = 4
     EXPOSURE = 0.15
     SKY_DEPTH = 5000000.0
+    # The log2 exposure an auto exposure frame used, exact in 32-bit float, and its state texel holding it.
+    AUTO_USED_EV = -2.0
+    AUTO_STATE_TEXELS = 2
+    AUTO_STATE_USED_EV = 7
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -121,13 +125,28 @@ class RRCaptureTest(unittest.TestCase):
         self.write('rr_specular_albedo', self.RENDER, 'RGBA16_FLOAT', 'e', [0.04, 0.04, 1.0, 1.0] * texels)
         self.write('rr_exposure', 1, 'R32_FLOAT', 'f', [self.EXPOSURE])
 
-    def write(self, name, size, fmt, code, values):
+    def write(self, name, size, fmt, code, values, height=None):
+        height = size if height is None else height
         data = struct.pack('<' + code * len(values), *values)
         (self.directory / (name + '.bin')).write_bytes(data)
         resources = [r for r in self.manifest['resources'] if r['name'] != name]
-        resources.append(dict(name=name, file=name + '.bin', format='TEX_FORMAT_' + fmt, width=size, height=size,
-                              slices=1, row_bytes=len(data) // size, bytes=len(data), valid=True, frame_index=4))
+        resources.append(dict(name=name, file=name + '.bin', format='TEX_FORMAT_' + fmt, width=size, height=height,
+                              slices=1, row_bytes=len(data) // height, bytes=len(data), valid=True, frame_index=4))
         self.manifest['resources'] = resources
+
+    def write_auto_state(self, used_ev):
+        state = [0.0] * (4 * self.AUTO_STATE_TEXELS)
+        state[self.AUTO_STATE_USED_EV] = used_ev
+        self.write('auto_exposure_next', self.AUTO_STATE_TEXELS, 'RGBA32_FLOAT', 'f', state, height=1)
+
+    def make_auto_exposure(self):
+        used = 2.0 ** self.AUTO_USED_EV
+        self.manifest.update(exposure_mode='Auto', auto_exposure=dict(used='auto_exposure_used', next='auto_exposure_next'))
+        self.manifest['ray_reconstruction'].update(exposure=None, exposure_source='auto_exposure_used')
+        self.write('auto_exposure_used', 1, 'R32_FLOAT', 'f', [used])
+        self.write_auto_state(self.AUTO_USED_EV)
+        self.write('rr_exposure', 1, 'R32_FLOAT', 'f', [used])
+        return used
 
     def run_capture(self):
         (self.directory / 'manifest.json').write_text(json.dumps(self.manifest))
@@ -174,6 +193,45 @@ class RRCaptureTest(unittest.TestCase):
     def test_exposure_texture_not_one_texel_rejected(self):
         self.write('rr_exposure', self.RENDER, 'R32_FLOAT', 'f', [self.EXPOSURE] * self.RENDER * self.RENDER)
         with self.assertRaisesRegex(ValueError, 'extent'):
+            self.run_capture()
+
+    def test_valid_auto_exposure_capture(self):
+        self.make_auto_exposure()
+        self.assertEqual(4, self.run_capture()['frame_index'])
+
+    def test_auto_exposure_state_of_another_frame_rejected(self):
+        self.make_auto_exposure()
+        self.write_auto_state(self.AUTO_USED_EV + 2)
+        with self.assertRaisesRegex(ValueError, 'another frame'):
+            self.run_capture()
+
+    def test_rr_exposure_other_than_auto_exposure_rejected(self):
+        used = self.make_auto_exposure()
+        self.write('rr_exposure', 1, 'R32_FLOAT', 'f', [used * 4])
+        with self.assertRaisesRegex(ValueError, 'RR read another exposure'):
+            self.run_capture()
+
+    def test_reported_rr_exposure_with_auto_exposure_rejected(self):
+        used = self.make_auto_exposure()
+        self.manifest['ray_reconstruction']['exposure'] = used
+        with self.assertRaisesRegex(ValueError, 'RR input semantics'):
+            self.run_capture()
+
+    def test_missing_auto_exposure_state_rejected(self):
+        self.make_auto_exposure()
+        self.manifest['resources'] = [r for r in self.manifest['resources'] if r['name'] != 'auto_exposure_next']
+        with self.assertRaisesRegex(ValueError, 'Auto exposure resources'):
+            self.run_capture()
+
+    def test_auto_exposure_resource_in_manual_capture_rejected(self):
+        self.write('auto_exposure_used', 1, 'R32_FLOAT', 'f', [self.EXPOSURE])
+        with self.assertRaisesRegex(ValueError, 'Manual exposure capture'):
+            self.run_capture()
+
+    def test_auto_exposure_state_extent_rejected(self):
+        self.make_auto_exposure()
+        self.write('auto_exposure_next', 1, 'RGBA32_FLOAT', 'f', [self.AUTO_USED_EV] * 4)
+        with self.assertRaisesRegex(ValueError, 'auto exposure layout'):
             self.run_capture()
 
     def test_exposure_other_than_reported_rejected(self):

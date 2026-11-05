@@ -7,6 +7,7 @@ SamplerState      s_LuminanceSampler;
 SamplerState      s_ColorSampler;
 Texture2D<float4> t_Color;
 Texture2D<float>  t_Luminance;
+Texture2D<float>  t_Exposure;
 
 cbuffer g_ToneMappingConstants
 {
@@ -104,7 +105,9 @@ float4 ApplyToneMapping(float2 UV)
     float3       FinalColor  = SourceColor.rgb;
 
     // Disabled tone mapping is a pure passthrough, including exposure.
-    if (g_Params.Enabled != 0 && g_Params.AutoExposure != 0)
+    if (g_Params.Enabled != 0 && g_Params.ExposureSource == RTXPT_TONEMAPPING_EXPOSURE_RESOLVED)
+        FinalColor *= t_Exposure.Load(int3(0, 0, 0));
+    if (g_Params.Enabled != 0 && g_Params.ExposureSource == RTXPT_TONEMAPPING_EXPOSURE_MEASURED)
     {
         const float AvgLuminance = max(GetAverageLuminance(), 1.0e-6);
         FinalColor *= clamp(RTXPT_TONEMAPPING_EXPOSURE_KEY / AvgLuminance,

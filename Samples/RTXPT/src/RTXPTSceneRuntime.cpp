@@ -231,6 +231,8 @@ const char* GetRTXPTErrorCodeString(RTXPTErrorCode Code)
         case RTXPTErrorCode::RayReconstructionExecuteFailed: return "the DLSS RR evaluation failed";
         case RTXPTErrorCode::BloomSetupFailed: return "the Bloom pass or its display HDR target could not be created";
         case RTXPTErrorCode::BloomFailed: return "the Bloom pass failed";
+        case RTXPTErrorCode::AutoExposureSetupFailed: return "the auto exposure pipelines or textures could not be created";
+        case RTXPTErrorCode::AutoExposureFailed: return "the auto exposure meter failed";
     }
     return "unknown error";
 }

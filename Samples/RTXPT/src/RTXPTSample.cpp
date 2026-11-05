@@ -2319,7 +2319,7 @@ bool RTXPTSample::RunSharedRealtime()
     //The shared realtime presets tone map their HDR without the Sample's Bloom, as before the pipeline offered it.
     const RTXPTBloomParameters NoBloom{false};
     const auto                 Code = m_SharedRealtime->Render(m_pImmediateContext, m_RayTracingPass, m_LightsBaker,
-                                               m_LastFrameConstants, m_ReferenceUI.ToneMapping, NoBloom, History, m_RenderTargets.GetLdrColorRTV(), &m_GpuProfiler);
+                                               m_LastFrameConstants, m_ReferenceUI.ToneMapping, NoBloom, nullptr, History, m_RenderTargets.GetLdrColorRTV(), &m_GpuProfiler);
     m_LastRealtimePathTraceExecuted = Code == RTXPTErrorCode::Ok;
     m_LastRealtimeFinalMergeReady   = m_LastRealtimePathTraceExecuted;
     if (Code != RTXPTErrorCode::Ok)

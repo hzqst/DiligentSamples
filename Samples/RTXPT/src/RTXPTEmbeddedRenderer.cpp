@@ -45,6 +45,26 @@ SUPER_RESOLUTION_OPTIMIZATION_TYPE ToOptimizationType(RTXPTUpscaleQuality Qualit
     return SUPER_RESOLUTION_OPTIMIZATION_TYPE_COUNT;
 }
 
+//Aborts the auto exposure frame of a Render that fails once it has begun it.
+class AutoExposureFrame
+{
+public:
+    explicit AutoExposureFrame(RTXPTAutoExposure* AutoExposure) :
+        m_AutoExposure{AutoExposure} {}
+    ~AutoExposureFrame()
+    {
+        if (m_AutoExposure && !m_Succeeded)
+            m_AutoExposure->Abort();
+    }
+    AutoExposureFrame(const AutoExposureFrame&) = delete;
+    AutoExposureFrame& operator=(const AutoExposureFrame&) = delete;
+    void               Succeed() { m_Succeeded = true; }
+
+private:
+    RTXPTAutoExposure* m_AutoExposure;
+    bool               m_Succeeded = false;
+};
+
 #if RTXPT_HAS_RAY_RECONSTRUCTION
 RAY_RECONSTRUCTION_QUALITY ToReconstructionQuality(RTXPTRayReconstructionQuality Quality)
 {
@@ -218,14 +238,16 @@ struct RTXPTEmbeddedView::Impl
     RefCntAutoPtr<IRayReconstruction>        Reconstruction;
 #endif
     RTXPTViewRayReconstructionInfo RayReconstruction;
-    RTXPTPreparedSceneToken        LastScene;
-    RTXPTViewHistoryInfo           History;
-    RTXPTViewMode                  Mode = RTXPTViewMode::Reference;
-    RTXPTLightsBakerSettings       Lighting;
-    PathTracerCameraData           PreviousCamera{};
-    PathTracerViewData             PreviousView{};
-    double                         PreviousTime{};
-    Uint32                         Width{}, Height{}, DisplayWidth{}, DisplayHeight{}, FrameIndex{}, Samples{};
+    //The used exposure and next state of the latest successful Render with auto exposure; null otherwise.
+    RefCntAutoPtr<ITexture>  AutoExposureUsed, AutoExposureState;
+    RTXPTPreparedSceneToken  LastScene;
+    RTXPTViewHistoryInfo     History;
+    RTXPTViewMode            Mode = RTXPTViewMode::Reference;
+    RTXPTLightsBakerSettings Lighting;
+    PathTracerCameraData     PreviousCamera{};
+    PathTracerViewData       PreviousView{};
+    double                   PreviousTime{};
+    Uint32                   Width{}, Height{}, DisplayWidth{}, DisplayHeight{}, FrameIndex{}, Samples{};
     //The scene frame revisions this view's light sampling and history last followed.
     Uint64           LightingRevision{}, EmissiveRevision{}, ContentRevision{};
     bool             LightsBakerReady{};
@@ -287,6 +309,15 @@ struct RTXPTEmbeddedView::Impl
         ContentRevision                       = Revision;
         ++FrameIndex;
         OutputValid = true;
+    }
+
+    //Publishes the used exposure and next state of a successful frame with auto exposure.
+    void PublishAutoExposure(RTXPTAutoExposure* AutoExposure)
+    {
+        if (!AutoExposure)
+            return;
+        AutoExposureUsed  = AutoExposure->GetUsedExposure();
+        AutoExposureState = AutoExposure->GetPendingState();
     }
 
     //The path tracer is compiled for the size of the scene's bindless table, which grows with the scene.
@@ -585,18 +616,20 @@ RTXPTToneMappingParameters MakeRTXPTToneMappingParameters(const RTXPTViewDisplay
 {
     RTXPTToneMappingParameters Params;
     Params.ToneMapOperator      = Display.ToneMapOperator;
-    Params.ExposureCompensation = std::log2(Display.Exposure);
+    Params.ExposureCompensation = Display.AutoExposure.Enabled ? 0.0f : std::log2(Display.Exposure);
     Params.WhiteMaxLuminance    = Display.WhiteMaxLuminance;
     Params.WhiteScale           = Display.WhiteScale;
     return Params;
 }
 
-RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, const PathTracerViewData& View, double Time, bool ResetHistory, const RTXPTViewDisplaySettings& Display)
+RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, const PathTracerViewData& View, double Time, bool ResetHistory, const RTXPTViewDisplaySettings& Display, RTXPTAutoExposure* AutoExposure)
 {
     auto& R       = *m_Impl;
     ResetHistory  = ResetHistory || !R.OutputValid;
     R.OutputValid = false;
     R.History     = {};
+    R.AutoExposureUsed.Release();
+    R.AutoExposureState.Release();
     R.Realtime.InvalidateOutput();
     if (!R.Ready)
         return RTXPTErrorCode::NotInitialized;
@@ -608,9 +641,11 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
         return Value >= 0.0f && Value <= Max;
     };
     const bool bBloomValid = IsBloomValue(Display.Bloom.Radius, RTXPTMaxBloomRadius) && IsBloomValue(Display.Bloom.Intensity, RTXPTMaxBloomIntensity);
+    const bool bAuto       = Display.AutoExposure.Enabled;
+    const bool bAutoValid  = IsValidRTXPTAutoExposure(Display.AutoExposure) && (!bAuto || (AutoExposure && AutoExposure->IsReady()));
     if (!(Display.Exposure >= RTXPTMinDisplayExposure && Display.Exposure <= RTXPTMaxDisplayExposure) ||
         Display.ToneMapOperator > RTXPTToneMapperOperator::Aces || !IsWhitePoint(Display.WhiteMaxLuminance) || !IsWhitePoint(Display.WhiteScale) ||
-        !bBloomValid)
+        !bBloomValid || !bAutoValid)
         return RTXPTErrorCode::InvalidArgument;
     const auto ToneParameters = MakeRTXPTToneMappingParameters(Display);
     if (Camera.ViewportWidth != R.Width || Camera.ViewportHeight != R.Height ||
@@ -635,6 +670,15 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
         ResetHistory = !CameraCorrespondenceValid;
     if (!R.BindFrame(Frame))
         return RTXPTErrorCode::SceneBindingsFailed;
+    //The exposure of the frame is written before anything reads it; a later failure aborts the frame's meter.
+    RTXPTAutoExposure* const FrameAutoExposure = bAuto ? AutoExposure : nullptr;
+    AutoExposureFrame        AutoExposureGuard{FrameAutoExposure};
+    if (FrameAutoExposure)
+    {
+        const auto BeginCode = FrameAutoExposure->BeginFrame(R.Context, Display.AutoExposure, Time);
+        if (BeginCode != RTXPTErrorCode::Ok)
+            return BeginCode;
+    }
     //Reference accumulation restarts on any camera/projection or scene content change. The host additionally resets
     //cuts, pipeline changes and discontinuities; successful executed frames alone advance history.
     if (R.Mode == RTXPTViewMode::Reference)
@@ -679,7 +723,7 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
         const auto& Stats                = R.Realtime.GetStats();
         const auto  ExecutesBefore       = Stats.SuperResolutionExecutes;
         const auto  ReconstructedBefore  = Stats.RayReconstructionExecutes;
-        const auto  Code                 = R.Realtime.Render(R.Context, R.Rays, R.LightsBaker, Constants, ToneParameters, Display.Bloom, RealtimeHistory, R.DisplayRTV, &R.Profiler);
+        const auto  Code                 = R.Realtime.Render(R.Context, R.Rays, R.LightsBaker, Constants, ToneParameters, Display.Bloom, FrameAutoExposure, RealtimeHistory, R.DisplayRTV, &R.Profiler);
         if (Code == RTXPTErrorCode::SuperResolutionInputsFailed || Code == RTXPTErrorCode::SuperResolutionExecuteFailed)
         {
             ++R.SuperResolution.Failures;
@@ -707,14 +751,17 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
         }
         if (R.IsReconstructed())
         {
-            R.RayReconstruction.Jitter      = Jitter;
-            R.RayReconstruction.LastReset   = ResetHistory;
-            R.RayReconstruction.Exposure    = Stats.RayReconstructionExposure;
-            R.RayReconstruction.ForwardSign = Stats.RayReconstructionForwardSign;
-            R.RayReconstruction.Executes    = Stats.RayReconstructionExecutes;
-            R.RayReconstruction.Resets      = Stats.RayReconstructionResets;
+            R.RayReconstruction.Jitter       = Jitter;
+            R.RayReconstruction.LastReset    = ResetHistory;
+            R.RayReconstruction.Exposure     = Stats.RayReconstructionExposure;
+            R.RayReconstruction.AutoExposure = Stats.RayReconstructionAutoExposure;
+            R.RayReconstruction.ForwardSign  = Stats.RayReconstructionForwardSign;
+            R.RayReconstruction.Executes     = Stats.RayReconstructionExecutes;
+            R.RayReconstruction.Resets       = Stats.RayReconstructionResets;
         }
         R.AcceptFrame(FrameCamera, FrameView, Time, 0, Frame.Snapshot->ContentRevision, Frame.Prepared);
+        R.PublishAutoExposure(FrameAutoExposure);
+        AutoExposureGuard.Succeed();
         return RTXPTErrorCode::Ok;
     }
     {
@@ -743,6 +790,13 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
     Accumulation.BlendFactor                             = 1.0f / Samples;
     if (!R.Accumulation.Render(R.Context, Accumulation))
         return RTXPTErrorCode::AccumulationFailed;
+    //Auto exposure meters the processed radiance, the accumulated HDR tone mapping reads, before Bloom.
+    if (FrameAutoExposure)
+    {
+        const auto MeterCode = FrameAutoExposure->Meter(R.Context, R.Processed, R.Width, R.Height, nullptr);
+        if (MeterCode != RTXPTErrorCode::Ok)
+            return MeterCode;
+    }
     //Bloom reads the processed radiance and leaves it, and the accumulated radiance, unchanged.
     ITextureView* ToneSource = nullptr;
     const auto    BloomCode  = R.Bloom.Apply(R.Context, R.Processed, Display.Bloom, nullptr, ToneSource);
@@ -754,9 +808,13 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
     Tone.Width      = R.Width;
     Tone.Height     = R.Height;
     Tone.pParams    = &ToneParameters;
+    if (FrameAutoExposure)
+        Tone.pExposureSRV = FrameAutoExposure->GetUsedExposure()->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
     if (!R.ToneMapping.Render(R.Context, Tone))
         return RTXPTErrorCode::ToneMappingFailed;
     R.AcceptFrame(Camera, View, Time, Samples, Frame.Snapshot->ContentRevision, Frame.Prepared);
+    R.PublishAutoExposure(FrameAutoExposure);
+    AutoExposureGuard.Succeed();
     return RTXPTErrorCode::Ok;
 }
 
@@ -767,6 +825,8 @@ void RTXPTEmbeddedView::InvalidateOutput()
     R.History     = {};
     R.LastScene   = {};
     R.Samples     = 0;
+    R.AutoExposureUsed.Release();
+    R.AutoExposureState.Release();
     R.Realtime.InvalidateOutput();
 }
 
@@ -820,6 +880,8 @@ RTXPTViewOutputInfo RTXPTEmbeddedView::GetOutputInfo(RTXPTViewOutput Output, Uin
         case RTXPTViewOutput::RayReconstructionSpecularAlbedo: Texture = ReconstructionTexture(Targets.GetRRSpecAlbedoSRV()); break;
         case RTXPTViewOutput::RayReconstructionExposure: Texture = bReconstruction ? R.Realtime.GetReconstructionExposure() : nullptr; break;
         case RTXPTViewOutput::BloomRadiance: Texture = R.IsRealtime() ? R.Realtime.GetBloom().GetOutput() : R.Bloom.GetOutput(); break;
+        case RTXPTViewOutput::AutoExposureUsed: Texture = R.AutoExposureUsed; break;
+        case RTXPTViewOutput::AutoExposureState: Texture = R.AutoExposureState; break;
         default: return Info;
     }
     if (!Texture)

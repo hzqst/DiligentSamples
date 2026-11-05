@@ -20,7 +20,8 @@ namespace Diligent
 //The layer buffer retains the shader's packed representation; inactive records/padding are not valid surface guides.
 //RealtimeDLSSRR exports the render-size inputs ray reconstruction received, its exposure texture and its display-size
 //HDR; it has no denoised or upscaled HDR. A frame that applied Bloom also exports the display-size HDR after Bloom; the
-//HDR of its mode stays the one Bloom read.
+//HDR of its mode stays the one Bloom read. A frame with auto exposure exports the exposure it used, which RR read as
+//well, and the state its meter wrote for the next frame; RR's reported exposure is then null: only the GPU knew it.
 class RTXPTDebugCapture
 {
 public:
@@ -30,6 +31,7 @@ public:
         const bool bRR     = View.GetMode() == RTXPTViewMode::RealtimeDLSSRR;
         const bool bNative = View.GetMode() == RTXPTViewMode::RealtimeNative || bSR;
         const bool bBloom  = View.GetBloomStats().LastApplied;
+        const bool bAuto   = View.GetOutputInfo(RTXPTViewOutput::AutoExposureUsed).Valid;
         //The render-size HDR of the frame: RR's noisy input, the denoised layers of Native and SR, or Raw's noisy HDR.
         const auto  ColorOutput = bRR ? RTXPTViewOutput::RayReconstructionColor : bNative ? RTXPTViewOutput::DenoisedRadiance : RTXPTViewOutput::NoisyRadiance;
         const char* ColorName   = bRR ? "rr_color" : bNative ? "denoised_radiance" : "noisy_radiance";
@@ -74,6 +76,8 @@ public:
                         "\"primary_motion_convention\":\"current_to_previous; xy=render_local_pixels_without_jitter; z=previous_clip_w-current_clip_w; w=exported_surface_and_all_retained_paths_valid\","
                         "\"specular_motion_convention\":\"current_to_previous; xy=render_local_pixels_without_jitter; z=previous_clip_w-current_clip_w; w=one_reflected_path_with_valid_history\","
                         "\"virtual_motion_convention\":\"packed layer world-space current_to_previous\",";
+            Manifest << "\"exposure_mode\":\"" << (bAuto ? "Auto" : "Manual") << "\",\"auto_exposure\":"
+                     << (bAuto ? "{\"used\":\"auto_exposure_used\",\"next\":\"auto_exposure_next\",\"state_layout\":\"shaders/PostProcessing/RTXPTAutoExposureShared.h\"}" : "null") << ',';
             if (bSR)
             {
                 const char* Quality = SR.Quality == RTXPTUpscaleQuality::Quality ? "Quality" :
@@ -87,7 +91,7 @@ public:
             {
                 //The embedded realtime pipeline traces RR's camera jitter alone (D5), so there is no micro-jitter.
                 const nlohmann::json Metadata = {
-                    {"provider", RR.Variant}, {"quality", GetQualityName(RR.Quality)}, {"preset", RR.Preset}, {"executes", RR.Executes}, {"resets", RR.Resets}, {"failures", RR.Failures}, {"last_reset", RR.LastReset}, {"exposure", RR.Exposure}, {"view_forward_sign", RR.ForwardSign}, {"micro_jitter", 0}, {"depth_encoding", "forward_positive_linear_view_depth_sky_5000000"}, {"motion_convention", "current_to_previous_render_pixels_without_jitter"}, {"exposure_policy", "explicit_exposure_texture_preexposure_1_scale_1"}};
+                    {"provider", RR.Variant}, {"quality", GetQualityName(RR.Quality)}, {"preset", RR.Preset}, {"executes", RR.Executes}, {"resets", RR.Resets}, {"failures", RR.Failures}, {"last_reset", RR.LastReset}, {"exposure", RR.AutoExposure ? nlohmann::json{} : nlohmann::json(RR.Exposure)}, {"exposure_source", RR.AutoExposure ? "auto_exposure_used" : "display_exposure"}, {"view_forward_sign", RR.ForwardSign}, {"micro_jitter", 0}, {"depth_encoding", "forward_positive_linear_view_depth_sky_5000000"}, {"motion_convention", "current_to_previous_render_pixels_without_jitter"}, {"exposure_policy", "explicit_exposure_texture_preexposure_1_scale_1"}};
                 Manifest << "\"ray_reconstruction\":" << Metadata.dump() << ',';
             }
             Manifest << "\"resources\":[\n";
@@ -132,6 +136,11 @@ public:
             }
             if (bBloom)
                 Outputs.push_back({RTXPTViewOutput::BloomRadiance, "bloom_radiance"});
+            if (bAuto)
+            {
+                Outputs.push_back({RTXPTViewOutput::AutoExposureUsed, "auto_exposure_used"});
+                Outputs.push_back({RTXPTViewOutput::AutoExposureState, "auto_exposure_next"});
+            }
             bool First = true;
             for (const auto& Output : Outputs)
             {

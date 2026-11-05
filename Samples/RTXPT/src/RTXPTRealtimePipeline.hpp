@@ -1,5 +1,6 @@
 #pragma once
 
+#include "RTXPTAutoExposure.hpp"
 #include "RTXPTDenoisingGuidesBaker.hpp"
 #include "RTXPTDisplayBloom.hpp"
 #include "RTXPTFrameConstants.hpp"
@@ -55,13 +56,16 @@ struct RTXPTRealtimeStats
     Uint32 SuperResolutionResets   = 0;
     //Ray reconstruction pipelines: input preparations, accepted executions, those that restarted its history, and the
     //exposure the latest accepted one received (D4: the display exposure tone mapping applies) with the forward sign of
-    //its view (1 left-handed, -1 right-handed).
-    Uint32 RayReconstructionPrepares    = 0;
-    Uint32 RayReconstructionExecutes    = 0;
-    Uint32 RayReconstructionResets      = 0;
-    float  RayReconstructionExposure    = 0;
-    float  RayReconstructionForwardSign = 0;
-    bool   OutputValid                  = false;
+    //its view (1 left-handed, -1 right-handed). With auto exposure RR read the GPU's exposure of the frame
+    //(RTXPTAutoExposure::GetUsedExposure), which the CPU does not know: RayReconstructionAutoExposure is set and
+    //RayReconstructionExposure is 0.
+    Uint32 RayReconstructionPrepares     = 0;
+    Uint32 RayReconstructionExecutes     = 0;
+    Uint32 RayReconstructionResets       = 0;
+    float  RayReconstructionExposure     = 0;
+    bool   RayReconstructionAutoExposure = false;
+    float  RayReconstructionForwardSign  = 0;
+    bool   OutputValid                   = false;
     //Motion and history validity of direct rigid/skinned surfaces and single rigid planar reflections have numerical
     //GPU tests. Other paths are reported invalid instead of approximated. This alone is not a denoiser claim.
     bool DynamicMotionValidated = true;
@@ -117,8 +121,12 @@ struct RTXPTRealtimeHistoryAttribs
 class RTXPTRealtimePipeline
 {
 public:
-    RTXPTErrorCode             Initialize(const RTXPTRealtimePipelineCreateInfo& CreateInfo);
-    RTXPTErrorCode             Render(IDeviceContext* Context, RTXPTRayTracingPass& Rays, RTXPTLightsBaker& Lights, const SampleConstants& Constants, const RTXPTToneMappingParameters& ToneParameters, const RTXPTBloomParameters& Bloom, const RTXPTRealtimeHistoryAttribs& History, ITextureView* DisplayRTV, RTXPTGpuProfiler* Profiler = nullptr);
+    RTXPTErrorCode Initialize(const RTXPTRealtimePipelineCreateInfo& CreateInfo);
+    //AutoExposure, when not null, is the view's auto exposure, whose frame the host has begun (BeginFrame): ray
+    //reconstruction and tone mapping read its used exposure, and the HDR is metered before Bloom. ToneParameters then
+    //carry no exposure of their own, and the clamps of the traced radiance use the fixed reference of display exposure 1
+    //(RTXPTAutoExposureTraceClampExposure) instead of the exposure, which only the GPU knows.
+    RTXPTErrorCode             Render(IDeviceContext* Context, RTXPTRayTracingPass& Rays, RTXPTLightsBaker& Lights, const SampleConstants& Constants, const RTXPTToneMappingParameters& ToneParameters, const RTXPTBloomParameters& Bloom, RTXPTAutoExposure* AutoExposure, const RTXPTRealtimeHistoryAttribs& History, ITextureView* DisplayRTV, RTXPTGpuProfiler* Profiler = nullptr);
     void                       InvalidateOutput() { m_Stats.OutputValid = false; }
     RTXPTRealtimeDenoiser      GetDenoiser() const { return m_Denoiser; }
     RTXPTRealtimeReconstructor GetReconstructor() const { return m_Reconstructor; }
@@ -127,15 +135,16 @@ public:
     const RTXPTRenderTargets& GetTargets() const { return m_Targets; }
     //A SuperResolution pipeline's converted inputs of the current successful Render.
     const RTXPTSuperResolutionInputPass& GetSuperResolutionInputs() const { return m_SuperResolutionInputs; }
-    //A DLSSRR pipeline's 1x1 R32F exposure texture, which its latest Execute read.
-    ITexture* GetReconstructionExposure() const { return m_ReconstructionExposure; }
+    //The 1x1 R32F exposure texture the latest Execute of a DLSSRR pipeline read: its own, or the used exposure of the
+    //view's auto exposure.
+    ITexture* GetReconstructionExposure() const { return m_ReconstructionExposureRead; }
     //The display Bloom of the current successful Render.
     const RTXPTDisplayBloom& GetBloom() const { return m_Bloom; }
 
 private:
     RTXPTErrorCode Denoise(IDeviceContext* Context, const SampleConstants& Constants, const RTXPTRealtimeHistoryAttribs& History, RTXPTGpuProfiler* Profiler);
     RTXPTErrorCode Upscale(IDeviceContext* Context, const SampleConstants& Constants, const RTXPTRealtimeHistoryAttribs& History, RTXPTGpuProfiler* Profiler);
-    RTXPTErrorCode Reconstruct(IDeviceContext* Context, const SampleConstants& Constants, const RTXPTToneMappingParameters& ToneParameters, const RTXPTRealtimeHistoryAttribs& History, RTXPTGpuProfiler* Profiler);
+    RTXPTErrorCode Reconstruct(IDeviceContext* Context, const SampleConstants& Constants, const RTXPTToneMappingParameters& ToneParameters, RTXPTAutoExposure* AutoExposure, const RTXPTRealtimeHistoryAttribs& History, RTXPTGpuProfiler* Profiler);
 
     RTXPTRenderTargets            m_Targets;
     RTXPTDenoisingGuidesBaker     m_Guides;
@@ -148,6 +157,7 @@ private:
     RefCntAutoPtr<IBuffer>        m_Constants;
     RefCntAutoPtr<IBuffer>        m_PixelList;
     RefCntAutoPtr<ITexture>       m_ReconstructionExposure;
+    RefCntAutoPtr<ITexture>       m_ReconstructionExposureRead;
     RTXPTRealtimeStats            m_Stats;
     RTXPTRealtimeDenoiser         m_Denoiser                      = RTXPTRealtimeDenoiser::None;
     RTXPTRealtimeReconstructor    m_Reconstructor                 = RTXPTRealtimeReconstructor::None;

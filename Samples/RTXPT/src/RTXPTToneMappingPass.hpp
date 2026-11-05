@@ -97,6 +97,10 @@ struct RTXPTToneMappingRenderAttribs
     Uint32                            Height     = 0;
     bool                              Enabled    = true;
     const RTXPTToneMappingParameters* pParams    = nullptr;
+    //Optional: the exposure, already resolved, as the texel of a 1x1 R32F texture (RTXPTAutoExposure). Tone mapping
+    //then multiplies the HDR by it instead of the exposure of pParams, whose ExposureCompensation, camera and white balance
+    //exposure are left out; pParams must not request AutoExposure, so no second exposure is applied.
+    ITextureView* pExposureSRV = nullptr;
 };
 
 class RTXPTToneMappingPass
@@ -123,7 +127,7 @@ public:
 private:
     bool CreateSamplers(IRenderDevice* pDevice);
     bool CreateLuminanceResources(IRenderDevice* pDevice, Uint32 Width, Uint32 Height, TEXTURE_FORMAT SourceFormat);
-    bool UpdateToneMappingConstants(IDeviceContext* pContext, const RTXPTToneMappingParameters& Params, bool Enabled);
+    bool UpdateToneMappingConstants(IDeviceContext* pContext, const RTXPTToneMappingParameters& Params, bool Enabled, bool ResolvedExposure);
 
     IRenderStateCache*                    m_pStateCache = nullptr; // Owned by RTXPTSample; set in Initialize.
     IPipelineStateCache*                  m_pPSOCache   = nullptr; // Owned by the caller of Initialize; may be null.
@@ -137,11 +141,14 @@ private:
     RefCntAutoPtr<ITextureView>           m_LuminanceSRV;
     RefCntAutoPtr<ITexture>               m_FallbackLuminanceTexture;
     RefCntAutoPtr<ITextureView>           m_FallbackLuminanceSRV;
-    RefCntAutoPtr<ISampler>               m_LinearSampler;
-    RefCntAutoPtr<ISampler>               m_PointSampler;
-    RTXPTToneMappingPassStats             m_Stats;
-    Uint32                                m_Width  = 0;
-    Uint32                                m_Height = 0;
+    //Bound to t_Exposure when no resolved exposure is given; the shader then never reads it.
+    RefCntAutoPtr<ITexture>     m_FallbackExposureTexture;
+    RefCntAutoPtr<ITextureView> m_FallbackExposureSRV;
+    RefCntAutoPtr<ISampler>     m_LinearSampler;
+    RefCntAutoPtr<ISampler>     m_PointSampler;
+    RTXPTToneMappingPassStats   m_Stats;
+    Uint32                      m_Width  = 0;
+    Uint32                      m_Height = 0;
 
     RefCntAutoPtr<IShader> m_FullscreenVS;
     RefCntAutoPtr<IShader> m_LuminancePS;
