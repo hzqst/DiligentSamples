@@ -10,6 +10,7 @@
 #include "RTXPTFrameConstants.hpp"
 #include "RTXPTRenderTargets.hpp"
 #include "RTXPTSuperResolutionInputPass.hpp"
+#include "RTXPTViewUpscaler.hpp"
 
 namespace Diligent
 {
@@ -20,11 +21,7 @@ namespace Diligent
 //RTXPTSuperResolutionInputPass, exposure 1, and no pre-exposure, so display exposure stays with tone mapping.
 struct RTXPTSuperResolutionInputs
 {
-    //Core's VariantId_DLSS (SuperResolution/include/SuperResolutionVariants.hpp, which the SDK does not install). The
-    //Sample's super resolution validation checks that the two agree.
-    static constexpr INTERFACE_ID DLSSVariantId = {0x7b3a8d2e, 0x1f4c, 0x4e9a, {0xb5, 0xd0, 0x6c, 0x8e, 0x2f, 0x1a, 0x3b, 0x5d}};
-
-    //The temporal DLSS variant Factory enumerates, identified by the provider's variant ID rather than its name.
+    //The temporal DLSS variant Factory enumerates, identified by its public provider identity.
     static bool FindDLSSVariant(ISuperResolutionFactory& Factory, SuperResolutionInfo& Variant)
     {
         Variant           = {};
@@ -36,7 +33,7 @@ struct RTXPTSuperResolutionInputs
         Variants.resize(NumVariant);
         for (const SuperResolutionInfo& Info : Variants)
         {
-            if (Info.VariantId == DLSSVariantId && Info.Type == SUPER_RESOLUTION_TYPE_TEMPORAL)
+            if (Info.Provider == SUPER_RESOLUTION_PROVIDER_DLSS && Info.Type == SUPER_RESOLUTION_TYPE_TEMPORAL)
             {
                 Variant = Info;
                 return true;
@@ -51,31 +48,7 @@ struct RTXPTSuperResolutionInputs
                          const SuperResolutionSourceSettings&        Source,
                          SuperResolutionDesc&                        Desc)
     {
-        const RTXPTRenderTargetFormats Formats;
-        Desc = {};
-        if (Query.OutputWidth == 0 || Query.OutputHeight == 0 ||
-            Query.OptimizationType >= SUPER_RESOLUTION_OPTIMIZATION_TYPE_COUNT ||
-            Query.Flags != SUPER_RESOLUTION_FLAG_NONE || Query.OutputFormat != Formats.ProcessedOutputColor ||
-            Source.OptimalInputWidth == 0 || Source.OptimalInputHeight == 0 ||
-            Source.OptimalInputWidth > Query.OutputWidth || Source.OptimalInputHeight > Query.OutputHeight ||
-            Source.OptimalInputWidth < Source.MinInputWidth || Source.OptimalInputWidth > Source.MaxInputWidth ||
-            Source.OptimalInputHeight < Source.MinInputHeight || Source.OptimalInputHeight > Source.MaxInputHeight)
-            return false;
-
-        Desc.Name             = "RTXPT realtime super resolution";
-        Desc.VariantId        = Query.VariantId;
-        Desc.InputWidth       = Source.OptimalInputWidth;
-        Desc.InputHeight      = Source.OptimalInputHeight;
-        Desc.OutputWidth      = Query.OutputWidth;
-        Desc.OutputHeight     = Query.OutputHeight;
-        Desc.OutputFormat     = Formats.ProcessedOutputColor;
-        Desc.ColorFormat      = Formats.OutputColor;
-        Desc.DepthFormat      = RTXPTSuperResolutionInputPass::DepthFormat;
-        Desc.MotionFormat     = RTXPTSuperResolutionInputPass::MotionVectorsFormat;
-        Desc.ExposureFormat   = RTXPTSuperResolutionInputPass::ExposureFormat;
-        Desc.Flags            = SUPER_RESOLUTION_FLAG_NONE;
-        Desc.OptimizationType = Query.OptimizationType;
-        return true;
+        return RTXPTViewUpscaler::MakeDesc(Query, Source, RTXPTSuperResolutionInputPass::DepthFormat, Desc);
     }
 
     //Every guide, layer and denoiser target is at input size; the upscaled HDR and display targets at output size.
@@ -116,15 +89,17 @@ struct RTXPTSuperResolutionInputs
                                    float                                TimeDeltaSeconds,
                                    ExecuteSuperResolutionAttribs&       Attribs)
     {
-        Attribs            = {};
-        const auto& Camera = Frame.ptConsts.camera;
-        const auto& View   = Frame.view;
+        Attribs              = {};
+        const auto& Camera   = Frame.ptConsts.camera;
+        const auto& View     = Frame.view;
+        const bool  Temporal = Desc.DepthFormat != TEX_FORMAT_UNKNOWN;
         const float Width = static_cast<float>(Desc.InputWidth), Height = static_cast<float>(Desc.InputHeight);
         if (Context == nullptr || Desc.Flags != SUPER_RESOLUTION_FLAG_NONE ||
             !IsView(ColorSRV, TEXTURE_VIEW_SHADER_RESOURCE, Desc.ColorFormat, Desc.InputWidth, Desc.InputHeight) ||
-            !IsView(OutputUAV, TEXTURE_VIEW_UNORDERED_ACCESS, Desc.OutputFormat, Desc.OutputWidth, Desc.OutputHeight) ||
+            !IsView(OutputUAV, Temporal ? TEXTURE_VIEW_UNORDERED_ACCESS : TEXTURE_VIEW_RENDER_TARGET, Desc.OutputFormat, Desc.OutputWidth, Desc.OutputHeight) ||
             ColorSRV->GetTexture() == OutputUAV->GetTexture() ||
-            Inputs.GetWidth() != Desc.InputWidth || Inputs.GetHeight() != Desc.InputHeight || !Inputs.GetExposureSRV() ||
+            (Temporal && (Inputs.GetWidth() != Desc.InputWidth || Inputs.GetHeight() != Desc.InputHeight || !Inputs.GetExposureSRV())) ||
+            (!Temporal && View.PixelOffset != float2{0, 0}) ||
             Frame.ptConsts.imageWidth != Desc.InputWidth || Frame.ptConsts.imageHeight != Desc.InputHeight ||
             Camera.ViewportWidth != Desc.InputWidth || Camera.ViewportHeight != Desc.InputHeight ||
             View.ViewportSize != float2{Width, Height} || View.ClipToWindowScale != float2{Width * 0.5f, -Height * 0.5f} ||
@@ -141,10 +116,10 @@ struct RTXPTSuperResolutionInputs
         Attribs.pContext                     = Context;
         Attribs.pColorTextureSRV             = ColorSRV;
         Attribs.pOutputTextureView           = OutputUAV;
-        Attribs.pDepthTextureSRV             = Inputs.GetDepthSRV();
-        Attribs.pMotionVectorsSRV            = Inputs.GetMotionVectorsSRV();
-        Attribs.pExposureTextureSRV          = Inputs.GetExposureSRV();
-        Attribs.pIgnoreHistoryMaskTextureSRV = Inputs.GetIgnoreHistoryMaskSRV();
+        Attribs.pDepthTextureSRV             = Temporal ? Inputs.GetDepthSRV() : nullptr;
+        Attribs.pMotionVectorsSRV            = Temporal ? Inputs.GetMotionVectorsSRV() : nullptr;
+        Attribs.pExposureTextureSRV          = Temporal ? Inputs.GetExposureSRV() : nullptr;
+        Attribs.pIgnoreHistoryMaskTextureSRV = Temporal ? Inputs.GetIgnoreHistoryMaskSRV() : nullptr;
         Attribs.StateTransitionMode          = RESOURCE_STATE_TRANSITION_MODE_TRANSITION;
         Attribs.JitterX                      = View.PixelOffset.x;
         Attribs.JitterY                      = View.PixelOffset.y;

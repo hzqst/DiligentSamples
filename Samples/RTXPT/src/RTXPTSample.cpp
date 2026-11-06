@@ -25,6 +25,7 @@
  */
 
 #include "RTXPTSample.hpp"
+#include <fstream>
 #include "RTXPTCameraBasis.hpp"
 #include "RTXPTDebugCapture.hpp"
 #include "RTXPTNrdConfig.hpp"
@@ -651,6 +652,8 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
         m_UseEmbeddedView = true;
     Args.ParseEnum<RTXPTUpscaleQuality>("sr_quality", 0,
                                         {{"native", RTXPTUpscaleQuality::Native}, {"quality", RTXPTUpscaleQuality::Quality}, {"balanced", RTXPTUpscaleQuality::Balanced}, {"performance", RTXPTUpscaleQuality::Performance}}, m_EmbeddedUpscaleQuality);
+    Args.ParseEnum<RTXPTSuperResolutionProvider>("sr_provider", 0,
+                                                 {{"auto", RTXPTSuperResolutionProvider::Auto}, {"dlss", RTXPTSuperResolutionProvider::DLSS}, {"directsr", RTXPTSuperResolutionProvider::DirectSR}, {"fsr", RTXPTSuperResolutionProvider::FSR}}, m_EmbeddedSuperResolutionProvider);
     Args.ParseEnum<RTXPTRayReconstructionQuality>("embedded_rr_quality", 0,
                                                   {{"native", RTXPTRayReconstructionQuality::Native}, {"quality", RTXPTRayReconstructionQuality::Quality}, {"balanced", RTXPTRayReconstructionQuality::Balanced}, {"performance", RTXPTRayReconstructionQuality::Performance}},
                                                   m_EmbeddedReconstructionQuality);
@@ -2441,8 +2444,9 @@ bool RTXPTSample::RunEmbeddedView()
                 FactoryCI.pDevice = m_pDevice;
                 LoadAndCreateSuperResolutionFactory(FactoryCI, &m_EmbeddedSuperResolutionFactory);
             }
-            ViewCI.SuperResolutionFactory = m_EmbeddedSuperResolutionFactory;
-            ViewCI.UpscaleQuality         = m_EmbeddedUpscaleQuality;
+            ViewCI.SuperResolutionFactory  = m_EmbeddedSuperResolutionFactory;
+            ViewCI.UpscaleQuality          = m_EmbeddedUpscaleQuality;
+            ViewCI.SuperResolutionProvider = m_EmbeddedSuperResolutionProvider;
         }
         else if (m_EmbeddedMode == RTXPTViewMode::RealtimeDLSSRR)
         {

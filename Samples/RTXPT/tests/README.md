@@ -1633,6 +1633,35 @@ RTXPT.exe --mode d3d12 --width 640 --height 360 --sr_validation true
 RTXPT.exe --mode d3d12 --embedded_mode dlss_sr --sr_quality quality --exit_after_frames 300
 ```
 
+The producer-independent `RTXPTViewUpscaler` owns variant selection, the exact
+quality query, feature creation, execution counters and the committed-frame jitter
+sequence. An unsuccessful producer/display frame invalidates its pending execution
+and requires reset without advancing that sequence. `RTXPTSuperResolutionInputs`
+remains the path-tracing camera and guide adapter.
+
+`RTXPTEmbeddedViewCreateInfo::SuperResolutionProvider` selects DLSS, DirectSR,
+spatial FSR 1, or Auto (DLSS, then DirectSR, then FSR, testing the requested query).
+Its default remains DLSS for existing embedded callers; the shared upscaler itself
+defaults to Auto. Explicit providers never substitute another provider, and neither
+Auto nor explicit choices substitute another quality. DirectSR selects its first
+enumerated temporal variant. Selection uses Core's public provider identity, so a
+DirectSR variant wrapping DLSS remains DirectSR. Creation/execute failures do not
+trigger another provider selection.
+
+The Sample accepts `--sr_provider auto|dlss|directsr|fsr` with `--embedded_mode
+dlss_sr`; the historical view-mode name is retained. Spatial FSR uses an RTV,
+zero jitter, and no temporal SR input pass, depth, motion or masks. Its output is
+linear HDR before shared display processing; FSR 1 provides upscaling without
+temporal anti-aliasing, and does not support Native quality. Temporal variants
+receive the ignore-history mask only if their capability flags allow it.
+
+The validation also tests Auto preference, Auto with only FSR available, explicit
+provider isolation, unsupported Native queries and spatial execution. DirectSR
+executes when present and otherwise checks its specific unavailable error. Every
+run writes `sr-validation.log` with the variants exercised, render/display sizes,
+failures and whether DirectSR took the positive or unavailable path. A zero exit
+with an unavailable DirectSR does not validate its execution on another runtime.
+
 Both exited 0 on RTX 5060 / Windows, Debug, 2026-11-02; the Vulkan run of
 `--sr_validation` passed as well but reported `VUID-vkCmdDraw-None-09600` for NGX's
 internal `nv.ngx.dlss.resource` images. Not covered: a failure after an accepted

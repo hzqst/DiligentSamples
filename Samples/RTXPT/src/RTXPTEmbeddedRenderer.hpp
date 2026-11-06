@@ -6,6 +6,7 @@
 #include "RTXPTSceneRuntime.hpp"
 #include "RTXPTSceneHistory.hpp"
 #include "RTXPTViewPostProcess.hpp"
+#include "RTXPTViewUpscaler.hpp"
 #include "RenderDevice.h"
 #include "DeviceContext.h"
 #include "Texture.h"
@@ -37,16 +38,6 @@ enum class RTXPTViewMode
     //reconstructed to the display size by the view's own DLSS RR feature and history instead of NRD and super
     //resolution; needs a ray reconstruction factory with DLSS RR, not NRD.
     RealtimeDLSSRR,
-};
-
-//The DLSS quality of RealtimeDLSSSR. Each is queried exactly; an unsupported one fails rather than another substituting.
-//Native (DLAA) renders at the display size and still runs the upscaler as temporal anti-aliasing.
-enum class RTXPTUpscaleQuality
-{
-    Native,
-    Quality,
-    Balanced,
-    Performance,
 };
 
 //The DLSS RR quality of RealtimeDLSSRR, queried exactly like RTXPTUpscaleQuality. Native (DLAA) renders at the
@@ -81,12 +72,6 @@ struct RTXPTEmbeddedSceneCreateInfo
     IRenderStateCache*               Cache           = nullptr;
     IPipelineStateCache*             PSOCache        = nullptr;
     bool                             EnableProfiling = false;
-};
-
-struct RTXPTViewSize
-{
-    Uint32 Width  = 0;
-    Uint32 Height = 0;
 };
 
 enum class RTXPTViewOutput
@@ -177,25 +162,6 @@ struct RTXPTViewHistoryInfo
     Uint64                  SkinnedVertexStorageBytes     = 0;
 };
 
-//The DLSS feature of a RealtimeDLSSSR view; empty for the other modes. Counters cover the view since Initialize.
-struct RTXPTViewSuperResolutionInfo
-{
-    std::string         Variant;
-    RTXPTUpscaleQuality Quality = RTXPTUpscaleQuality::Quality;
-    //The input size the query returned for the display size and quality, and that display size.
-    RTXPTViewSize RenderSize;
-    RTXPTViewSize DisplaySize;
-    //The jitter (render pixels) and history restart of the latest successful Render, whose jitter index is its
-    //FrameIndex - 1: the sequence advances with successful frames only.
-    float2 Jitter    = float2{0, 0};
-    bool   LastReset = false;
-    //Accepted Execute calls, the ones among them that restarted history, and Render calls whose upscaling (input
-    //preparation or Execute) failed.
-    Uint32 Executes = 0;
-    Uint32 Resets   = 0;
-    Uint32 Failures = 0;
-};
-
 //The DLSS RR feature of a RealtimeDLSSRR view; empty for the other modes. The fields follow
 //RTXPTViewSuperResolutionInfo; Failures counts Render calls whose input preparation or Execute failed.
 struct RTXPTViewRayReconstructionInfo
@@ -236,11 +202,14 @@ struct RTXPTEmbeddedViewCreateInfo
     TEXTURE_FORMAT                   DisplayRTVFormat = TEX_FORMAT_RGBA8_UNORM_SRGB;
     RTXPTViewMode                    Mode             = RTXPTViewMode::Reference;
     bool                             EnableProfiling  = false;
+    //Hosts that can reject a submitted frame explicitly CommitFrame after Render succeeds, or InvalidateOutput.
+    bool DeferredFrameCommit = false;
     //Native validation control only: false makes NRD ignore the per-pixel history validity of the layers.
     bool NativeHistoryConfidence = true;
     //RealtimeDLSSSR only: the device's super resolution factory, which the view keeps, and the quality.
-    ISuperResolutionFactory* SuperResolutionFactory = nullptr;
-    RTXPTUpscaleQuality      UpscaleQuality         = RTXPTUpscaleQuality::Quality;
+    ISuperResolutionFactory*     SuperResolutionFactory  = nullptr;
+    RTXPTUpscaleQuality          UpscaleQuality          = RTXPTUpscaleQuality::Quality;
+    RTXPTSuperResolutionProvider SuperResolutionProvider = RTXPTSuperResolutionProvider::DLSS;
     //RealtimeDLSSRR only: the device's ray reconstruction factory, which the view keeps, and the quality.
     IRayReconstructionFactory*    RayReconstructionFactory = nullptr;
     RTXPTRayReconstructionQuality ReconstructionQuality    = RTXPTRayReconstructionQuality::Native;
@@ -300,6 +269,9 @@ public:
     RTXPTEmbeddedView& operator=(const RTXPTEmbeddedView&) = delete;
     //Creates new targets and history and waits for the GPU. Reinitialization invalidates previous outputs even on failure.
     RTXPTErrorCode Initialize(IRenderDevice* Device, IDeviceContext* Context, const RTXPTEmbeddedViewCreateInfo& CreateInfo);
+    //Retries a failed SR object creation with its selected query; CreateInfo must name the same provider, quality
+    //and display size. Auto selection is retained even if provider availability changes during recovery.
+    RTXPTErrorCode RetryInitialize(IRenderDevice* Device, IDeviceContext* Context, const RTXPTEmbeddedViewCreateInfo& CreateInfo);
     //Display is applied to this frame alone (RTXPTViewDisplaySettings). Camera and View describe the render size without
     //jitter; DLSSSR and DLSSRR add their own. AutoExposure is the auto exposure of the view's camera, required when
     //Display enables it and ignored otherwise: Render begins its frame at Time and meters it, and the host commits that
@@ -308,6 +280,7 @@ public:
     // Revokes submitted output and temporal history after the host observes an execution failure.
     // Does not wait for the GPU or release resources that submitted commands may still reference.
     void InvalidateOutput();
+    void CommitFrame();
     //GetOutput returns the allocated display target even before Render, for recording host commands. Contents are
     //current only after Render succeeds. Its UNORM SRV copies sRGB-encoded bytes without a second decode/encode cycle.
     ITexture* GetOutput() const;
@@ -330,6 +303,7 @@ public:
 private:
     struct Impl;
     std::unique_ptr<Impl> m_Impl;
+    RTXPTErrorCode        Initialize(IRenderDevice* Device, IDeviceContext* Context, const RTXPTEmbeddedViewCreateInfo& CreateInfo, RTXPTViewUpscaler* SelectedUpscaler);
 };
 
 //Creates a render state cache for the embedded renderer that identifies shader files by name. DXC then preprocesses

@@ -67,6 +67,7 @@ set(INCLUDE
     src/RTXPTTemporalAAPass.hpp
     src/RTXPTToneMappingPass.hpp
     src/RTXPTViewPostProcess.hpp
+    src/RTXPTViewUpscaler.hpp
     src/RTXPTBlitPass.hpp
     src/RTXPTPipelineStateCache.hpp
     RTXPT_FORK_MAPPING.md

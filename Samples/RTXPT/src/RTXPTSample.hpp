@@ -163,10 +163,11 @@ private:
     bool                                RunEmbeddedView();
     bool                                EnsureEmbeddedScene(IShaderSourceInputStreamFactory* Shaders);
     void                                CreateEmbeddedShaderSource(IShaderSourceInputStreamFactory** Shaders) const;
-    bool                                m_UseEmbeddedView               = false;
-    RTXPTViewMode                       m_EmbeddedMode                  = RTXPTViewMode::Reference;
-    RTXPTUpscaleQuality                 m_EmbeddedUpscaleQuality        = RTXPTUpscaleQuality::Quality;
-    RTXPTRayReconstructionQuality       m_EmbeddedReconstructionQuality = RTXPTRayReconstructionQuality::Native;
+    bool                                m_UseEmbeddedView                 = false;
+    RTXPTViewMode                       m_EmbeddedMode                    = RTXPTViewMode::Reference;
+    RTXPTUpscaleQuality                 m_EmbeddedUpscaleQuality          = RTXPTUpscaleQuality::Quality;
+    RTXPTSuperResolutionProvider        m_EmbeddedSuperResolutionProvider = RTXPTSuperResolutionProvider::DLSS;
+    RTXPTRayReconstructionQuality       m_EmbeddedReconstructionQuality   = RTXPTRayReconstructionQuality::Native;
     std::unique_ptr<RTXPTEmbeddedScene> m_EmbeddedScene; // Outlives resizes, which recreate only the view.
     std::unique_ptr<RTXPTEmbeddedView>  m_EmbeddedView;
     RefCntAutoPtr<IRenderStateCache>    m_pEmbeddedStateCache; // Outlives resizes and scene reloads for recreated embedded renderers.

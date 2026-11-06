@@ -133,7 +133,7 @@ RTXPTErrorCode RTXPTRealtimePipeline::Initialize(const RTXPTRealtimePipelineCrea
         !m_Merge.Initialize(Device, Factory, Cache, m_Constants, true, PassSet) ||
         !m_PostProcess.Initialize(Device, Cache, CreateInfo.PSOCache, DisplayWidth, DisplayHeight, m_DisplayFormat))
         return RTXPTErrorCode::PostProcessSetupFailed;
-    if (m_SuperResolution &&
+    if (m_SuperResolution && CreateInfo.TemporalSuperResolution &&
         (!m_SuperResolutionInputs.Initialize(Device, Factory, Cache, m_Constants) || !m_SuperResolutionInputs.Resize(Device, Width, Height)))
         return RTXPTErrorCode::SuperResolutionInputsFailed;
     if (bNative)
@@ -308,8 +308,8 @@ RTXPTErrorCode RTXPTRealtimePipeline::Render(IDeviceContext* Context, RTXPTRayTr
         if (Code != RTXPTErrorCode::Ok)
             return Code;
     }
-    //Every Execute of the upscaler or reconstruction flushes and invalidates the context state; the display post
-    //processing sets all of its own. It meters the HDR of the mode before Bloom, and leaves that HDR as the frame's
+    //Native upscalers and reconstruction may submit work or alter command state; display post processing binds all
+    //of its own state. It meters the HDR of the mode before Bloom, and leaves that HDR as the frame's
     //captures publish it.
     ITextureView* HDR      = m_SuperResolution || bReconstruction ? m_Targets.GetProcessedOutputColorSRV() : m_Targets.GetOutputColorSRV();
     const auto    PostCode = m_PostProcess.Apply(Context, HDR->GetTexture(), ToneParameters, Bloom, AutoExposure, DisplayRTV, Profiler);
@@ -356,20 +356,28 @@ RTXPTErrorCode RTXPTRealtimePipeline::Denoise(IDeviceContext* Context, const Sam
  */
 RTXPTErrorCode RTXPTRealtimePipeline::Upscale(IDeviceContext* Context, const SampleConstants& Constants, const RTXPTRealtimeHistoryAttribs& History, RTXPTGpuProfiler* Profiler)
 {
+    if (History.Upscaler->IsTemporal())
     {
         RTXPTGpuProfiler::Scope Timing{Profiler, Context, RTXPTGpuProfiler::Stage::SuperResolutionInputs};
         if (!m_SuperResolutionInputs.Prepare(Context, m_Targets.GetDepthSRV(), m_Targets.GetScreenMotionVectorsSRV()))
+        {
+            History.Upscaler->RecordInputFailure();
             return RTXPTErrorCode::SuperResolutionInputsFailed;
+        }
     }
     ExecuteSuperResolutionAttribs Attribs;
     if (!RTXPTSuperResolutionInputs::MakeExecuteAttribs(Context, History.Upscaler->GetDesc(), m_SuperResolutionInputs,
-                                                        m_Targets.GetOutputColorSRV(), m_Targets.GetProcessedOutputColorUAV(),
+                                                        m_Targets.GetOutputColorSRV(), History.Upscaler->IsTemporal() ? m_Targets.GetProcessedOutputColorUAV() : m_Targets.GetProcessedOutputColorRTV(),
                                                         Constants, History.Reset, std::max(History.TimeDeltaSeconds, 0.0f), Attribs))
+    {
+        History.Upscaler->RecordInputFailure();
         return RTXPTErrorCode::InvalidArgument;
+    }
     {
         RTXPTGpuProfiler::Scope Timing{Profiler, Context, RTXPTGpuProfiler::Stage::SuperResolution};
-        if (!History.Upscaler->Execute(Attribs))
-            return RTXPTErrorCode::SuperResolutionExecuteFailed;
+        const auto              Code = History.Upscaler->Execute(Attribs, History.InvalidSurfaceHistory);
+        if (Code != RTXPTErrorCode::Ok)
+            return Code;
     }
     ++m_Stats.SuperResolutionExecutes;
     m_Stats.SuperResolutionResets += History.Reset ? 1u : 0u;
