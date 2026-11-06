@@ -14,7 +14,7 @@
 
 namespace Diligent
 {
-struct ISuperResolution;
+class RTXPTViewUpscaler;
 struct IRayReconstruction;
 
 //How the current-frame layers become linear HDR.
@@ -92,6 +92,7 @@ struct RTXPTRealtimePipelineCreateInfo
     //DLSSRR validation control only (the D4 A/B): false hands RR exposure 1 instead of the display exposure.
     bool   ReconstructionDisplayExposure = true;
     bool   SuperResolution               = false;
+    bool   TemporalSuperResolution       = true;
     Uint32 DisplayWidth                  = 0;
     Uint32 DisplayHeight                 = 0;
 };
@@ -107,7 +108,8 @@ struct RTXPTRealtimeHistoryAttribs
     //Required by a SuperResolution pipeline: the host's upscaler, created for the render and display sizes with
     //RTXPTSuperResolutionInputs::MakeDesc. The frame constants carry its jitter (ApplyJitter). Its history advances
     //with an accepted Execute, so a later failure of this frame leaves the host to reset the next one.
-    ISuperResolution* Upscaler = nullptr;
+    RTXPTViewUpscaler* Upscaler              = nullptr;
+    bool               InvalidSurfaceHistory = false;
     //Required by a DLSSRR pipeline: the host's reconstruction, created for the render and display sizes with
     //RTXPTRayReconstructionInputs::MakeDesc and explicit exposure, which the pipeline supplies. The frame constants
     //carry its jitter alone (ApplyJitter, no micro-jitter). Its history advances like the upscaler's.

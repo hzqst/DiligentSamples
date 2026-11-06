@@ -219,11 +219,14 @@ const char* GetRTXPTErrorCodeString(RTXPTErrorCode Code)
         case RTXPTErrorCode::DenoiserUnsupportedDevice: return "the device lacks compute or a UAV format of the NRD denoiser inputs";
         case RTXPTErrorCode::DenoiserSetupFailed: return "NRD denoiser instances or pipelines could not be created";
         case RTXPTErrorCode::DenoiseFailed: return "realtime NRD denoising failed";
-        case RTXPTErrorCode::SuperResolutionUnavailable: return "no super resolution factory or DLSS variant";
-        case RTXPTErrorCode::SuperResolutionQueryFailed: return "DLSS does not support the quality for the output size";
-        case RTXPTErrorCode::SuperResolutionCreateFailed: return "the DLSS feature could not be created or failed its first execution";
+        case RTXPTErrorCode::SuperResolutionUnavailable: return "the DLSS provider is unavailable";
+        case RTXPTErrorCode::SuperResolutionFactoryUnavailable: return "the super resolution factory is unavailable";
+        case RTXPTErrorCode::DirectSRUnavailable: return "the DirectSR provider is unavailable";
+        case RTXPTErrorCode::FSRUnavailable: return "the FSR provider is unavailable";
+        case RTXPTErrorCode::SuperResolutionQueryFailed: return "the requested super resolution quality is unsupported for the output size";
+        case RTXPTErrorCode::SuperResolutionCreateFailed: return "the super resolution feature could not be created or failed its first execution";
         case RTXPTErrorCode::SuperResolutionInputsFailed: return "the super resolution inputs could not be prepared";
-        case RTXPTErrorCode::SuperResolutionExecuteFailed: return "the DLSS evaluation failed";
+        case RTXPTErrorCode::SuperResolutionExecuteFailed: return "the super resolution evaluation failed";
         case RTXPTErrorCode::RayReconstructionUnavailable: return "no ray reconstruction factory or DLSS RR variant";
         case RTXPTErrorCode::RayReconstructionQueryFailed: return "DLSS RR does not support the quality for the output size";
         case RTXPTErrorCode::RayReconstructionCreateFailed: return "the DLSS RR feature could not be created or failed its first execution";

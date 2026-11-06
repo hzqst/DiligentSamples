@@ -137,6 +137,9 @@ enum class RTXPTErrorCode : Uint32
     SuperResolutionCreateFailed,
     SuperResolutionInputsFailed,
     SuperResolutionExecuteFailed,
+    SuperResolutionFactoryUnavailable,
+    DirectSRUnavailable,
+    FSRUnavailable,
 
     // RealtimeDLSSRR ray reconstruction
     RayReconstructionUnavailable,
