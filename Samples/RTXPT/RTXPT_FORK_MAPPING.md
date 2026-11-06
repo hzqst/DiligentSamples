@@ -101,8 +101,17 @@ Native NGX remains on the graphics context; no Streamline/NVRHI scheduling,
 dependency update, engine API or third-party source change is introduced.
 
 Controls: `--asyncPrefix true|false` and the realtime UI switch; default off.
-`--async_queue false` disables allocation of the extra context for a complete
-single-queue fallback. Runtime overlap requires realtime DLSS-RR, ready passes,
+The device fixes its immediate contexts at creation, so the extra context is
+created only when `--asyncPrefix true` or `--async_validation true` is given, or
+`--async_queue true` is set explicitly; the UI switch is disabled without it.
+An explicit `--async_queue false` wins over both and gives a complete
+single-queue fallback (AsyncPrefix then uses serial scheduling). Realtime,
+reference capture and `--rr_embedded_validation` runs never create it.
+Every frame flushes and finishes the extra context even when the prefix did
+not run, as `Present` does for context 0. Objects are released for both
+queues, and an idle queue that never submits would otherwise hold them, GPU
+descriptors in particular, until an `IdleGPU` (#284).
+Runtime overlap requires realtime DLSS-RR, ready passes,
 no guide debug view and no enabled scene animation; Reference, NRD and dynamic
 geometry retain serial execution. `--async_validation true` exercises switching,
 motion, odd resize, scene reload, Reference and animation fallback.

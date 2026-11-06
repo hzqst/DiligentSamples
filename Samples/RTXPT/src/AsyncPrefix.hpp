@@ -109,8 +109,18 @@ public:
     void EndGraphics()
     {
         SignalGraphics();
-        // The swap chain finishes only context 0. Retire context 1's upload
-        // allocations/descriptors against its submitted fence each frame.
+    }
+
+    // The swap chain finishes only context 0. Call once per frame, also when the
+    // prefix did not run: objects released for both queues (descriptors in
+    // particular) are retired only after each queue submits, and an empty
+    // FinishFrame submits a fence to context 1's queue without waiting.
+    // Flush first, as Present does for context 0: a Vulkan context records
+    // query resets at creation and keeps them until its first Flush.
+    void FinishFrame()
+    {
+        if (!m_Compute) return;
+        m_Compute->Flush();
         m_Compute->FinishFrame();
     }
 

@@ -1,8 +1,10 @@
 // Copyright 2026 Diligent Graphics LLC. Licensed under Apache-2.0.
 #include <Windows.h>
+#include <d3d12.h>
 #include <atomic>
 #include <iostream>
 #include <stdexcept>
+#include "../../../../DiligentCore/Graphics/GraphicsEngineD3D12/interface/BufferD3D12.h"
 #include "../../../../DiligentCore/Graphics/GraphicsEngineD3D12/interface/EngineFactoryD3D12.h"
 #include "../../../../DiligentCore/Graphics/GraphicsEngineVulkan/interface/EngineFactoryVk.h"
 #include "../src/AsyncPrefix.hpp"
@@ -81,6 +83,38 @@ try
         StateTransitionDesc Barrier{B, RESOURCE_STATE_UNKNOWN, RESOURCE_STATE_COMMON, STATE_TRANSITION_FLAG_UPDATE_STATE};
         C->TransitionResourceStates(1, &Barrier);
     };
+    // Keep the new context 1 idle, as the Sample does while AsyncPrefix is off. An
+    // object released for both queues retires only after each queue has submitted,
+    // so the per-frame FinishFrame of context 1 must retire it without an IdleGPU.
+    // A new Vulkan context also holds the query resets recorded at its creation.
+    constexpr Uint32 IdleFrames = 4;
+    const bool       D3D12      = std::string{argv[1]} != "Vk";
+    auto             Released   = Allocate("idle queue release probe", 4);
+    ID3D12Resource*  Probe      = nullptr;
+    if (D3D12)
+    {
+        RefCntAutoPtr<IBufferD3D12> ReleasedD3D12{Released, IID_BufferD3D12};
+        Uint64                      Offset = 0;
+
+        Probe = ReleasedD3D12->GetD3D12Buffer(Offset, Graphics);
+        Probe->AddRef();
+    }
+    Released.Release();
+    for (Uint32 Frame = 0; Frame < IdleFrames; ++Frame)
+    {
+        Graphics->Flush();
+        Graphics->FinishFrame();
+        Scheduler.FinishFrame();
+        Device->ReleaseStaleResources();
+    }
+    // Wait for the hardware queues only: a context's WaitForIdle would retire the object itself.
+    for (IDeviceContext* Context : {Graphics.RawPtr(), Compute.RawPtr()})
+    {
+        Context->LockCommandQueue()->WaitForIdle();
+        Context->UnlockCommandQueue();
+    }
+    Device->ReleaseStaleResources();
+    if (Probe) Require(Probe->Release() == 0, "the idle second queue retained a released object");
     // A shared single-slot input must not be overwritten until the previous
     // graphics consumer finishes. No CPU wait occurs inside each 32-frame run.
     for (Uint32 Frame = 0; Frame < 128; ++Frame)
@@ -95,6 +129,7 @@ try
         Graphics->CopyBuffer(Shared, 0, RESOURCE_STATE_TRANSITION_MODE_TRANSITION, Output, Frame * 4, 4, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
         Common(Graphics, Shared);
         Scheduler.EndGraphics();
+        Scheduler.FinishFrame();
         // Exercise switching away from async and back without resetting fences.
         if ((Frame + 1) % 32 == 0) Scheduler.Drain();
     }
@@ -108,7 +143,7 @@ try
         Require(Frame * 7919 + 17 == static_cast<Uint32*>(Data)[Frame], "stale or overwritten cross-queue input");
     Graphics->UnmapBuffer(Readback, MAP_READ);
     Require(Errors == 0, "validation errors");
-    std::cout << "PASS: 128 cross-queue frames, four drain/re-entry cycles\n";
+    std::cout << "PASS: 128 cross-queue frames, four drain/re-entry cycles, idle-queue release\n";
     return 0;
 }
 catch (const std::exception& E)

@@ -209,6 +209,7 @@ void RTXPTSample::RunSuperResolutionValidation()
     const auto Prepare = [&]() {
         m_pImmediateContext->Flush();
         m_pImmediateContext->FinishFrame();
+        m_AsyncPrefix.FinishFrame();
         Time += 1.0 / 60.0;
         return Check(Scene.Prepare(m_pImmediateContext) == RTXPTErrorCode::Ok, "the scene frame could not be prepared");
     };
