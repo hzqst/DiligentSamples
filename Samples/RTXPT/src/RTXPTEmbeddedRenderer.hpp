@@ -228,6 +228,9 @@ public:
     ~RTXPTEmbeddedScene();
     RTXPTEmbeddedScene(const RTXPTEmbeddedScene&) = delete;
     RTXPTEmbeddedScene& operator=(const RTXPTEmbeddedScene&) = delete;
+    //Whether Device has what every scene needs: ray tracing with standalone shaders, bindless resources and compute.
+    //Initialize returns DeviceFeaturesMissing otherwise.
+    static bool IsDeviceSupported(IRenderDevice* Device);
     //Imports the scene, prepares its first frame and waits for the GPU.
     RTXPTErrorCode Initialize(IRenderDevice* Device, IDeviceContext* Context, const RTXPTEmbeddedSceneCreateInfo& CreateInfo);
     bool           IsReady() const;
@@ -272,6 +275,9 @@ public:
     //Retries a failed SR object creation with its selected query; CreateInfo must name the same provider, quality
     //and display size. Auto selection is retained even if provider availability changes during recovery.
     RTXPTErrorCode RetryInitialize(IRenderDevice* Device, IDeviceContext* Context, const RTXPTEmbeddedViewCreateInfo& CreateInfo);
+    //Whether a RealtimeDLSSRR view of DisplaySize finds the DLSS RR variant of Factory and its exact query for Quality,
+    //as Initialize does, without creating a feature. Ok does not promise that the creation succeeds.
+    static RTXPTErrorCode QueryRayReconstruction(IRayReconstructionFactory* Factory, RTXPTRayReconstructionQuality Quality, RTXPTViewSize DisplaySize);
     //Display is applied to this frame alone (RTXPTViewDisplaySettings). Camera and View describe the render size without
     //jitter; DLSSSR and DLSSRR add their own. AutoExposure is the auto exposure of the view's camera, required when
     //Display enables it and ignored otherwise: Render begins its frame at Time and meters it, and the host commits that

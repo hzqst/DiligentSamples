@@ -45,6 +45,24 @@ RAY_RECONSTRUCTION_QUALITY ToReconstructionQuality(RTXPTRayReconstructionQuality
     }
     return RAY_RECONSTRUCTION_QUALITY_COUNT;
 }
+
+//Finds the DLSS RR variant and queries exactly Quality for the display size. The query's [Min, Max] range is enforced
+//here because DLSS RR accepts sizes outside it.
+RTXPTErrorCode SelectReconstruction(IRayReconstructionFactory* Factory, RTXPTRayReconstructionQuality Quality, RTXPTViewSize DisplaySize, RayReconstructionInfo& Variant, RayReconstructionDesc& Desc)
+{
+    if (Factory == nullptr || !RTXPTRayReconstructionInputs::FindDLSSVariant(*Factory, Variant))
+        return RTXPTErrorCode::RayReconstructionUnavailable;
+    RayReconstructionSourceSettingsAttribs Query;
+    Query.VariantId    = Variant.VariantId;
+    Query.OutputWidth  = DisplaySize.Width;
+    Query.OutputHeight = DisplaySize.Height;
+    Query.Quality      = ToReconstructionQuality(Quality);
+    RayReconstructionSourceSettings Source;
+    if (Query.Quality == RAY_RECONSTRUCTION_QUALITY_COUNT || !Factory->GetSourceSettings(Query, Source) ||
+        !RTXPTRayReconstructionInputs::MakeDesc(Query, Source, Desc, RTXPTRayReconstructionExposure::Explicit))
+        return RTXPTErrorCode::RayReconstructionQueryFailed;
+    return RTXPTErrorCode::Ok;
+}
 #endif
 } // namespace
 
@@ -82,18 +100,25 @@ RTXPTEmbeddedScene::RTXPTEmbeddedScene() :
     m_Impl{std::make_unique<Impl>()} {}
 RTXPTEmbeddedScene::~RTXPTEmbeddedScene() = default;
 
+bool RTXPTEmbeddedScene::IsDeviceSupported(IRenderDevice* Device)
+{
+    if (!Device)
+        return false;
+    const auto& Features = Device->GetDeviceInfo().Features;
+    return Features.RayTracing == DEVICE_FEATURE_STATE_ENABLED && Features.BindlessResources == DEVICE_FEATURE_STATE_ENABLED &&
+        Features.ComputeShaders == DEVICE_FEATURE_STATE_ENABLED &&
+        (Device->GetAdapterInfo().RayTracing.CapFlags & RAY_TRACING_CAP_FLAG_STANDALONE_SHADERS) != 0;
+}
+
 RTXPTErrorCode RTXPTEmbeddedScene::Initialize(IRenderDevice* Device, IDeviceContext* Context, const RTXPTEmbeddedSceneCreateInfo& CreateInfo)
 {
     auto& S           = *m_Impl;
     S.EnableProfiling = CreateInfo.EnableProfiling;
     if (!Device || !Context || !CreateInfo.Scene || !CreateInfo.Materials || !CreateInfo.Shaders || !CreateInfo.Cache)
         return RTXPTErrorCode::InvalidArgument;
-    auto&       Scene     = *CreateInfo.Scene;
-    auto&       Materials = *CreateInfo.Materials;
-    const auto& Features  = Device->GetDeviceInfo().Features;
-    if (Features.RayTracing != DEVICE_FEATURE_STATE_ENABLED || Features.BindlessResources != DEVICE_FEATURE_STATE_ENABLED ||
-        Features.ComputeShaders != DEVICE_FEATURE_STATE_ENABLED ||
-        !(Device->GetAdapterInfo().RayTracing.CapFlags & RAY_TRACING_CAP_FLAG_STANDALONE_SHADERS))
+    auto& Scene     = *CreateInfo.Scene;
+    auto& Materials = *CreateInfo.Materials;
+    if (!IsDeviceSupported(Device))
         return RTXPTErrorCode::DeviceFeaturesMissing;
     if (Scene.HasSkinnedGeometry())
         return RTXPTErrorCode::SkinnedGeometryUnsupported;
@@ -374,24 +399,16 @@ struct RTXPTEmbeddedView::Impl
         return RTXPTErrorCode::Ok;
     }
 
-    //Like CreateUpscaler for the DLSS RR variant, with explicit exposure (D4) and the Core default preset (D5). The
-    //query's [Min, Max] range is enforced here because DLSS RR accepts sizes outside it.
+    //Like CreateUpscaler for the DLSS RR variant (SelectReconstruction), with explicit exposure (D4) and the Core
+    //default preset (D5).
     RTXPTErrorCode CreateReconstruction(IRayReconstructionFactory* Factory, RTXPTRayReconstructionQuality Quality)
     {
 #if RTXPT_HAS_RAY_RECONSTRUCTION
         RayReconstructionInfo Variant;
-        if (Factory == nullptr || !RTXPTRayReconstructionInputs::FindDLSSVariant(*Factory, Variant))
-            return RTXPTErrorCode::RayReconstructionUnavailable;
-        RayReconstructionSourceSettingsAttribs Query;
-        Query.VariantId    = Variant.VariantId;
-        Query.OutputWidth  = DisplayWidth;
-        Query.OutputHeight = DisplayHeight;
-        Query.Quality      = ToReconstructionQuality(Quality);
-        RayReconstructionSourceSettings Source;
-        RayReconstructionDesc           Desc;
-        if (Query.Quality == RAY_RECONSTRUCTION_QUALITY_COUNT || !Factory->GetSourceSettings(Query, Source) ||
-            !RTXPTRayReconstructionInputs::MakeDesc(Query, Source, Desc, RTXPTRayReconstructionExposure::Explicit))
-            return RTXPTErrorCode::RayReconstructionQueryFailed;
+        RayReconstructionDesc Desc;
+        const auto            Code = SelectReconstruction(Factory, Quality, {DisplayWidth, DisplayHeight}, Variant, Desc);
+        if (Code != RTXPTErrorCode::Ok)
+            return Code;
         Factory->CreateRayReconstruction(Desc, &Reconstruction);
         if (!Reconstruction)
             return RTXPTErrorCode::RayReconstructionCreateFailed;
@@ -437,6 +454,18 @@ RTXPTEmbeddedView::~RTXPTEmbeddedView() = default;
 RTXPTErrorCode RTXPTEmbeddedView::Initialize(IRenderDevice* Device, IDeviceContext* Context, const RTXPTEmbeddedViewCreateInfo& CreateInfo)
 {
     return Initialize(Device, Context, CreateInfo, nullptr);
+}
+
+RTXPTErrorCode RTXPTEmbeddedView::QueryRayReconstruction(IRayReconstructionFactory* Factory, RTXPTRayReconstructionQuality Quality, RTXPTViewSize DisplaySize)
+{
+#if RTXPT_HAS_RAY_RECONSTRUCTION
+    RayReconstructionInfo Variant;
+    RayReconstructionDesc Desc;
+    return SelectReconstruction(Factory, Quality, DisplaySize, Variant, Desc);
+#else
+    (void)Factory, (void)Quality, (void)DisplaySize;
+    return RTXPTErrorCode::RayReconstructionUnavailable;
+#endif
 }
 
 RTXPTErrorCode RTXPTEmbeddedView::RetryInitialize(IRenderDevice* Device, IDeviceContext* Context, const RTXPTEmbeddedViewCreateInfo& CreateInfo)
