@@ -74,6 +74,9 @@ public:
     RTXPTViewUpscaler(RTXPTViewUpscaler&&)                 = default;
     RTXPTViewUpscaler& operator=(RTXPTViewUpscaler&&) = default;
     RTXPTErrorCode     Initialize(const RTXPTViewUpscalerCreateInfo& CreateInfo);
+    //Whether Initialize would select a variant for CreateInfo, by the same Auto order and exact query, without creating
+    //a feature. Ok does not promise that the creation succeeds.
+    static RTXPTErrorCode Query(const RTXPTViewUpscalerCreateInfo& CreateInfo);
     //Retries object creation with the already selected variant and exact query, without reevaluating Auto.
     RTXPTErrorCode                      RetryCreate();
     bool                                HasSelection() const { return m_HasSelection; }
@@ -120,6 +123,7 @@ public:
 
 private:
     RTXPTErrorCode                         InitializeFeature(const RTXPTViewUpscalerCreateInfo& CreateInfo);
+    static RTXPTErrorCode                  Select(const RTXPTViewUpscalerCreateInfo& CreateInfo, SuperResolutionInfo& Variant, SuperResolutionDesc& Desc);
     SuperResolutionDesc                    m_Desc;
     bool                                   m_HasSelection = false;
     RefCntAutoPtr<ISuperResolutionFactory> m_Factory;

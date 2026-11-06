@@ -43,22 +43,17 @@ RTXPTErrorCode RTXPTViewUpscaler::Initialize(const RTXPTViewUpscalerCreateInfo& 
     return Code;
 }
 
-RTXPTErrorCode RTXPTViewUpscaler::InitializeFeature(const RTXPTViewUpscalerCreateInfo& CreateInfo)
+RTXPTErrorCode RTXPTViewUpscaler::Query(const RTXPTViewUpscalerCreateInfo& CreateInfo)
 {
-    m_Feature.Release();
-    m_Factory          = CreateInfo.Factory;
-    m_Info             = {};
-    m_Info.Provider    = CreateInfo.Provider;
-    m_Info.Quality     = CreateInfo.Quality;
-    m_Info.DisplaySize = CreateInfo.DisplaySize;
-    m_FrameIndex       = 0;
-    m_Pending          = false;
-    m_RequireReset     = true;
-    m_Type             = SUPER_RESOLUTION_TYPE_SPATIAL;
-    m_CapFlags         = SUPER_RESOLUTION_TEMPORAL_CAP_FLAG_NONE;
-    m_HasSelection     = false;
-    m_Desc             = {};
-    if (!m_Factory)
+    SuperResolutionInfo Variant;
+    SuperResolutionDesc Desc;
+    return Select(CreateInfo, Variant, Desc);
+}
+
+//Auto takes the first of DLSS, DirectSR and FSR whose exact query succeeds; an explicit provider is never substituted.
+RTXPTErrorCode RTXPTViewUpscaler::Select(const RTXPTViewUpscalerCreateInfo& CreateInfo, SuperResolutionInfo& Variant, SuperResolutionDesc& Desc)
+{
+    if (!CreateInfo.Factory)
         return RTXPTErrorCode::SuperResolutionFactoryUnavailable;
     const auto Optimization = ToUpscalerOptimizationType(CreateInfo.Quality);
     if (Optimization == SUPER_RESOLUTION_OPTIMIZATION_TYPE_COUNT)
@@ -66,10 +61,10 @@ RTXPTErrorCode RTXPTViewUpscaler::InitializeFeature(const RTXPTViewUpscalerCreat
     if (CreateInfo.Provider < RTXPTSuperResolutionProvider::Auto || CreateInfo.Provider > RTXPTSuperResolutionProvider::FSR)
         return RTXPTErrorCode::InvalidArgument;
     Uint32 Count = 0;
-    m_Factory->EnumerateVariants(Count, nullptr);
+    CreateInfo.Factory->EnumerateVariants(Count, nullptr);
     std::vector<SuperResolutionInfo> Variants(Count);
     if (Count)
-        m_Factory->EnumerateVariants(Count, Variants.data());
+        CreateInfo.Factory->EnumerateVariants(Count, Variants.data());
     Variants.resize(Count);
     const std::pair<RTXPTSuperResolutionProvider, SUPER_RESOLUTION_PROVIDER> Providers[] = {
         {RTXPTSuperResolutionProvider::DLSS, SUPER_RESOLUTION_PROVIDER_DLSS},
@@ -86,39 +81,29 @@ RTXPTErrorCode RTXPTViewUpscaler::InitializeFeature(const RTXPTViewUpscalerCreat
         });
         if (Found == Variants.end())
             continue;
-        const auto&                          Variant = *Found;
         SuperResolutionSourceSettingsAttribs Query;
-        Query.VariantId        = Variant.VariantId;
+        Query.VariantId        = Found->VariantId;
         Query.OutputWidth      = CreateInfo.DisplaySize.Width;
         Query.OutputHeight     = CreateInfo.DisplaySize.Height;
         Query.OutputFormat     = TEX_FORMAT_RGBA16_FLOAT;
         Query.OptimizationType = Optimization;
         SuperResolutionSourceSettings Source;
-        SuperResolutionDesc           Desc;
-        if (m_Factory->GetSourceSettings(Query, Source) != SUPER_RESOLUTION_SOURCE_SETTINGS_STATUS_SUCCESS ||
-            !MakeDesc(Query, Source, CreateInfo.DepthFormat, Desc))
+        SuperResolutionDesc           Selected;
+        if (CreateInfo.Factory->GetSourceSettings(Query, Source) != SUPER_RESOLUTION_SOURCE_SETTINGS_STATUS_SUCCESS ||
+            !MakeDesc(Query, Source, CreateInfo.DepthFormat, Selected))
         {
             if (CreateInfo.Provider == RTXPTSuperResolutionProvider::Auto)
                 continue;
             return RTXPTErrorCode::SuperResolutionQueryFailed;
         }
-        m_Type     = Variant.Type;
-        m_CapFlags = IsTemporal() ? Variant.TemporalCapFlags : SUPER_RESOLUTION_TEMPORAL_CAP_FLAG_NONE;
-        if (!IsTemporal())
+        if (Found->Type != SUPER_RESOLUTION_TYPE_TEMPORAL)
         {
-            Desc.DepthFormat    = TEX_FORMAT_UNKNOWN;
-            Desc.MotionFormat   = TEX_FORMAT_UNKNOWN;
-            Desc.ExposureFormat = TEX_FORMAT_UNKNOWN;
+            Selected.DepthFormat    = TEX_FORMAT_UNKNOWN;
+            Selected.MotionFormat   = TEX_FORMAT_UNKNOWN;
+            Selected.ExposureFormat = TEX_FORMAT_UNKNOWN;
         }
-        m_Info.Variant        = Variant.Name;
-        m_Info.ActualProvider = Provider;
-        m_Info.RenderSize     = {Desc.InputWidth, Desc.InputHeight};
-        m_Info.DisplaySize    = CreateInfo.DisplaySize;
-        m_Desc                = Desc;
-        m_HasSelection        = true;
-        m_Factory->CreateSuperResolution(m_Desc, &m_Feature);
-        if (!m_Feature)
-            return RTXPTErrorCode::SuperResolutionCreateFailed;
+        Variant = *Found;
+        Desc    = Selected;
         return RTXPTErrorCode::Ok;
     }
     switch (CreateInfo.Provider)
@@ -129,6 +114,37 @@ RTXPTErrorCode RTXPTViewUpscaler::InitializeFeature(const RTXPTViewUpscalerCreat
         case RTXPTSuperResolutionProvider::FSR: return RTXPTErrorCode::FSRUnavailable;
         default: return RTXPTErrorCode::InvalidArgument;
     }
+}
+
+RTXPTErrorCode RTXPTViewUpscaler::InitializeFeature(const RTXPTViewUpscalerCreateInfo& CreateInfo)
+{
+    m_Feature.Release();
+    m_Factory          = CreateInfo.Factory;
+    m_Info             = {};
+    m_Info.Provider    = CreateInfo.Provider;
+    m_Info.Quality     = CreateInfo.Quality;
+    m_Info.DisplaySize = CreateInfo.DisplaySize;
+    m_FrameIndex       = 0;
+    m_Pending          = false;
+    m_RequireReset     = true;
+    m_Type             = SUPER_RESOLUTION_TYPE_SPATIAL;
+    m_CapFlags         = SUPER_RESOLUTION_TEMPORAL_CAP_FLAG_NONE;
+    m_HasSelection     = false;
+    m_Desc             = {};
+    SuperResolutionInfo Variant;
+    const auto          Code = Select(CreateInfo, Variant, m_Desc);
+    if (Code != RTXPTErrorCode::Ok)
+        return Code;
+    m_Type                = Variant.Type;
+    m_CapFlags            = IsTemporal() ? Variant.TemporalCapFlags : SUPER_RESOLUTION_TEMPORAL_CAP_FLAG_NONE;
+    m_Info.Variant        = Variant.Name;
+    m_Info.ActualProvider = Variant.Provider;
+    m_Info.RenderSize     = {m_Desc.InputWidth, m_Desc.InputHeight};
+    m_HasSelection        = true;
+    m_Factory->CreateSuperResolution(m_Desc, &m_Feature);
+    if (!m_Feature)
+        return RTXPTErrorCode::SuperResolutionCreateFailed;
+    return RTXPTErrorCode::Ok;
 }
 
 RTXPTErrorCode RTXPTViewUpscaler::RetryCreate()
