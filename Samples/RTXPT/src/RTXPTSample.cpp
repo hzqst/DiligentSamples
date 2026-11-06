@@ -660,8 +660,13 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
     Args.Parse("sr_validation", m_ValidateSuperResolution);
     Args.Parse("rr_embedded_validation", m_ValidateEmbeddedReconstruction);
     Args.Parse("asyncPrefix", m_EnableAsyncPrefix);
-    Args.Parse("async_queue", m_CreateAsyncQueue);
+    const bool bAsyncQueueOption = Args.Parse("async_queue", m_CreateAsyncQueue);
     Args.Parse("async_validation", m_ValidateAsyncPrefix);
+    //The device fixes its immediate contexts at creation. Only runs that ask for AsyncPrefix create the second queue: an
+    //unused queue also holds every released descriptor until an IdleGPU. An explicit --async_queue wins, and false is
+    //the single-queue control of async_validation.
+    if (!bAsyncQueueOption)
+        m_CreateAsyncQueue = m_EnableAsyncPrefix || m_ValidateAsyncPrefix;
     Args.Parse("gpu_profile", m_EnableGpuProfiling);
     Args.Parse("inline_shadows", m_EnableInlineVisibility);
     Args.Parse("hit_object", m_EnableHitObject);
@@ -759,8 +764,7 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
         LOG_ERROR_MESSAGE("rr_embedded_validation cannot be combined with other realtime, embedded, capture or validation modes");
         return CommandLineStatus::Error;
     }
-    //Embedded hosts render on one graphics queue. An idle second queue would also hold every descriptor the destroyed
-    //views release, until an IdleGPU, and the sequence creates more views than the GPU descriptor heap holds.
+    //Embedded hosts render on one graphics queue, so the validation does as well, even with --async_queue true.
     if (m_ValidateEmbeddedReconstruction)
         m_EnableAsyncPrefix = m_CreateAsyncQueue = false;
     if (m_ReferenceCapture.Enabled())
@@ -774,6 +778,8 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
         m_EnableAsyncPrefix = false;
         m_CreateAsyncQueue  = false;
     }
+    if (m_EnableAsyncPrefix && !m_CreateAsyncQueue)
+        LOG_INFO_MESSAGE("--async_queue false creates no second queue; AsyncPrefix uses serial scheduling");
     return CommandLineStatus::OK;
 }
 
@@ -2506,6 +2512,12 @@ void RTXPTSample::CreateEmbeddedReconstructionFactory()
 
 void RTXPTSample::Render()
 {
+    RenderFrame();
+    m_AsyncPrefix.FinishFrame();
+}
+
+void RTXPTSample::RenderFrame()
+{
     if (m_ValidateSuperResolution)
     {
         if (!m_SuperResolutionValidationDone)
@@ -2871,9 +2883,14 @@ void RTXPTSample::UpdateUI()
                     std::clamp(m_RealtimeUI.RealtimeSamplesPerPixel, Int32{1}, static_cast<Int32>(kRTXPTRealtimeSamplesPerPixelMax));
                 if (ImGui::IsItemHovered())
                     ImGui::SetTooltip("Full paths per pixel per realtime frame; camera ray anti-aliasing is handled by the selected AA/SR mode.");
+                //The second queue exists only if the device was created with it.
+                const bool bAsyncQueue = m_AsyncPrefix.IsAvailable();
+                ImGui::BeginDisabled(!bAsyncQueue);
                 ResetRealtimeOnChange(ImGui::Checkbox("AsyncPrefix", &m_EnableAsyncPrefix), "AsyncPrefix changed");
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Overlap path tracing with previous-frame DLSS-RR. Other modes use serial scheduling.");
+                ImGui::EndDisabled();
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                    ImGui::SetTooltip(bAsyncQueue ? "Overlap path tracing with previous-frame DLSS-RR. Other modes use serial scheduling." :
+                                                    "No async queue was created. Restart with --async_queue true (D3D12 or Vulkan).");
                 ImGui::BeginDisabled(m_RealtimeUI.ActualSamplesPerPixel() != 1);
                 ResetRealtimeOnChange(ImGui::Combo("Sub-sampling rate", &m_RealtimeUI.RealtimeSubSamplingMode, "1 spp\0Three quarters\0Half\0Quarter\0"), "Sub-sampling rate changed");
                 ResetRealtimeOnChange(ImGui::Combo("Sub-sampling pattern", &m_RealtimeUI.RealtimeSubSamplingPattern, "Random per block\0Stochastic compacted\0Block stratified\0Sobol block\0"), "Sub-sampling pattern changed");

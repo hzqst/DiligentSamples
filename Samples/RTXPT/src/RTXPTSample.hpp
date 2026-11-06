@@ -160,6 +160,7 @@ private:
     Uint32 m_EmbeddedReconstructionValidationFailures = 0;
 
     //--embedded_reference and --embedded_mode render the Sample's scene through one embedded view of that mode.
+    void                                RenderFrame();
     bool                                RunEmbeddedView();
     bool                                EnsureEmbeddedScene(IShaderSourceInputStreamFactory* Shaders);
     void                                CreateEmbeddedShaderSource(IShaderSourceInputStreamFactory** Shaders) const;
@@ -228,7 +229,7 @@ private:
     AsyncPrefix                             m_AsyncPrefix;
     std::vector<ImmediateContextCreateInfo> m_AsyncContextInfo;
     bool                                    m_EnableAsyncPrefix    = false;
-    bool                                    m_CreateAsyncQueue     = true;
+    bool                                    m_CreateAsyncQueue     = false;
     bool                                    m_AsyncInputsPrepared  = false;
     bool                                    m_AsyncPrefixReady     = false;
     Uint64                                  m_AsyncFrames          = 0;

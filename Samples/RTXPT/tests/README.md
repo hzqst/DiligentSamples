@@ -321,6 +321,11 @@ Run `%TEMP%/AsyncPrefixTest/AsyncPrefixTest.exe D3D12|Vk <engine-DLL>`.
 The production scheduler transports 128 independently predicted values across
 early/late/graphics phases and four drain/re-entry cycles, then checks readback
 and validation error count. Vulkan uses two queues from the same family.
+Before that it keeps the new context 1 idle and releases a buffer used by both
+queues; on D3D12 the native resource must be destroyed after the per-frame
+`AsyncPrefix::FinishFrame` without any context `WaitForIdle` or `IdleGPU`
+(#284). On Vulkan the same sequence must log no error: a new context holds the
+query resets recorded at its creation, so `FinishFrame` flushes them first.
 
 Run the sample with `--asyncPrefix true --async_validation true --aa rr
 --realtime true --exit_after_frames 352 --validation 2`. The lifecycle sequence
