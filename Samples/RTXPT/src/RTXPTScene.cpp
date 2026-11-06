@@ -61,13 +61,14 @@ std::string JoinPath(const std::string& Root, const char* RelativePath)
     return FileSystem::SimplifyPath(Path.c_str());
 }
 
-// RayTracingBindFlag is BIND_RAY_TRACING when acceleration structures are built from the buffers, else BIND_NONE.
+// RayTracingBindFlag enables acceleration structure inputs; VertexShaderResourceBindFlag enables vertex stream SRVs.
 std::unique_ptr<GLTF::Model> LoadRTXPTModelAsset(IRenderDevice*         pDevice,
                                                  IDeviceContext*        pContext,
                                                  const std::string&     ModelPath,
                                                  VALUE_TYPE             IndexType,
                                                  const RTXPTFileSource& FileSource,
-                                                 BIND_FLAGS             RayTracingBindFlag)
+                                                 BIND_FLAGS             RayTracingBindFlag,
+                                                 BIND_FLAGS             VertexShaderResourceBindFlag)
 {
     GLTF::ModelCreateInfo ModelCI;
     ModelCI.FileName              = ModelPath.c_str();
@@ -79,9 +80,9 @@ std::unique_ptr<GLTF::Model> LoadRTXPTModelAsset(IRenderDevice*         pDevice,
     for (BIND_FLAGS& BindFlags : ModelCI.VertBufferBindFlags)
         BindFlags = BIND_VERTEX_BUFFER | RayTracingBindFlag;
     // Buffer 0 is the path-tracer vertex stream (POSITION + NORMAL + TEXCOORD_0).
-    ModelCI.VertBufferBindFlags[0] = BIND_VERTEX_BUFFER | RayTracingBindFlag | BIND_SHADER_RESOURCE;
+    ModelCI.VertBufferBindFlags[0] = BIND_VERTEX_BUFFER | RayTracingBindFlag | VertexShaderResourceBindFlag;
     // Buffer 1 is the default GLTF skinning stream (JOINTS_0 + WEIGHTS_0).
-    ModelCI.VertBufferBindFlags[1] = BIND_VERTEX_BUFFER | BIND_SHADER_RESOURCE;
+    ModelCI.VertBufferBindFlags[1] = BIND_VERTEX_BUFFER | VertexShaderResourceBindFlag;
 
     try
     {
@@ -187,6 +188,7 @@ bool BuildRTXPTStaticGeometryBuffers(IRenderDevice*          pDevice,
                                      RTXPTSceneGraphData&    Data,
                                      VALUE_TYPE              IndexType,
                                      BIND_FLAGS              RayTracingBindFlag,
+                                     BIND_FLAGS              VertexShaderResourceBindFlag,
                                      RefCntAutoPtr<IBuffer>& pStaticVertexBuffer,
                                      RefCntAutoPtr<IBuffer>& pStaticIndexBuffer,
                                      Uint32&                 VertexStride)
@@ -294,9 +296,9 @@ bool BuildRTXPTStaticGeometryBuffers(IRenderDevice*          pDevice,
     VertexDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
     VertexDesc.Name                 = "RTXPT scene static vertex buffer";
     VertexDesc.Usage                = USAGE_DEFAULT;
-    VertexDesc.BindFlags            = BIND_VERTEX_BUFFER | BIND_SHADER_RESOURCE | RayTracingBindFlag;
-    VertexDesc.Mode                 = BUFFER_MODE_STRUCTURED;
-    VertexDesc.ElementByteStride    = VertexStride;
+    VertexDesc.BindFlags            = BIND_VERTEX_BUFFER | VertexShaderResourceBindFlag | RayTracingBindFlag;
+    VertexDesc.Mode                 = VertexShaderResourceBindFlag != BIND_NONE ? BUFFER_MODE_STRUCTURED : BUFFER_MODE_UNDEFINED;
+    VertexDesc.ElementByteStride    = VertexShaderResourceBindFlag != BIND_NONE ? VertexStride : 0;
     VertexDesc.Size                 = TotalVertexCount * VertexStride;
     pDevice->CreateBuffer(VertexDesc, nullptr, &pStaticVertexBuffer);
     VERIFY(pStaticVertexBuffer, "Failed to create RTXPT scene static vertex buffer");
@@ -835,7 +837,8 @@ bool RTXPTScene::LoadScene(IRenderDevice*               pDevice,
     ResetLoadedData();
     m_FileSource = Options.FileSource;
 
-    const BIND_FLAGS RayTracingBindFlag = Options.RayTracing ? BIND_RAY_TRACING : BIND_NONE;
+    const BIND_FLAGS RayTracingBindFlag           = Options.RayTracing ? BIND_RAY_TRACING : BIND_NONE;
+    const BIND_FLAGS VertexShaderResourceBindFlag = Options.ShaderReadableVertexBuffers ? BIND_SHADER_RESOURCE : BIND_NONE;
 
     m_AssetsRoot = FileSystem::SimplifyPath(AssetsRoot.c_str());
     if (SceneName.empty())
@@ -886,7 +889,7 @@ bool RTXPTScene::LoadScene(IRenderDevice*               pDevice,
             return false;
         }
 
-        Asset.Model = LoadRTXPTModelAsset(pDevice, pContext, Asset.ResolvedPath, m_IndexType, m_FileSource, RayTracingBindFlag);
+        Asset.Model = LoadRTXPTModelAsset(pDevice, pContext, Asset.ResolvedPath, m_IndexType, m_FileSource, RayTracingBindFlag, VertexShaderResourceBindFlag);
         if (!Asset.Model)
         {
             LOG_ERROR_MESSAGE("Failed to load RTXPT glTF model: ", Asset.ResolvedPath);
@@ -963,6 +966,7 @@ bool RTXPTScene::LoadScene(IRenderDevice*               pDevice,
                                          NewData,
                                          m_IndexType,
                                          RayTracingBindFlag,
+                                         VertexShaderResourceBindFlag,
                                          m_StaticVertexBuffer,
                                          m_StaticIndexBuffer,
                                          m_VertexStride0))

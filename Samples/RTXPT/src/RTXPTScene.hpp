@@ -73,6 +73,10 @@ struct RTXPTSceneLoadOptions
     // Creates the model and static geometry buffers with BIND_RAY_TRACING, so that acceleration structures can be
     // built from them. Devices without ray tracing need false.
     bool RayTracing = true;
+
+    // Shader-readable vertex streams are structured buffers, which D3D11 cannot bind as vertex buffers. Raster-only
+    // consumers can disable these SRVs; consumers that read vertices or skinning data in shaders need them enabled.
+    bool ShaderReadableVertexBuffers = true;
 };
 
 class RTXPTScene
