@@ -9,15 +9,13 @@
 #define RTXPT_TONEMAPPING_EXPOSURE_MEASURED   1
 #define RTXPT_TONEMAPPING_EXPOSURE_RESOLVED   2
 
-enum RTXPTToneMapperOperator
-{
-    RTXPTToneMapperOperator_Linear           = 0,
-    RTXPTToneMapperOperator_Reinhard         = 1,
-    RTXPTToneMapperOperator_ReinhardModified = 2,
-    RTXPTToneMapperOperator_HejiHableAlu     = 3,
-    RTXPTToneMapperOperator_HableUc2         = 4,
-    RTXPTToneMapperOperator_Aces             = 5
-};
+// FXC's shader model 5 path does not accept enum declarations.
+static const uint RTXPTToneMapperOperator_Linear           = 0;
+static const uint RTXPTToneMapperOperator_Reinhard         = 1;
+static const uint RTXPTToneMapperOperator_ReinhardModified = 2;
+static const uint RTXPTToneMapperOperator_HejiHableAlu     = 3;
+static const uint RTXPTToneMapperOperator_HableUc2         = 4;
+static const uint RTXPTToneMapperOperator_Aces             = 5;
 
 struct RTXPTToneMappingConstants
 {
