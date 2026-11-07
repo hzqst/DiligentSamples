@@ -882,6 +882,7 @@ bool RTXPTSample::UpdateEnvMapBaker(bool ForceRebuild)
     UpdateAttribs.pEngineFactory   = m_pEngineFactory;
     UpdateAttribs.AssetsRoot       = m_AssetsRoot;
     UpdateAttribs.Settings         = m_EnvMapSettings;
+    UpdateAttribs.pLights          = m_SceneFrames.GetFrame().pLights;
     UpdateAttribs.ForceRebuild     = ForceRebuild || m_EnvMapBakerDirty;
     UpdateAttribs.ComputeSupported = m_FeatureCaps.ComputeShaders;
 
@@ -1583,7 +1584,7 @@ bool RTXPTSample::PrepareSceneFrame()
     const RTXPTSceneFrame& Frame = m_SceneFrames.GetFrame();
     if (Frame.LightingRevision != m_SceneLightingRevision)
     {
-        if (!UpdateLightsBaker(false))
+        if (!UpdateEnvMapBaker(false) || !UpdateLightsBaker(false))
             return false;
     }
     else if (Frame.EmissiveRevision != m_SceneEmissiveRevision)

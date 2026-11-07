@@ -51,6 +51,11 @@ constexpr float kPolymorphicLightTypePoint       = 4.0f;
 constexpr float kDefaultPunctualLightRadius      = 0.01f;
 constexpr float kDefaultDirectionalAngularSize   = PI_F * 0.53f / 180.0f;
 
+bool IsDirectionalLight(const PolymorphicLightInfo& Light)
+{
+    return GetPolymorphicLightType(Light) == static_cast<Uint32>(kPolymorphicLightTypeDirectional);
+}
+
 float DegreesToRadians(float AngleInDegrees)
 {
     return AngleInDegrees * (PI_F / 180.0f);
@@ -159,6 +164,7 @@ void RTXPTLights::Reset()
     m_LightExBuffer.Release();
     m_EmissiveTriangleBuffer.Release();
     m_AnalyticLights.clear();
+    m_DirectionalLights.clear();
     m_AnalyticSources.clear();
     m_TriangleSources.clear();
     m_EmissiveProxyWeight = 0.0f;
@@ -255,8 +261,16 @@ bool RTXPTLights::Upload(IRenderDevice* pDevice, const GLTF::Scene& Scene, const
         if (pNode->Index < 0 || static_cast<size_t>(pNode->Index) >= Transforms.NodeGlobalMatrices.size())
             continue;
 
-        m_AnalyticSources.push_back({{0u, reinterpret_cast<Uint64>(pNode), 0u, 0u}, static_cast<Uint32>(Lights.size()), 1u});
-        Lights.emplace_back(PackAnalyticLight(MakeLightData(*pNode->pLight, Transforms.NodeGlobalMatrices[pNode->Index])));
+        const auto Light = PackAnalyticLight(MakeLightData(*pNode->pLight, Transforms.NodeGlobalMatrices[pNode->Index]));
+        if (IsDirectionalLight(Light.Base))
+        {
+            m_DirectionalLights.push_back(Light.Base);
+        }
+        else
+        {
+            m_AnalyticSources.push_back({{0u, reinterpret_cast<Uint64>(pNode), 0u, 0u}, static_cast<Uint32>(Lights.size()), 1u});
+            Lights.push_back(Light);
+        }
     }
 
     return UploadLightBuffer(pDevice, Lights);
@@ -369,10 +383,16 @@ bool RTXPTLights::UploadAnalyticLights(IRenderDevice* pDevice, const std::vector
     m_LightBuffer.Release();
     m_LightExBuffer.Release();
     m_AnalyticSources.clear();
+    m_DirectionalLights.clear();
     std::vector<PolymorphicLightInfoFull> Lights;
     Lights.reserve(SceneLights.size());
     for (const RTXPTSceneLight& Light : SceneLights)
     {
+        if (IsDirectionalLight(Light.Light.Base))
+        {
+            m_DirectionalLights.push_back(Light.Light.Base);
+            continue;
+        }
         m_AnalyticSources.push_back({Light.Key, static_cast<Uint32>(Lights.size()), 1u});
         Lights.push_back(Light.Light);
     }

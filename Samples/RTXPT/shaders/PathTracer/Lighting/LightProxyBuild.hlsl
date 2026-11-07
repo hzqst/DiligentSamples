@@ -66,15 +66,15 @@ float ProxyLuminance(float3 c)
 float ComputeAnalyticWeight(PolymorphicLightInfoFull packed)
 {
     const AnalyticLightData light = UnpackAnalyticLight(packed);
+    //Like upstream GetPower: distant lights are represented by environment quads, never local-light proxies.
+    if (light.colorType.w == kPolymorphicLightTypeDirectional)
+        return 0.0;
     const float luma             = ProxyLuminance(light.colorType.xyz);
     const float radius           = max(light.positionRadius.w, 0.0);
     const float shapingFlux = light.shaping.x < -0.5 ? 1.0 : (1.0 - light.shaping.x) * lerp(1.0, 0.5, light.shaping.y) * 0.5;
     float power = light.colorType.w == kPolymorphicLightTypePoint ? 4.0 * kLightProxyPi * luma :
                   4.0 * kLightProxyPi * kLightProxyPi * radius * radius * luma;
     power *= shapingFlux;
-    // Diligent retains explicit distant lights; upstream bakes them into its environment.
-    if (light.colorType.w == kPolymorphicLightTypeDirectional)
-        power = luma * max(light.shaping.w, 1e-8);
     const float weight = pow(max(0.0, power), 0.8);
     return weight >= RTXPT_LIGHTING_MIN_WEIGHT_THRESHOLD ? weight : 0.0;
 }

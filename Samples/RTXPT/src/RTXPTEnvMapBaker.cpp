@@ -49,6 +49,7 @@
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <utility>
 #include <vector>
@@ -68,6 +69,54 @@ constexpr Uint32      kMaxEnvironmentCubeSize     = 2048;
 constexpr Uint32      kMinImportanceMapResolution = 16;
 constexpr Uint32      kImportanceBakerThreads     = 16;
 constexpr Uint32      kImportanceSamplesPerAxis   = 4;
+constexpr Uint32      kMinDirectionalCubeSize     = kMaxEnvironmentCubeSize;
+constexpr Uint32      kMaxDirectionalLights       = RTXPT_ENVMAP_MAX_DIRECTIONAL_LIGHTS;
+constexpr Uint32      kEnvCubeBakeThreads         = RTXPT_ENVMAP_BAKE_THREADS;
+constexpr float       kHalfFloatMax               = 65504.0f;
+
+const std::vector<PolymorphicLightInfo>& SelectDirectionalLights(const RTXPTLights* pLights)
+{
+    static const std::vector<PolymorphicLightInfo> NoLights;
+    return pLights != nullptr ? pLights->GetDirectionalLights() : NoLights;
+}
+
+bool IsSameDirectionalLights(const std::vector<PolymorphicLightInfo>& A, const std::vector<PolymorphicLightInfo>& B)
+{
+    return A.size() == B.size() && (A.empty() || std::memcmp(A.data(), B.data(), A.size() * sizeof(PolymorphicLightInfo)) == 0);
+}
+
+// The rows of the environment's world-to-local rotation about +Y.
+std::array<float4, 3> MakeEnvironmentWorldToLocal(float RotationRadians)
+{
+    const float CosA = std::cos(RotationRadians);
+    const float SinA = std::sin(RotationRadians);
+    return {float4{CosA, 0.0f, SinA, 0.0f}, float4{0.0f, 1.0f, 0.0f, 0.0f}, float4{-SinA, 0.0f, CosA, 0.0f}};
+}
+
+// The cube-bake constants of every face but its rotation: the source sky's color, and the directional disks with a
+// radiance scale that keeps their summed peak radiance below the FP16 limit, never above upstream's 1/4.
+EnvCubeBakeConstantsCPU MakeEnvCubeBakeConstants(const RTXPTEnvMapSettings& Settings, const std::vector<PolymorphicLightInfo>& DirectionalLights, Uint32 CubeDim)
+{
+    EnvCubeBakeConstantsCPU Constants{};
+    const auto              WorldToLocal = MakeEnvironmentWorldToLocal(Settings.RotationRadians);
+    Constants.WorldToLocal0              = WorldToLocal[0];
+    Constants.WorldToLocal1              = WorldToLocal[1];
+    Constants.WorldToLocal2              = WorldToLocal[2];
+    const float SourceIntensity          = Settings.Enabled ? std::max(Settings.Intensity, 0.0f) : 0.0f;
+    Constants.SourceColor                = float4{Settings.RadianceScale * SourceIntensity, 0};
+    Constants.DirectionalLightCount      = static_cast<Uint32>(DirectionalLights.size());
+    Constants.CubeDim                    = CubeDim;
+    float RadianceBound                  = 0.0f;
+    for (Uint32 LightIndex = 0; LightIndex < Constants.DirectionalLightCount; ++LightIndex)
+    {
+        Constants.DirectionalLights[LightIndex] = DirectionalLights[LightIndex];
+        const Uint32 Packed                     = DirectionalLights[LightIndex].LogRadiance & kLightLogRadianceMask;
+        if (Packed != 0u)
+            RadianceBound += UnpackLightRadianceScale(Packed);
+    }
+    Constants.RadianceScale = RadianceBound > 0.0f ? std::min(kEnvironmentRadianceScale, kHalfFloatMax / (RadianceBound + 1.0f)) : kEnvironmentRadianceScale;
+    return Constants;
+}
 
 struct EnvMapImportanceBakerConstantsCPU
 {
@@ -341,7 +390,9 @@ void RTXPTEnvMapBaker::Reset()
     m_Constants         = {};
     m_LightsBakerParams = {};
     m_LastSettings      = {};
-    m_Stats             = {};
+    m_DirectionalLights.clear();
+    m_BakedRadianceScale = kEnvironmentRadianceScale;
+    m_Stats              = {};
 }
 
 void RTXPTEnvMapBaker::SceneReloaded()
@@ -388,7 +439,21 @@ bool RTXPTEnvMapBaker::Update(IRenderDevice* pDevice, IDeviceContext* pContext, 
 
     const Uint32 ImportanceResolution = NormalizeImportanceResolution(Attribs.Settings.ImportanceMapResolution);
     const Uint32 ImportanceMipLevels  = MipCountForPowerOfTwo(ImportanceResolution);
-    const bool   SourceChanged        = Attribs.ForceRebuild || !m_SourceTexture || !m_SourceSRV ||
+    const auto&  DirectionalLights    = SelectDirectionalLights(Attribs.pLights);
+    if (DirectionalLights.size() > kMaxDirectionalLights)
+    {
+        m_Stats.Ready = false;
+        LOG_ERROR_MESSAGE("RTXPT environment supports at most ", kMaxDirectionalLights, " directional lights");
+        return false;
+    }
+    const bool DirectionalChanged = !IsSameDirectionalLights(DirectionalLights, m_DirectionalLights);
+    const bool SourceColorChanged = Attribs.Settings.Enabled != m_LastSettings.Enabled ||
+        Attribs.Settings.Intensity != m_LastSettings.Intensity || Attribs.Settings.RadianceScale != m_LastSettings.RadianceScale;
+    const bool DirectionalRotated = !DirectionalLights.empty() && Attribs.Settings.RotationRadians != m_LastSettings.RotationRadians;
+    const bool CubeChanged        = !m_Stats.Ready || DirectionalChanged || SourceColorChanged || DirectionalRotated;
+    if (DirectionalChanged)
+        m_DirectionalLights = DirectionalLights;
+    const bool SourceChanged = Attribs.ForceRebuild || !m_SourceTexture || !m_SourceSRV ||
         !m_EnvironmentMapSRV || !m_DiffuseIrradianceSRV || !m_BRDFLUTSRV ||
         EnvMapSourceChanged(m_LastSettings, Attribs.Settings);
     bool        UpdateOk = true;
@@ -403,6 +468,10 @@ bool RTXPTEnvMapBaker::Update(IRenderDevice* pDevice, IDeviceContext* pContext, 
             SourceLoadError = m_Stats.LastError;
         }
     }
+    else if (CubeChanged)
+    {
+        UpdateOk = PrecomputeCubemap(pDevice, pContext, Attribs.pEngineFactory, Attribs.Settings);
+    }
     if (SourceLoadError.empty() && !IsProceduralSkyPath(Attribs.Settings.SourceRelativePath) &&
         m_Stats.Procedural && IsEnvironmentSourceLoadError(m_Stats.LastError))
     {
@@ -410,7 +479,7 @@ bool RTXPTEnvMapBaker::Update(IRenderDevice* pDevice, IDeviceContext* pContext, 
     }
 
     const bool ImportanceResourceMissing = m_Stats.ImportanceReady && (!m_ImportanceMap || !m_RadianceMap);
-    const bool ImportanceChanged         = Attribs.ForceRebuild || SourceChanged ||
+    const bool ImportanceChanged         = Attribs.ForceRebuild || SourceChanged || CubeChanged ||
         !m_ImportanceMapSRV || !m_RadianceMapSRV ||
         ImportanceResourceMissing ||
         m_Stats.ImportanceResolution != ImportanceResolution ||
@@ -435,7 +504,7 @@ bool RTXPTEnvMapBaker::Update(IRenderDevice* pDevice, IDeviceContext* pContext, 
     if (UpdateOk)
     {
         m_LastSettings = Attribs.Settings;
-        if (SourceChanged || ImportanceChanged)
+        if (SourceChanged || CubeChanged || ImportanceChanged)
             ++m_Stats.Version;
 
         if (ImportanceOk)
@@ -661,7 +730,7 @@ bool RTXPTEnvMapBaker::CreateProceduralSourceTexture(IRenderDevice* pDevice, con
     return true;
 }
 
-bool RTXPTEnvMapBaker::PrecomputeCubemap(IRenderDevice* pDevice, IDeviceContext* pContext, IEngineFactory* pEngineFactory, const RTXPTEnvMapSettings&)
+bool RTXPTEnvMapBaker::PrecomputeCubemap(IRenderDevice* pDevice, IDeviceContext* pContext, IEngineFactory* pEngineFactory, const RTXPTEnvMapSettings& Settings)
 {
     if (pDevice == nullptr || pContext == nullptr || m_SourceSRV == nullptr)
     {
@@ -705,24 +774,15 @@ bool RTXPTEnvMapBaker::PrecomputeCubemap(IRenderDevice* pDevice, IDeviceContext*
     // Replace the low-resolution GGX-prefiltered IBL cube with a high-resolution environment cube baked
     // straight from the source. The prefiltered cube (kept above only for the IBL irradiance/BRDF
     // products) is PrefilteredEnvMapDim (256) and washes out fine detail seen through small apertures
-    // such as windows; upstream RTXPT bakes a high-res environment cube instead. On failure the
-    // prefiltered cube remains bound so rendering still works (just lower resolution).
-    if (BakeHighResEnvironmentCube(pDevice, pContext, pEngineFactory))
-    {
-        m_EnvironmentMapSRV = m_EnvironmentCube->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
-    }
-    else
-    {
-        LOG_WARNING_MESSAGE("RTXPT EnvMapBaker high-resolution environment cube bake failed; "
-                            "falling back to the low-resolution prefiltered environment cube");
-    }
-
+    // such as windows; upstream RTXPT bakes a high-res environment cube instead. Failure cannot substitute
+    // the sky-only prefiltered cube, because the directional lights live exclusively in the baked cube.
 #else
     //Path tracing evaluates illumination directly; irradiance convolution and a raster GGX LUT are unnecessary.
-    if (!BakeHighResEnvironmentCube(pDevice, pContext, pEngineFactory))
+#endif
+    if (!BakeHighResEnvironmentCube(pDevice, pContext, pEngineFactory, Settings))
         return false;
     m_EnvironmentMapSRV = m_EnvironmentCube->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
-#endif
+
     const ITexture* pEnvTexture = m_EnvironmentMapSRV->GetTexture();
     if (pEnvTexture == nullptr)
     {
@@ -769,31 +829,18 @@ bool RTXPTEnvMapBaker::EnsureEnvCubeBakePipeline(IRenderDevice* pDevice, IEngine
     ShaderCI.FilePath                        = "PathTracer/Lighting/EnvMapImportanceBaker.hlsl";
     ShaderCI.Macros                          = Macros;
 
-    RefCntAutoPtr<IShader> pVS;
-    ShaderCI.Desc.ShaderType = SHADER_TYPE_VERTEX;
-    ShaderCI.Desc.Name       = "RTXPT EnvCube bake VS";
-    ShaderCI.EntryPoint      = "EnvCubeBakeVS";
-    pDevice->CreateShader(ShaderCI, &pVS);
-
-    RefCntAutoPtr<IShader> pPS;
-    ShaderCI.Desc.ShaderType = SHADER_TYPE_PIXEL;
-    ShaderCI.Desc.Name       = "RTXPT EnvCube bake PS";
-    ShaderCI.EntryPoint      = "SampleEnvToCubePS";
-    pDevice->CreateShader(ShaderCI, &pPS);
-
-    if (!pVS || !pPS)
+    RefCntAutoPtr<IShader> pCS;
+    ShaderCI.Desc.ShaderType = SHADER_TYPE_COMPUTE;
+    ShaderCI.Desc.Name       = "RTXPT EnvCube bake CS";
+    ShaderCI.EntryPoint      = "EnvCubeBakeCS";
+    pDevice->CreateShader(ShaderCI, &pCS);
+    if (!pCS)
         return false;
 
-    GraphicsPipelineStateCreateInfo PSOCreateInfo;
-    PSOCreateInfo.PSODesc.Name                                  = SourceIsCube ? "RTXPT EnvCube bake PSO (cube)" : "RTXPT EnvCube bake PSO (sphere)";
-    PSOCreateInfo.PSODesc.PipelineType                          = PIPELINE_TYPE_GRAPHICS;
-    PSOCreateInfo.GraphicsPipeline.NumRenderTargets             = 1;
-    PSOCreateInfo.GraphicsPipeline.RTVFormats[0]                = TEX_FORMAT_RGBA16_FLOAT;
-    PSOCreateInfo.GraphicsPipeline.PrimitiveTopology            = PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
-    PSOCreateInfo.GraphicsPipeline.RasterizerDesc.CullMode      = CULL_MODE_NONE;
-    PSOCreateInfo.GraphicsPipeline.DepthStencilDesc.DepthEnable = False;
-    PSOCreateInfo.pVS                                           = pVS;
-    PSOCreateInfo.pPS                                           = pPS;
+    ComputePipelineStateCreateInfo PSOCreateInfo;
+    PSOCreateInfo.PSODesc.Name         = SourceIsCube ? "RTXPT EnvCube bake PSO (cube)" : "RTXPT EnvCube bake PSO (sphere)";
+    PSOCreateInfo.PSODesc.PipelineType = PIPELINE_TYPE_COMPUTE;
+    PSOCreateInfo.pCS                  = pCS;
 
     SamplerDesc LinearClamp;
     LinearClamp.MinFilter = FILTER_TYPE_LINEAR;
@@ -805,20 +852,21 @@ bool RTXPTEnvMapBaker::EnsureEnvCubeBakePipeline(IRenderDevice* pDevice, IEngine
 
     PipelineResourceLayoutDescX ResourceLayout;
     ResourceLayout
-        .AddVariable(SHADER_TYPE_VERTEX, "cbEnvCubeBake", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
-        .AddVariable(SHADER_TYPE_PIXEL, "g_EnvBakeSource", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
-        .AddImmutableSampler(SHADER_TYPE_PIXEL, "g_EnvBakeSourceSampler", LinearClamp);
+        .AddVariable(SHADER_TYPE_COMPUTE, "cbEnvCubeBake", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
+        .AddVariable(SHADER_TYPE_COMPUTE, "g_EnvBakeSource", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
+        .AddVariable(SHADER_TYPE_COMPUTE, "g_EnvBakeOutput", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
+        .AddImmutableSampler(SHADER_TYPE_COMPUTE, "g_EnvBakeSourceSampler", LinearClamp);
     PSOCreateInfo.PSODesc.ResourceLayout = ResourceLayout;
 
     PSOCreateInfo.pPSOCache = SelectRTXPTPipelineStateCache(pDevice, PSOCreateInfo, m_pPSOCache);
-    pDevice->CreateGraphicsPipelineState(PSOCreateInfo, &PSO);
+    pDevice->CreateComputePipelineState(PSOCreateInfo, &PSO);
     if (!PSO)
         return false;
     PSO->CreateShaderResourceBinding(&SRB, true);
     return SRB != nullptr;
 }
 
-bool RTXPTEnvMapBaker::BakeHighResEnvironmentCube(IRenderDevice* pDevice, IDeviceContext* pContext, IEngineFactory* pEngineFactory)
+bool RTXPTEnvMapBaker::BakeHighResEnvironmentCube(IRenderDevice* pDevice, IDeviceContext* pContext, IEngineFactory* pEngineFactory, const RTXPTEnvMapSettings& Settings)
 {
     if (pDevice == nullptr || pContext == nullptr || pEngineFactory == nullptr || m_SourceSRV == nullptr || m_SourceTexture == nullptr)
         return false;
@@ -838,7 +886,12 @@ bool RTXPTEnvMapBaker::BakeHighResEnvironmentCube(IRenderDevice* pDevice, IDevic
     // sources have no face size and use the limit. A changed size recreates the cube; the path tracer binds
     // t_EnvironmentMap as a mutable variable and rebuilds its bindings when the texture view changes, as does the
     // importance pass on every dispatch.
-    const Uint32 TargetRes = SourceIsCube ? std::min(m_SourceTexture->GetDesc().Width, kMaxEnvironmentCubeSize) : kMaxEnvironmentCubeSize;
+    const Uint32 SourceRes = SourceIsCube ? std::min(m_SourceTexture->GetDesc().Width, kMaxEnvironmentCubeSize) : kMaxEnvironmentCubeSize;
+    //A small source sky must not widen a 0.53-degree sun to the resolution's minimum bakeable disk.
+    const Uint32 TargetRes = m_DirectionalLights.empty() ? SourceRes : std::max(SourceRes, kMinDirectionalCubeSize);
+    //Upstream uses 1/4 with a reciprocal evaluation multiplier. Strong animated styles may need more FP16 headroom.
+    EnvCubeBakeConstantsCPU Constants = MakeEnvCubeBakeConstants(Settings, m_DirectionalLights, TargetRes);
+    m_BakedRadianceScale              = Constants.RadianceScale;
 
     if (!m_EnvironmentCube || m_EnvironmentCubeResolution != TargetRes)
     {
@@ -853,7 +906,7 @@ bool RTXPTEnvMapBaker::BakeHighResEnvironmentCube(IRenderDevice* pDevice, IDevic
         CubeDesc.ArraySize            = 6;
         CubeDesc.Format               = TEX_FORMAT_RGBA16_FLOAT;
         CubeDesc.MipLevels            = ComputeMipLevelsCount(TargetRes, TargetRes);
-        CubeDesc.BindFlags            = BIND_SHADER_RESOURCE | BIND_RENDER_TARGET;
+        CubeDesc.BindFlags            = BIND_SHADER_RESOURCE | BIND_RENDER_TARGET | BIND_UNORDERED_ACCESS;
         CubeDesc.MiscFlags            = MISC_TEXTURE_FLAG_GENERATE_MIPS;
         CubeDesc.Usage                = USAGE_DEFAULT;
         pDevice->CreateTexture(CubeDesc, nullptr, &m_EnvironmentCube);
@@ -870,7 +923,7 @@ bool RTXPTEnvMapBaker::BakeHighResEnvironmentCube(IRenderDevice* pDevice, IDevic
         BufferDesc CBDesc;
         CBDesc.ImmediateContextMask = kRTXPTImmediateContextMask;
         CBDesc.Name                 = "RTXPT EnvCube bake constants";
-        CBDesc.Size                 = sizeof(float4x4);
+        CBDesc.Size                 = sizeof(EnvCubeBakeConstantsCPU);
         CBDesc.BindFlags            = BIND_UNIFORM_BUFFER;
         CBDesc.Usage                = USAGE_DYNAMIC;
         CBDesc.CPUAccessFlags       = CPU_ACCESS_WRITE;
@@ -891,40 +944,44 @@ bool RTXPTEnvMapBaker::BakeHighResEnvironmentCube(IRenderDevice* pDevice, IDevic
             float4x4::RotationY(-PI_F)        // -Z
         };
 
-    if (IShaderResourceVariable* pSourceVar = pSRB->GetVariableByName(SHADER_TYPE_PIXEL, "g_EnvBakeSource"))
+    if (IShaderResourceVariable* pSourceVar = pSRB->GetVariableByName(SHADER_TYPE_COMPUTE, "g_EnvBakeSource"))
         pSourceVar->Set(m_SourceSRV);
-    if (IShaderResourceVariable* pRotationVar = pSRB->GetVariableByName(SHADER_TYPE_VERTEX, "cbEnvCubeBake"))
-        pRotationVar->Set(m_EnvCubeBakeConstants);
+    if (IShaderResourceVariable* pBakeVar = pSRB->GetVariableByName(SHADER_TYPE_COMPUTE, "cbEnvCubeBake"))
+        pBakeVar->Set(m_EnvCubeBakeConstants);
+    IShaderResourceVariable* pOutputVar = pSRB->GetVariableByName(SHADER_TYPE_COMPUTE, "g_EnvBakeOutput");
+    if (pOutputVar == nullptr)
+        return false;
 
     pContext->SetPipelineState(pPSO);
 
+    const Uint32 GroupCount = (TargetRes + kEnvCubeBakeThreads - 1u) / kEnvCubeBakeThreads;
     for (Uint32 Face = 0; Face < 6; ++Face)
     {
         {
-            MapHelper<float4x4> MappedRotation{pContext, m_EnvCubeBakeConstants, MAP_WRITE, MAP_FLAG_DISCARD};
-            if (MappedRotation == nullptr)
+            MapHelper<EnvCubeBakeConstantsCPU> MappedConstants{pContext, m_EnvCubeBakeConstants, MAP_WRITE, MAP_FLAG_DISCARD};
+            if (MappedConstants == nullptr)
                 return false;
-            *MappedRotation = FaceRotations[Face];
+            Constants.Rotation = FaceRotations[Face];
+            *MappedConstants   = Constants;
         }
 
-        TextureViewDesc RTVDesc;
-        RTVDesc.ViewType        = TEXTURE_VIEW_RENDER_TARGET;
-        RTVDesc.TextureDim      = RESOURCE_DIM_TEX_2D_ARRAY;
-        RTVDesc.MostDetailedMip = 0;
-        RTVDesc.FirstArraySlice = Face;
-        RTVDesc.NumArraySlices  = 1;
-        RefCntAutoPtr<ITextureView> pRTV;
-        m_EnvironmentCube->CreateView(RTVDesc, &pRTV);
-        if (!pRTV)
+        TextureViewDesc UAVDesc;
+        UAVDesc.ViewType        = TEXTURE_VIEW_UNORDERED_ACCESS;
+        UAVDesc.TextureDim      = RESOURCE_DIM_TEX_2D_ARRAY;
+        UAVDesc.MostDetailedMip = 0;
+        UAVDesc.FirstArraySlice = Face;
+        UAVDesc.NumArraySlices  = 1;
+        UAVDesc.AccessFlags     = UAV_ACCESS_FLAG_READ_WRITE;
+        RefCntAutoPtr<ITextureView> pUAV;
+        m_EnvironmentCube->CreateView(UAVDesc, &pUAV);
+        if (!pUAV)
             return false;
 
-        ITextureView* ppRTVs[] = {pRTV};
-        pContext->SetRenderTargets(1, ppRTVs, nullptr, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+        pOutputVar->Set(pUAV);
         pContext->CommitShaderResources(pSRB, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-        pContext->Draw(DrawAttribs{4, DRAW_FLAG_VERIFY_ALL});
+        pContext->DispatchCompute(DispatchComputeAttribs{GroupCount, GroupCount, 1});
     }
 
-    pContext->SetRenderTargets(0, nullptr, nullptr, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
     pContext->GenerateMips(m_EnvironmentCube->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
     return true;
 }
@@ -1318,22 +1375,21 @@ bool RTXPTEnvMapBaker::CreateSamplers(IRenderDevice* pDevice)
 
 void RTXPTEnvMapBaker::UpdateConstants(const RTXPTEnvMapSettings& Settings)
 {
-    const float Rotation      = Settings.RotationRadians;
-    const float CosA          = std::cos(Rotation);
-    const float SinA          = std::sin(Rotation);
-    const float Enabled       = Settings.Enabled ? 1.0f : 0.0f;
-    const float Intensity     = std::max(Settings.Intensity, 0.0f);
-    m_Constants.LocalToWorld0 = float4{CosA, 0.0f, -SinA, 0.0f};
-    m_Constants.LocalToWorld1 = float4{0.0f, 1.0f, 0.0f, 0.0f};
-    m_Constants.LocalToWorld2 = float4{SinA, 0.0f, CosA, 0.0f};
-    m_Constants.WorldToLocal0 = float4{CosA, 0.0f, SinA, 0.0f};
-    m_Constants.WorldToLocal1 = float4{0.0f, 1.0f, 0.0f, 0.0f};
-    m_Constants.WorldToLocal2 = float4{-SinA, 0.0f, CosA, 0.0f};
-    m_Constants.ColorEnabled  = float4{
-        Settings.RadianceScale.x * Intensity,
-        Settings.RadianceScale.y * Intensity,
-        Settings.RadianceScale.z * Intensity,
-        Enabled};
+    const float Rotation     = Settings.RotationRadians;
+    const float CosA         = std::cos(Rotation);
+    const float SinA         = std::sin(Rotation);
+    const auto  WorldToLocal = MakeEnvironmentWorldToLocal(Rotation);
+    //Source color/intensity is baked separately from the sun, so a black or disabled sky does not disable it.
+    const bool  EnvironmentLit  = Settings.Enabled || !m_DirectionalLights.empty();
+    const float Enabled         = EnvironmentLit ? 1.0f : 0.0f;
+    m_Constants.LocalToWorld0   = float4{CosA, 0.0f, -SinA, 0.0f};
+    m_Constants.LocalToWorld1   = float4{0.0f, 1.0f, 0.0f, 0.0f};
+    m_Constants.LocalToWorld2   = float4{SinA, 0.0f, CosA, 0.0f};
+    m_Constants.WorldToLocal0   = WorldToLocal[0];
+    m_Constants.WorldToLocal1   = WorldToLocal[1];
+    m_Constants.WorldToLocal2   = WorldToLocal[2];
+    const float RestoreRadiance = EnvironmentLit ? 1.0f / m_BakedRadianceScale : 0.0f;
+    m_Constants.ColorEnabled    = float4{RestoreRadiance, RestoreRadiance, RestoreRadiance, Enabled};
     m_Constants.ImportanceMetadata =
         m_Stats.ImportanceReady ?
         float4{1.0f / static_cast<float>(m_Stats.ImportanceResolution),

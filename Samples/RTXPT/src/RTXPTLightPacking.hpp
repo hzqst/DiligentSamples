@@ -49,6 +49,23 @@ inline Uint32 PackLightDirection(float3 Direction)
         (Uint32(std::clamp(P.y, 0.0f, 1.0f) * 65534.0f) << 16u);
 }
 
+// LogRadiance keeps the packed log2 radiance in its low 16 bits; 0 marks an unlit light.
+constexpr Uint32 kLightLogRadianceMask  = 0xffffu;
+constexpr float  kLightLogRadianceSteps = 65534.0f;
+
+inline Uint32 GetPolymorphicLightType(const PolymorphicLightInfo& Light)
+{
+    return (Light.ColorTypeAndFlags >> kPolymorphicLightTypeShift) & kPolymorphicLightTypeMask;
+}
+
+// The radiance scale of a nonzero packed LogRadiance, the largest channel radiance the light can carry.
+inline float UnpackLightRadianceScale(Uint32 Packed)
+{
+    return std::exp2(float(Packed - 1u) / kLightLogRadianceSteps *
+                         (kPolymorphicLightMaxLog2Radiance - kPolymorphicLightMinLog2Radiance) +
+                     kPolymorphicLightMinLog2Radiance);
+}
+
 inline void PackLightColor(const float3& Color, PolymorphicLightInfo& Light)
 {
     const float Intensity = std::max({Color.x, Color.y, Color.z});
@@ -56,10 +73,8 @@ inline void PackLightColor(const float3& Color, PolymorphicLightInfo& Light)
     const float  Log     = std::clamp((std::log2(Intensity) - kPolymorphicLightMinLog2Radiance) /
                                      (kPolymorphicLightMaxLog2Radiance - kPolymorphicLightMinLog2Radiance),
                                  0.0f, 1.0f);
-    const Uint32 Packed  = std::min(Uint32(std::ceil(Log * 65534.0f)) + 1u, 65535u);
-    const float  Scale   = std::exp2(float(Packed - 1u) / 65534.0f *
-                                      (kPolymorphicLightMaxLog2Radiance - kPolymorphicLightMinLog2Radiance) +
-                                  kPolymorphicLightMinLog2Radiance);
+    const Uint32 Packed  = std::min(Uint32(std::ceil(Log * kLightLogRadianceSteps)) + 1u, kLightLogRadianceMask);
+    const float  Scale   = UnpackLightRadianceScale(Packed);
     const auto   Channel = [Scale](float Value) {
         return Uint32(std::floor(std::clamp(Value / Scale, 0.0f, 1.0f) * 255.0f + 0.5f));
     };

@@ -79,6 +79,11 @@ static_assert(offsetof(PathTracerViewData, ViewportOrigin) == 320, "PathTracerVi
 static_assert(offsetof(PathTracerViewData, ViewportSizeInv) == 336, "PathTracerViewData ViewportSizeInv offset must match PathTracer/PathTracerShared.h");
 static_assert(offsetof(PathTracerViewData, ClipToWindowBias) == 360, "PathTracerViewData ClipToWindowBias offset must match PathTracer/PathTracerShared.h");
 
+// The light sampling techniques of PathTracerConstants::NEEType and RTXPTLightsBakerSettings::ImportanceSamplingType.
+constexpr Uint32 kNEETypeUniform   = 0;
+constexpr Uint32 kNEETypePowerPlus = 1;
+constexpr Uint32 kNEETypeNEEAT     = 2;
+
 struct PathTracerConstants
 {
     Uint32 imageWidth            = 1;
@@ -117,7 +122,7 @@ struct PathTracerConstants
     Uint32 genericTSPlaneStride           = 1;
 
     Uint32 NEEEnabled          = 1;
-    Uint32 NEEType             = 1;
+    Uint32 NEEType             = kNEETypeNEEAT;
     Uint32 NEECandidateSamples = 5;
     Uint32 NEEFullSamples      = 1;
 
