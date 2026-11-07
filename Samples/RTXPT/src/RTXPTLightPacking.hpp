@@ -26,6 +26,40 @@ struct AnalyticLightData
     float4 shaping        = float4{-1, 0, 0, 0};
 };
 
+// Full angular diameter in radians. Keep the existing floor for the hard-shadow limit.
+inline float ComputeRTXPTDirectionalLightSolidAngle(float AngularSizeRadians)
+{
+    constexpr float MinHalfAngle  = 0.00001f;
+    constexpr float MinSolidAngle = 1.0e-8f;
+    const float     HalfAngle     = std::max(AngularSizeRadians * 0.5f, MinHalfAngle);
+    return std::max(2.0f * PI_F * (1.0f - std::cos(HalfAngle)), MinSolidAngle);
+}
+
+// Redistribute a directional light's radiance over a new disk without changing its illuminance or direction.
+// The diameter must be finite and in [0, PI]. Invalid input or unrepresentable radiance leaves Light unchanged.
+inline bool SetRTXPTDirectionalLightAngularSize(AnalyticLightData& Light, float AngularSizeRadians)
+{
+    constexpr float  DirectionalLightType = 2.0f;
+    constexpr size_t ColorChannels        = 3;
+    if (Light.colorType.w != DirectionalLightType || !std::isfinite(AngularSizeRadians) ||
+        AngularSizeRadians < 0 || AngularSizeRadians > PI_F || !std::isfinite(Light.shaping.w) || Light.shaping.w <= 0)
+        return false;
+
+    const float       SolidAngle  = ComputeRTXPTDirectionalLightSolidAngle(AngularSizeRadians);
+    const double      MaxRadiance = std::exp2(kPolymorphicLightMaxLog2Radiance);
+    AnalyticLightData Updated     = Light;
+    for (size_t Channel = 0; Channel < ColorChannels; ++Channel)
+    {
+        const double Radiance = static_cast<double>(Light.colorType[Channel]) * Light.shaping.w / SolidAngle;
+        if (!std::isfinite(Radiance) || Radiance < 0 || Radiance > MaxRadiance)
+            return false;
+        Updated.colorType[Channel] = static_cast<float>(Radiance);
+    }
+    Updated.shaping.w = SolidAngle;
+    Light             = Updated;
+    return true;
+}
+
 inline Uint32 PackLightFloat16(float Value)
 {
     // Match the host conversion in RTXPT-fork LightsBaker.cpp (truncation).
