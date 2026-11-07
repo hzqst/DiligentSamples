@@ -26,6 +26,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <string>
 #include <vector>
@@ -43,8 +44,25 @@ namespace Diligent
 
 struct RTXPTSceneGraphData;
 
-// The analytic lights of a loaded scene: its light nodes and the KHR_lights_punctual lights of its model instances,
-// with the keys that identify them across lighting updates.
+// An analytic light of a loaded scene before packing, so that a host can scale it on every lighting update: its data,
+// the key that identifies it across lighting updates and, for a KHR_lights_punctual light, the model instance and the
+// glTF node it belongs to (~0u and -1 for a light node of the scene graph).
+struct RTXPTSceneLightSource
+{
+    AnalyticLightData     Data;
+    std::array<Uint64, 4> Key             = {};
+    Uint32                ModelInstanceId = ~0u;
+    int                   NodeIndex       = -1;
+};
+
+// The analytic lights of a loaded scene: its light nodes and the KHR_lights_punctual lights of its model instances.
+void BuildRTXPTSceneLightSources(const RTXPTSceneGraphData& SceneData, std::vector<RTXPTSceneLightSource>& Sources);
+
+// The light of Source with its radiance scaled by RadianceScale (finite and nonnegative), under the key of Source, so
+// that its light sampling history continues. A scale of 1 gives the light BuildRTXPTSceneLights gives.
+RTXPTSceneLight MakeRTXPTSceneLight(const RTXPTSceneLightSource& Source, float RadianceScale);
+
+// The lights of BuildRTXPTSceneLightSources, unscaled, with the keys that identify them across lighting updates.
 void BuildRTXPTSceneLights(const RTXPTSceneGraphData& SceneData, std::vector<RTXPTSceneLight>& Lights);
 
 struct RTXPTLightStats

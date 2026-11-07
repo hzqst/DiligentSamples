@@ -70,7 +70,7 @@ float ReadRTXPTSpotAngleRadians(const nlohmann::json& Json, const char* DegreesK
     return DegreesToRadians(DefaultDegrees);
 }
 
-PolymorphicLightInfoFull MakeSphereLightData(const float3& Color, float Intensity, const float4x4& Transform, float Range, float Radius, float InnerCone, float OuterCone)
+AnalyticLightData MakeSphereLightData(const float3& Color, float Intensity, const float4x4& Transform, float Range, float Radius, float InnerCone, float OuterCone)
 {
     const float  ClampedRadius = std::max(Radius, 1.0e-4f);
     const float3 Radiance      = Color * std::max(Intensity, 0.0f) / (PI_F * ClampedRadius * ClampedRadius);
@@ -85,10 +85,10 @@ PolymorphicLightInfoFull MakeSphereLightData(const float3& Color, float Intensit
         const float InnerCos = std::cos(InnerCone);
         Data.shaping         = float4{OuterCos, std::max(0.0f, InnerCos - OuterCos), 0.0f, 0.0f};
     }
-    return PackAnalyticLight(Data);
+    return Data;
 }
 
-PolymorphicLightInfoFull MakeDirectionalLightData(const float3& Color, float Intensity, const float4x4& Transform, float AngularSizeRadians)
+AnalyticLightData MakeDirectionalLightData(const float3& Color, float Intensity, const float4x4& Transform, float AngularSizeRadians)
 {
     const float  HalfAngle  = std::max(AngularSizeRadians * 0.5f, 0.00001f);
     const float  SolidAngle = std::max(2.0f * PI_F * (1.0f - std::cos(HalfAngle)), 1.0e-8f);
@@ -98,10 +98,10 @@ PolymorphicLightInfoFull MakeDirectionalLightData(const float3& Color, float Int
     Data.colorType      = float4{Radiance.x, Radiance.y, Radiance.z, kPolymorphicLightTypeDirectional};
     Data.directionRange = float4{-Transform._31, -Transform._32, -Transform._33, 0.0f};
     Data.shaping        = float4{-1.0f, 0.0f, 0.0f, SolidAngle};
-    return PackAnalyticLight(Data);
+    return Data;
 }
 
-PolymorphicLightInfoFull MakeLightData(const GLTF::Light& Light, const float4x4& NodeTransform)
+AnalyticLightData MakeLightData(const GLTF::Light& Light, const float4x4& NodeTransform)
 {
     switch (Light.Type)
     {
@@ -256,20 +256,22 @@ bool RTXPTLights::Upload(IRenderDevice* pDevice, const GLTF::Scene& Scene, const
             continue;
 
         m_AnalyticSources.push_back({{0u, reinterpret_cast<Uint64>(pNode), 0u, 0u}, static_cast<Uint32>(Lights.size()), 1u});
-        Lights.emplace_back(MakeLightData(*pNode->pLight, Transforms.NodeGlobalMatrices[pNode->Index]));
+        Lights.emplace_back(PackAnalyticLight(MakeLightData(*pNode->pLight, Transforms.NodeGlobalMatrices[pNode->Index])));
     }
 
     return UploadLightBuffer(pDevice, Lights);
 }
 
-void BuildRTXPTSceneLights(const RTXPTSceneGraphData& SceneData, std::vector<RTXPTSceneLight>& Lights)
+void BuildRTXPTSceneLightSources(const RTXPTSceneGraphData& SceneData, std::vector<RTXPTSceneLightSource>& Sources)
 {
-    Lights.clear();
-    auto Add = [&](const PolymorphicLightInfoFull& Light, const std::array<Uint64, 4>& Key) {
-        RTXPTSceneLight SceneLight;
-        SceneLight.Light = Light;
-        SceneLight.Key   = Key;
-        Lights.push_back(SceneLight);
+    Sources.clear();
+    auto Add = [&](const AnalyticLightData& Data, const std::array<Uint64, 4>& Key, Uint32 ModelInstanceId = ~0u, int NodeIndex = -1) {
+        RTXPTSceneLightSource Source;
+        Source.Data            = Data;
+        Source.Key             = Key;
+        Source.ModelInstanceId = ModelInstanceId;
+        Source.NodeIndex       = NodeIndex;
+        Sources.push_back(Source);
     };
 
     for (const RTXPTSceneLightMetadata& LightMeta : SceneData.Lights)
@@ -311,8 +313,9 @@ void BuildRTXPTSceneLights(const RTXPTSceneGraphData& SceneData, std::vector<RTX
 
     //KHR_lights_punctual belongs to the same instantiated glTF scene as the geometry. Its node matrices already
     //contain the manifest transform, just like the instance transforms of the imported scene.
-    for (const auto& Instance : SceneData.ModelInstances)
+    for (Uint32 InstanceId = 0; InstanceId < SceneData.ModelInstances.size(); ++InstanceId)
     {
+        const auto& Instance = SceneData.ModelInstances[InstanceId];
         if (Instance.ModelAssetId >= SceneData.ModelAssets.size())
             continue;
         const auto& Asset = SceneData.ModelAssets[Instance.ModelAssetId];
@@ -324,9 +327,33 @@ void BuildRTXPTSceneLights(const RTXPTSceneGraphData& SceneData, std::vector<RTX
             if (!Node || !Node->pLight || Node->Index < 0 || static_cast<size_t>(Node->Index) >= Transforms.NodeGlobalMatrices.size())
                 continue;
             Add(MakeLightData(*Node->pLight, Transforms.NodeGlobalMatrices[Node->Index]),
-                {0u, Instance.GraphNodeId, reinterpret_cast<Uint64>(Node), 0u});
+                {0u, Instance.GraphNodeId, reinterpret_cast<Uint64>(Node), 0u}, InstanceId, Node->Index);
         }
     }
+}
+
+RTXPTSceneLight MakeRTXPTSceneLight(const RTXPTSceneLightSource& Source, float RadianceScale)
+{
+    AnalyticLightData Data = Source.Data;
+    Data.colorType.x *= RadianceScale;
+    Data.colorType.y *= RadianceScale;
+    Data.colorType.z *= RadianceScale;
+
+    RTXPTSceneLight Light;
+    Light.Light = PackAnalyticLight(Data);
+    Light.Key   = Source.Key;
+    return Light;
+}
+
+void BuildRTXPTSceneLights(const RTXPTSceneGraphData& SceneData, std::vector<RTXPTSceneLight>& Lights)
+{
+    std::vector<RTXPTSceneLightSource> Sources;
+    BuildRTXPTSceneLightSources(SceneData, Sources);
+
+    Lights.clear();
+    Lights.reserve(Sources.size());
+    for (const RTXPTSceneLightSource& Source : Sources)
+        Lights.push_back(MakeRTXPTSceneLight(Source, 1.0f));
 }
 
 bool RTXPTLights::Upload(IRenderDevice* pDevice, const RTXPTSceneGraphData& SceneData)
