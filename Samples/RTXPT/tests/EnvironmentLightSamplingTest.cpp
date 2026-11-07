@@ -15,6 +15,8 @@
 #include "../src/RTXPTLightPacking.hpp"
 #include "../src/RTXPTEnvironmentLights.hpp"
 #include "../src/RTXPTLightHistory.hpp"
+#include "../src/RTXPTEnvCubeBakeConstants.hpp"
+#include "Float16.hpp"
 #include "ShaderMacroHelper.hpp"
 using namespace Diligent;
 using uint     = Uint32;
@@ -39,24 +41,43 @@ struct Quad
     float4 RadianceAndWeight;
 };
 
-//Exercise the production cube-bake entry point independently of proxy selection and path-tracer MIS.
-void TestDirectionalBake(IRenderDevice* Device, IDeviceContext* Context, IEngineFactory* Factory)
+//A 14-lux sun of 0.53 degrees, baked into one 2048-texel face.
+constexpr Uint32 kBakeResolution            = 2048;
+constexpr float  kTestSunIlluminance        = 14.0f;
+constexpr float  kTestSunDiameterDegrees    = 0.53f;
+constexpr float  kDirectionalLightType      = 2.0f; //AnalyticLightData::colorType.w of a directional light.
+constexpr double kMinBakedIlluminanceRatio  = 0.8;
+constexpr double kMaxBakedIlluminanceRatio  = 1.1;
+constexpr double kBakedEnergyRatioTolerance = 0.02;
+
+//One bake: a single sun of Illuminance lux travelling along Direction, stored at RadianceScale, seen through the
+//environment rows WorldToLocal0 and WorldToLocal2. DirectionalLightCount 0 disables it.
+struct DirectionalBakeCase
 {
-    constexpr Uint32 Resolution       = 2048;
-    constexpr Uint32 DirectionalLimit = RTXPT_ENVMAP_MAX_DIRECTIONAL_LIGHTS;
-    constexpr float  Illuminance      = 14.0f;
-    constexpr float  Diameter         = 0.53f * PI_F / 180.0f;
-    const float      SolidAngle       = 2.0f * PI_F * (1.0f - std::cos(Diameter * 0.5f));
-    struct Constants
-    {
-        float4x4                                           Rotation = float4x4::Identity();
-        float4                                             WorldToLocal0{1, 0, 0, 0}, WorldToLocal1{0, 1, 0, 0}, WorldToLocal2{0, 0, 1, 0};
-        float4                                             SourceColor{};
-        float                                              RadianceScale    = 0.25f;
-        Uint32                                             DirectionalCount = 1, CubeDim = Resolution, Padding = 0;
-        std::array<PolymorphicLightInfo, DirectionalLimit> Lights{};
-    };
-    static_assert(sizeof(Constants) == 656, "Directional cube-bake constant layout");
+    const char* Name                  = "normal";
+    float       Illuminance           = kTestSunIlluminance;
+    float3      Direction             = float3{0, 0, -1};
+    float       RadianceScale         = kEnvironmentRadianceScale;
+    Uint32      DirectionalLightCount = 1;
+    float4      WorldToLocal0         = float4{1, 0, 0, 0};
+    float4      WorldToLocal2         = float4{0, 0, 1, 0};
+};
+
+//The production cube-bake pipeline with a black source cube, writing one face that the CPU reads back.
+struct DirectionalBakeResources
+{
+    RefCntAutoPtr<IPipelineState>         PSO;
+    RefCntAutoPtr<IShaderResourceBinding> SRB;
+    RefCntAutoPtr<IBuffer>                CB;
+    RefCntAutoPtr<ITexture>               BlackCube;
+    RefCntAutoPtr<ITexture>               Output;
+    RefCntAutoPtr<ITexture>               Readback;
+    RefCntAutoPtr<ISampler>               Sampler;
+};
+
+DirectionalBakeResources CreateDirectionalBakeResources(IRenderDevice* Device, IEngineFactory* Factory)
+{
+    DirectionalBakeResources                       R;
     RefCntAutoPtr<IShaderSourceInputStreamFactory> Source;
     CreateRTXPTShaderSourceFactory(Factory, "shaders;shaders/PathTracer", &Source);
     ShaderMacroHelper Macros;
@@ -78,17 +99,15 @@ void TestDirectionalBake(IRenderDevice* Device, IDeviceContext* Context, IEngine
     PCI.PSODesc.PipelineType                       = PIPELINE_TYPE_COMPUTE;
     PCI.PSODesc.ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC;
     PCI.pCS                                        = Shader;
-    RefCntAutoPtr<IPipelineState> PSO;
-    Device->CreateComputePipelineState(PCI, &PSO);
-    Require(PSO != nullptr, "Create the directional cube-bake pipeline");
-    RefCntAutoPtr<IShaderResourceBinding> SRB;
-    PSO->CreateShaderResourceBinding(&SRB, true);
+    Device->CreateComputePipelineState(PCI, &R.PSO);
+    Require(R.PSO != nullptr, "Create the directional cube-bake pipeline");
+    R.PSO->CreateShaderResourceBinding(&R.SRB, true);
+
     BufferDesc CBDesc;
     CBDesc.Name      = "Directional bake test constants";
-    CBDesc.Size      = sizeof(Constants);
+    CBDesc.Size      = sizeof(EnvCubeBakeConstantsCPU);
     CBDesc.BindFlags = BIND_UNIFORM_BUFFER;
-    RefCntAutoPtr<IBuffer> CB;
-    Device->CreateBuffer(CBDesc, nullptr, &CB);
+    Device->CreateBuffer(CBDesc, nullptr, &R.CB);
     const float4                     Black{};
     std::array<TextureSubResData, 6> BlackFaces;
     for (auto& Face : BlackFaces) Face = TextureSubResData{&Black, sizeof(Black)};
@@ -99,87 +118,128 @@ void TestDirectionalBake(IRenderDevice* Device, IDeviceContext* Context, IEngine
     BlackDesc.ArraySize                = 6;
     BlackDesc.Format                   = TEX_FORMAT_RGBA32_FLOAT;
     BlackDesc.BindFlags                = BIND_SHADER_RESOURCE;
-    TextureData             BlackData{BlackFaces.data(), static_cast<Uint32>(BlackFaces.size())};
-    RefCntAutoPtr<ITexture> BlackCube;
-    Device->CreateTexture(BlackDesc, &BlackData, &BlackCube);
+    TextureData BlackData{BlackFaces.data(), static_cast<Uint32>(BlackFaces.size())};
+    Device->CreateTexture(BlackDesc, &BlackData, &R.BlackCube);
     TextureDesc OutputDesc;
     OutputDesc.Name      = "Directional bake face";
     OutputDesc.Type      = RESOURCE_DIM_TEX_2D_ARRAY;
     OutputDesc.ArraySize = 1;
-    OutputDesc.Width = OutputDesc.Height = Resolution;
+    OutputDesc.Width = OutputDesc.Height = kBakeResolution;
     OutputDesc.Format                    = TEX_FORMAT_RGBA16_FLOAT;
     OutputDesc.BindFlags                 = BIND_UNORDERED_ACCESS;
-    RefCntAutoPtr<ITexture> Output, Readback;
-    Device->CreateTexture(OutputDesc, nullptr, &Output);
+    Device->CreateTexture(OutputDesc, nullptr, &R.Output);
     OutputDesc.Name           = "Directional bake readback";
     OutputDesc.Usage          = USAGE_STAGING;
     OutputDesc.BindFlags      = BIND_NONE;
     OutputDesc.CPUAccessFlags = CPU_ACCESS_READ;
-    Device->CreateTexture(OutputDesc, nullptr, &Readback);
-    RefCntAutoPtr<ISampler> Sampler;
-    Device->CreateSampler(SamplerDesc{}, &Sampler);
-    Require(CB && BlackCube && Output && Readback && Sampler, "Create directional bake test resources");
-    SRB->GetVariableByName(SHADER_TYPE_COMPUTE, "cbEnvCubeBake")->Set(CB);
-    SRB->GetVariableByName(SHADER_TYPE_COMPUTE, "g_EnvBakeSource")->Set(BlackCube->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
-    SRB->GetVariableByName(SHADER_TYPE_COMPUTE, "g_EnvBakeSourceSampler")->Set(Sampler);
-    SRB->GetVariableByName(SHADER_TYPE_COMPUTE, "g_EnvBakeOutput")->Set(Output->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
-    const auto Half = [](Uint16 Value) {
-        const Uint32 Exponent = (Value >> 10u) & 31u;
-        Require((Value & 0x8000u) == 0u && Exponent != 31u, "Baked radiance is finite and nonnegative");
-        return Exponent == 0u ? std::ldexp(float(Value & 1023u), -24) : std::ldexp(1.0f + float(Value & 1023u) / 1024.0f, int(Exponent) - 15);
+    Device->CreateTexture(OutputDesc, nullptr, &R.Readback);
+    Device->CreateSampler(SamplerDesc{}, &R.Sampler);
+    Require(R.CB && R.BlackCube && R.Output && R.Readback && R.Sampler, "Create directional bake test resources");
+
+    R.SRB->GetVariableByName(SHADER_TYPE_COMPUTE, "cbEnvCubeBake")->Set(R.CB);
+    R.SRB->GetVariableByName(SHADER_TYPE_COMPUTE, "g_EnvBakeSource")->Set(R.BlackCube->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
+    R.SRB->GetVariableByName(SHADER_TYPE_COMPUTE, "g_EnvBakeSourceSampler")->Set(R.Sampler);
+    R.SRB->GetVariableByName(SHADER_TYPE_COMPUTE, "g_EnvBakeOutput")->Set(R.Output->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
+    return R;
+}
+
+//The illuminance the baked +Z face delivers to a receiver facing it: the radiance restored from its storage scale,
+//integrated over each texel's solid angle times the receiver cosine.
+double BakeDirectionalIlluminance(IDeviceContext* Context, const DirectionalBakeResources& R, const DirectionalBakeCase& Case)
+{
+    const float Diameter   = kTestSunDiameterDegrees * PI_F / 180.0f;
+    const float SolidAngle = 2.0f * PI_F * (1.0f - std::cos(Diameter * 0.5f));
+    const float Radiance   = Case.Illuminance / SolidAngle;
+
+    AnalyticLightData Light;
+    Light.colorType      = float4{Radiance, Radiance, Radiance, kDirectionalLightType};
+    Light.directionRange = float4{Case.Direction, 0};
+    Light.shaping.w      = SolidAngle;
+    EnvCubeBakeConstantsCPU C;
+    C.Rotation              = float4x4::Identity();
+    C.WorldToLocal0         = Case.WorldToLocal0;
+    C.WorldToLocal1         = float4{0, 1, 0, 0};
+    C.WorldToLocal2         = Case.WorldToLocal2;
+    C.RadianceScale         = Case.RadianceScale;
+    C.DirectionalLightCount = Case.DirectionalLightCount;
+    C.CubeDim               = kBakeResolution;
+    C.DirectionalLights[0]  = PackAnalyticLight(Light).Base;
+
+    Context->UpdateBuffer(R.CB, 0, sizeof(C), &C, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+    Context->SetPipelineState(R.PSO);
+    Context->CommitShaderResources(R.SRB, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+    constexpr Uint32 GroupCount = kBakeResolution / RTXPT_ENVMAP_BAKE_THREADS;
+    Context->DispatchCompute(DispatchComputeAttribs{GroupCount, GroupCount, 1});
+    CopyTextureAttribs Copy;
+    Copy.pSrcTexture              = R.Output;
+    Copy.pDstTexture              = R.Readback;
+    Copy.SrcTextureTransitionMode = Copy.DstTextureTransitionMode = RESOURCE_STATE_TRANSITION_MODE_TRANSITION;
+    Context->CopyTexture(Copy);
+    Context->Flush();
+    Context->WaitForIdle();
+
+    MappedTextureSubresource Data;
+    Context->MapTextureSubresource(R.Readback, 0, 0, MAP_READ, MAP_FLAG_DO_NOT_WAIT, nullptr, Data);
+    Require(Data.pData != nullptr, "Read back the baked sun face");
+    const auto BakedRadiance = [](Uint16 Bits) {
+        const Float16 Half{Bits};
+        const float   Value = static_cast<float>(Half);
+        Require(!Half.Sign() && std::isfinite(Value), "Baked radiance is finite and nonnegative");
+        return Value;
     };
-    std::array<double, 5> Energy{};
-    for (Uint32 Case = 0; Case < Energy.size(); ++Case)
+    double Illuminance = 0;
+    for (Uint32 Y = 0; Y < kBakeResolution; ++Y)
     {
-        Constants         C;
-        AnalyticLightData Light;
-        const float       Intensity = Case == 1u ? 2.0f * Illuminance : Illuminance;
-        Light.colorType             = float4{Intensity / SolidAngle, Intensity / SolidAngle, Intensity / SolidAngle, 2};
-        Light.directionRange        = Case == 3u ? float4{0, 0, 1, 0} : float4{0, 0, -1, 0};
-        Light.shaping.w             = SolidAngle;
-        if (Case == 1u) C.RadianceScale = 0.125f;
-        if (Case == 2u) C.DirectionalCount = 0;
-        if (Case == 4u)
+        const auto*  Row = reinterpret_cast<const Uint16*>(static_cast<const Uint8*>(Data.pData) + Y * Data.Stride);
+        const double V   = 2.0 * (Y + 0.5) / kBakeResolution - 1.0;
+        for (Uint32 X = 0; X < kBakeResolution; ++X)
         {
-            Light.directionRange = float4{-1, 0, 0, 0};
-            C.WorldToLocal0      = float4{0, 0, 1, 0};
-            C.WorldToLocal2      = float4{-1, 0, 0, 0};
+            //A texel at (U, V) on the unit-distance face covers 4 / (Resolution^2 * (1 + U^2 + V^2)^1.5) steradians
+            //and meets the receiver at cosine 1 / sqrt(1 + U^2 + V^2).
+            const double U               = 2.0 * (X + 0.5) / kBakeResolution - 1.0;
+            const double DistanceSquared = 1.0 + U * U + V * V;
+            Illuminance += BakedRadiance(Row[X * 4]) * (4.0 / (double(kBakeResolution) * kBakeResolution * DistanceSquared * DistanceSquared)) / C.RadianceScale;
         }
-        C.Lights[0] = PackAnalyticLight(Light).Base;
-        Context->UpdateBuffer(CB, 0, sizeof(C), &C, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-        Context->SetPipelineState(PSO);
-        Context->CommitShaderResources(SRB, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-        constexpr Uint32 Threads = RTXPT_ENVMAP_BAKE_THREADS;
-        Context->DispatchCompute(DispatchComputeAttribs{Resolution / Threads, Resolution / Threads, 1});
-        CopyTextureAttribs Copy;
-        Copy.pSrcTexture              = Output;
-        Copy.pDstTexture              = Readback;
-        Copy.SrcTextureTransitionMode = Copy.DstTextureTransitionMode = RESOURCE_STATE_TRANSITION_MODE_TRANSITION;
-        Context->CopyTexture(Copy);
-        Context->Flush();
-        Context->WaitForIdle();
-        MappedTextureSubresource Data;
-        Context->MapTextureSubresource(Readback, 0, 0, MAP_READ, MAP_FLAG_DO_NOT_WAIT, nullptr, Data);
-        Require(Data.pData != nullptr, "Read back the baked sun face");
-        for (Uint32 Y = 0; Y < Resolution; ++Y)
-        {
-            const auto*  Row = reinterpret_cast<const Uint16*>(static_cast<const Uint8*>(Data.pData) + Y * Data.Stride);
-            const double V   = 2.0 * (Y + 0.5) / Resolution - 1.0;
-            for (Uint32 X = 0; X < Resolution; ++X)
-            {
-                const double U               = 2.0 * (X + 0.5) / Resolution - 1.0;
-                const double DistanceSquared = 1.0 + U * U + V * V;
-                Energy[Case] += Half(Row[X * 4]) * (4.0 / (double(Resolution) * Resolution * DistanceSquared * DistanceSquared)) / C.RadianceScale;
-            }
-        }
-        Context->UnmapTextureSubresource(Readback, 0, 0);
-        std::cout << "Directional bake case " << Case << ": integrated illuminance " << Energy[Case] << '\n';
     }
+    Context->UnmapTextureSubresource(R.Readback, 0, 0);
+    std::cout << "Directional bake " << Case.Name << ": integrated illuminance " << Illuminance << '\n';
+    return Illuminance;
+}
+
+//Exercise the production cube-bake entry point independently of proxy selection and path-tracer MIS.
+void TestDirectionalBake(IRenderDevice* Device, IDeviceContext* Context, IEngineFactory* Factory)
+{
+    const auto R = CreateDirectionalBakeResources(Device, Factory);
+
+    const DirectionalBakeCase NormalCase;
+    DirectionalBakeCase       DoubledCase = NormalCase;
+    DoubledCase.Name                      = "doubled";
+    DoubledCase.Illuminance               = 2.0f * kTestSunIlluminance;
+    DoubledCase.RadianceScale             = kEnvironmentRadianceScale / 2.0f;
+    DirectionalBakeCase DisabledCase      = NormalCase;
+    DisabledCase.Name                     = "disabled";
+    DisabledCase.DirectionalLightCount    = 0;
+    DirectionalBakeCase OppositeCase      = NormalCase;
+    OppositeCase.Name                     = "opposite";
+    OppositeCase.Direction                = float3{0, 0, 1};
+    //A quarter turn of the environment about +Y: the sun travelling along world -X reaches the same face.
+    DirectionalBakeCase RotatedCase = NormalCase;
+    RotatedCase.Name                = "rotated";
+    RotatedCase.Direction           = float3{-1, 0, 0};
+    RotatedCase.WorldToLocal0       = float4{0, 0, 1, 0};
+    RotatedCase.WorldToLocal2       = float4{-1, 0, 0, 0};
+
+    const double Normal   = BakeDirectionalIlluminance(Context, R, NormalCase);
+    const double Doubled  = BakeDirectionalIlluminance(Context, R, DoubledCase);
+    const double Disabled = BakeDirectionalIlluminance(Context, R, DisabledCase);
+    const double Opposite = BakeDirectionalIlluminance(Context, R, OppositeCase);
+    const double Rotated  = BakeDirectionalIlluminance(Context, R, RotatedCase);
     //Upstream's coverage approximation shaves the disk edge; allow that rasterization error, not a unit conversion.
-    Require(Energy[0] > Illuminance * 0.8 && Energy[0] < Illuminance * 1.1, "Baked sun irradiance agrees with its input illuminance");
-    Require(std::abs(Energy[1] / Energy[0] - 2.0) < 0.02, "FP16 bake scaling preserves doubled solar energy");
-    Require(Energy[2] == 0 && Energy[3] == 0, "Disabled and opposite-facing suns leave this face black");
-    Require(std::abs(Energy[4] / Energy[0] - 1.0) < 0.02, "Environment rotation preserves the sun's world direction and energy");
+    const bool NearInput = Normal > kTestSunIlluminance * kMinBakedIlluminanceRatio && Normal < kTestSunIlluminance * kMaxBakedIlluminanceRatio;
+    Require(NearInput, "Baked sun irradiance agrees with its input illuminance");
+    Require(std::abs(Doubled / Normal - 2.0) < kBakedEnergyRatioTolerance, "FP16 bake scaling preserves doubled solar energy");
+    Require(Disabled == 0 && Opposite == 0, "Disabled and opposite-facing suns leave this face black");
+    Require(std::abs(Rotated / Normal - 1.0) < kBakedEnergyRatioTolerance, "Environment rotation preserves the sun's world direction and energy");
 }
 } // namespace
 

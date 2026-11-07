@@ -34,6 +34,7 @@ set(INCLUDE
     src/RTXPTFrameConstants.hpp
     src/RTXPTRealtimeSettings.hpp
     src/RTXPTEnvMapBaker.hpp
+    src/RTXPTEnvCubeBakeConstants.hpp
     src/RTXPTEnvMapBakerPass.hpp
     src/RTXPTSubInstanceData.hpp
     src/RTXPTSkinnedGeometry.hpp

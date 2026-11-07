@@ -71,22 +71,52 @@ constexpr Uint32      kImportanceBakerThreads     = 16;
 constexpr Uint32      kImportanceSamplesPerAxis   = 4;
 constexpr Uint32      kMinDirectionalCubeSize     = kMaxEnvironmentCubeSize;
 constexpr Uint32      kMaxDirectionalLights       = RTXPT_ENVMAP_MAX_DIRECTIONAL_LIGHTS;
-constexpr float       kEnvironmentRadianceScale   = 0.25f;
+constexpr Uint32      kEnvCubeBakeThreads         = RTXPT_ENVMAP_BAKE_THREADS;
 constexpr float       kHalfFloatMax               = 65504.0f;
 
-struct EnvCubeBakeConstantsCPU
+const std::vector<PolymorphicLightInfo>& SelectDirectionalLights(const RTXPTLights* pLights)
 {
-    float4x4                                                Rotation;
-    float4                                                  WorldToLocal0, WorldToLocal1, WorldToLocal2;
-    float4                                                  SourceColor;
-    float                                                   RadianceScale         = kEnvironmentRadianceScale;
-    Uint32                                                  DirectionalLightCount = 0;
-    Uint32                                                  CubeDim               = 0;
-    Uint32                                                  Padding               = 0;
-    std::array<PolymorphicLightInfo, kMaxDirectionalLights> DirectionalLights{};
-};
-static_assert(sizeof(EnvCubeBakeConstantsCPU) == 656, "EnvCubeBakeConstantsCPU must match cbEnvCubeBake");
-static_assert(offsetof(EnvCubeBakeConstantsCPU, DirectionalLights) == 144, "Directional-light array offset");
+    static const std::vector<PolymorphicLightInfo> NoLights;
+    return pLights != nullptr ? pLights->GetDirectionalLights() : NoLights;
+}
+
+bool IsSameDirectionalLights(const std::vector<PolymorphicLightInfo>& A, const std::vector<PolymorphicLightInfo>& B)
+{
+    return A.size() == B.size() && (A.empty() || std::memcmp(A.data(), B.data(), A.size() * sizeof(PolymorphicLightInfo)) == 0);
+}
+
+// The rows of the environment's world-to-local rotation about +Y.
+std::array<float4, 3> MakeEnvironmentWorldToLocal(float RotationRadians)
+{
+    const float CosA = std::cos(RotationRadians);
+    const float SinA = std::sin(RotationRadians);
+    return {float4{CosA, 0.0f, SinA, 0.0f}, float4{0.0f, 1.0f, 0.0f, 0.0f}, float4{-SinA, 0.0f, CosA, 0.0f}};
+}
+
+// The cube-bake constants of every face but its rotation: the source sky's color, and the directional disks with a
+// radiance scale that keeps their summed peak radiance below the FP16 limit, never above upstream's 1/4.
+EnvCubeBakeConstantsCPU MakeEnvCubeBakeConstants(const RTXPTEnvMapSettings& Settings, const std::vector<PolymorphicLightInfo>& DirectionalLights, Uint32 CubeDim)
+{
+    EnvCubeBakeConstantsCPU Constants{};
+    const auto              WorldToLocal = MakeEnvironmentWorldToLocal(Settings.RotationRadians);
+    Constants.WorldToLocal0              = WorldToLocal[0];
+    Constants.WorldToLocal1              = WorldToLocal[1];
+    Constants.WorldToLocal2              = WorldToLocal[2];
+    const float SourceIntensity          = Settings.Enabled ? std::max(Settings.Intensity, 0.0f) : 0.0f;
+    Constants.SourceColor                = float4{Settings.RadianceScale * SourceIntensity, 0};
+    Constants.DirectionalLightCount      = static_cast<Uint32>(DirectionalLights.size());
+    Constants.CubeDim                    = CubeDim;
+    float RadianceBound                  = 0.0f;
+    for (Uint32 LightIndex = 0; LightIndex < Constants.DirectionalLightCount; ++LightIndex)
+    {
+        Constants.DirectionalLights[LightIndex] = DirectionalLights[LightIndex];
+        const Uint32 Packed                     = DirectionalLights[LightIndex].LogRadiance & kLightLogRadianceMask;
+        if (Packed != 0u)
+            RadianceBound += UnpackLightRadianceScale(Packed);
+    }
+    Constants.RadianceScale = RadianceBound > 0.0f ? std::min(kEnvironmentRadianceScale, kHalfFloatMax / (RadianceBound + 1.0f)) : kEnvironmentRadianceScale;
+    return Constants;
+}
 
 struct EnvMapImportanceBakerConstantsCPU
 {
@@ -407,22 +437,20 @@ bool RTXPTEnvMapBaker::Update(IRenderDevice* pDevice, IDeviceContext* pContext, 
             return false;
     }
 
-    const Uint32                            ImportanceResolution = NormalizeImportanceResolution(Attribs.Settings.ImportanceMapResolution);
-    const Uint32                            ImportanceMipLevels  = MipCountForPowerOfTwo(ImportanceResolution);
-    const std::vector<PolymorphicLightInfo> EmptyLights;
-    const auto&                             DirectionalLights = Attribs.pLights ? Attribs.pLights->GetDirectionalLights() : EmptyLights;
+    const Uint32 ImportanceResolution = NormalizeImportanceResolution(Attribs.Settings.ImportanceMapResolution);
+    const Uint32 ImportanceMipLevels  = MipCountForPowerOfTwo(ImportanceResolution);
+    const auto&  DirectionalLights    = SelectDirectionalLights(Attribs.pLights);
     if (DirectionalLights.size() > kMaxDirectionalLights)
     {
         m_Stats.Ready = false;
         LOG_ERROR_MESSAGE("RTXPT environment supports at most ", kMaxDirectionalLights, " directional lights");
         return false;
     }
-    const bool DirectionalChanged = DirectionalLights.size() != m_DirectionalLights.size() ||
-        (!DirectionalLights.empty() && std::memcmp(DirectionalLights.data(), m_DirectionalLights.data(), DirectionalLights.size() * sizeof(PolymorphicLightInfo)) != 0);
+    const bool DirectionalChanged = !IsSameDirectionalLights(DirectionalLights, m_DirectionalLights);
     const bool SourceColorChanged = Attribs.Settings.Enabled != m_LastSettings.Enabled ||
         Attribs.Settings.Intensity != m_LastSettings.Intensity || Attribs.Settings.RadianceScale != m_LastSettings.RadianceScale;
-    const bool CubeChanged = !m_Stats.Ready || DirectionalChanged || SourceColorChanged ||
-        (!DirectionalLights.empty() && Attribs.Settings.RotationRadians != m_LastSettings.RotationRadians);
+    const bool DirectionalRotated = !DirectionalLights.empty() && Attribs.Settings.RotationRadians != m_LastSettings.RotationRadians;
+    const bool CubeChanged        = !m_Stats.Ready || DirectionalChanged || SourceColorChanged || DirectionalRotated;
     if (DirectionalChanged)
         m_DirectionalLights = DirectionalLights;
     const bool SourceChanged = Attribs.ForceRebuild || !m_SourceTexture || !m_SourceSRV ||
@@ -748,21 +776,13 @@ bool RTXPTEnvMapBaker::PrecomputeCubemap(IRenderDevice* pDevice, IDeviceContext*
     // products) is PrefilteredEnvMapDim (256) and washes out fine detail seen through small apertures
     // such as windows; upstream RTXPT bakes a high-res environment cube instead. Failure cannot substitute
     // the sky-only prefiltered cube, because the directional lights live exclusively in the baked cube.
-    if (BakeHighResEnvironmentCube(pDevice, pContext, pEngineFactory, Settings))
-    {
-        m_EnvironmentMapSRV = m_EnvironmentCube->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
-    }
-    else
-    {
-        return false;
-    }
-
 #else
     //Path tracing evaluates illumination directly; irradiance convolution and a raster GGX LUT are unnecessary.
+#endif
     if (!BakeHighResEnvironmentCube(pDevice, pContext, pEngineFactory, Settings))
         return false;
     m_EnvironmentMapSRV = m_EnvironmentCube->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
-#endif
+
     const ITexture* pEnvTexture = m_EnvironmentMapSRV->GetTexture();
     if (pEnvTexture == nullptr)
     {
@@ -868,30 +888,10 @@ bool RTXPTEnvMapBaker::BakeHighResEnvironmentCube(IRenderDevice* pDevice, IDevic
     // importance pass on every dispatch.
     const Uint32 SourceRes = SourceIsCube ? std::min(m_SourceTexture->GetDesc().Width, kMaxEnvironmentCubeSize) : kMaxEnvironmentCubeSize;
     //A small source sky must not widen a 0.53-degree sun to the resolution's minimum bakeable disk.
-    const Uint32            TargetRes = m_DirectionalLights.empty() ? SourceRes : std::max(SourceRes, kMinDirectionalCubeSize);
-    EnvCubeBakeConstantsCPU Constants{};
-    const float             CosA    = std::cos(Settings.RotationRadians);
-    const float             SinA    = std::sin(Settings.RotationRadians);
-    Constants.WorldToLocal0         = float4{CosA, 0, SinA, 0};
-    Constants.WorldToLocal1         = float4{0, 1, 0, 0};
-    Constants.WorldToLocal2         = float4{-SinA, 0, CosA, 0};
-    const float SourceIntensity     = Settings.Enabled ? std::max(Settings.Intensity, 0.0f) : 0.0f;
-    Constants.SourceColor           = float4{Settings.RadianceScale * SourceIntensity, 0};
-    Constants.DirectionalLightCount = static_cast<Uint32>(m_DirectionalLights.size());
-    Constants.CubeDim               = TargetRes;
-    float RadianceBound             = 0.0f;
-    for (Uint32 I = 0; I < Constants.DirectionalLightCount; ++I)
-    {
-        Constants.DirectionalLights[I] = m_DirectionalLights[I];
-        const Uint32 Packed            = m_DirectionalLights[I].LogRadiance & 0xffffu;
-        if (Packed != 0u)
-            RadianceBound += std::exp2(float(Packed - 1u) / 65534.0f *
-                                           (kPolymorphicLightMaxLog2Radiance - kPolymorphicLightMinLog2Radiance) +
-                                       kPolymorphicLightMinLog2Radiance);
-    }
+    const Uint32 TargetRes = m_DirectionalLights.empty() ? SourceRes : std::max(SourceRes, kMinDirectionalCubeSize);
     //Upstream uses 1/4 with a reciprocal evaluation multiplier. Strong animated styles may need more FP16 headroom.
-    m_BakedRadianceScale    = RadianceBound > 0.0f ? std::min(kEnvironmentRadianceScale, kHalfFloatMax / (RadianceBound + 1.0f)) : kEnvironmentRadianceScale;
-    Constants.RadianceScale = m_BakedRadianceScale;
+    EnvCubeBakeConstantsCPU Constants = MakeEnvCubeBakeConstants(Settings, m_DirectionalLights, TargetRes);
+    m_BakedRadianceScale              = Constants.RadianceScale;
 
     if (!m_EnvironmentCube || m_EnvironmentCubeResolution != TargetRes)
     {
@@ -948,17 +948,21 @@ bool RTXPTEnvMapBaker::BakeHighResEnvironmentCube(IRenderDevice* pDevice, IDevic
         pSourceVar->Set(m_SourceSRV);
     if (IShaderResourceVariable* pBakeVar = pSRB->GetVariableByName(SHADER_TYPE_COMPUTE, "cbEnvCubeBake"))
         pBakeVar->Set(m_EnvCubeBakeConstants);
+    IShaderResourceVariable* pOutputVar = pSRB->GetVariableByName(SHADER_TYPE_COMPUTE, "g_EnvBakeOutput");
+    if (pOutputVar == nullptr)
+        return false;
 
     pContext->SetPipelineState(pPSO);
 
+    const Uint32 GroupCount = (TargetRes + kEnvCubeBakeThreads - 1u) / kEnvCubeBakeThreads;
     for (Uint32 Face = 0; Face < 6; ++Face)
     {
         {
-            MapHelper<EnvCubeBakeConstantsCPU> MappedRotation{pContext, m_EnvCubeBakeConstants, MAP_WRITE, MAP_FLAG_DISCARD};
-            if (MappedRotation == nullptr)
+            MapHelper<EnvCubeBakeConstantsCPU> MappedConstants{pContext, m_EnvCubeBakeConstants, MAP_WRITE, MAP_FLAG_DISCARD};
+            if (MappedConstants == nullptr)
                 return false;
             Constants.Rotation = FaceRotations[Face];
-            *MappedRotation    = Constants;
+            *MappedConstants   = Constants;
         }
 
         TextureViewDesc UAVDesc;
@@ -973,11 +977,9 @@ bool RTXPTEnvMapBaker::BakeHighResEnvironmentCube(IRenderDevice* pDevice, IDevic
         if (!pUAV)
             return false;
 
-        pSRB->GetVariableByName(SHADER_TYPE_COMPUTE, "g_EnvBakeOutput")->Set(pUAV);
+        pOutputVar->Set(pUAV);
         pContext->CommitShaderResources(pSRB, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-        constexpr Uint32 BakeThreads = RTXPT_ENVMAP_BAKE_THREADS;
-        pContext->DispatchCompute(DispatchComputeAttribs{(TargetRes + BakeThreads - 1u) / BakeThreads,
-                                                         (TargetRes + BakeThreads - 1u) / BakeThreads, 1});
+        pContext->DispatchCompute(DispatchComputeAttribs{GroupCount, GroupCount, 1});
     }
 
     pContext->GenerateMips(m_EnvironmentCube->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
@@ -1373,18 +1375,20 @@ bool RTXPTEnvMapBaker::CreateSamplers(IRenderDevice* pDevice)
 
 void RTXPTEnvMapBaker::UpdateConstants(const RTXPTEnvMapSettings& Settings)
 {
-    const float Rotation      = Settings.RotationRadians;
-    const float CosA          = std::cos(Rotation);
-    const float SinA          = std::sin(Rotation);
-    const float Enabled       = Settings.Enabled || !m_DirectionalLights.empty() ? 1.0f : 0.0f;
-    m_Constants.LocalToWorld0 = float4{CosA, 0.0f, -SinA, 0.0f};
-    m_Constants.LocalToWorld1 = float4{0.0f, 1.0f, 0.0f, 0.0f};
-    m_Constants.LocalToWorld2 = float4{SinA, 0.0f, CosA, 0.0f};
-    m_Constants.WorldToLocal0 = float4{CosA, 0.0f, SinA, 0.0f};
-    m_Constants.WorldToLocal1 = float4{0.0f, 1.0f, 0.0f, 0.0f};
-    m_Constants.WorldToLocal2 = float4{-SinA, 0.0f, CosA, 0.0f};
+    const float Rotation     = Settings.RotationRadians;
+    const float CosA         = std::cos(Rotation);
+    const float SinA         = std::sin(Rotation);
+    const auto  WorldToLocal = MakeEnvironmentWorldToLocal(Rotation);
     //Source color/intensity is baked separately from the sun, so a black or disabled sky does not disable it.
-    const float RestoreRadiance = Enabled > 0.0f ? 1.0f / m_BakedRadianceScale : 0.0f;
+    const bool  EnvironmentLit  = Settings.Enabled || !m_DirectionalLights.empty();
+    const float Enabled         = EnvironmentLit ? 1.0f : 0.0f;
+    m_Constants.LocalToWorld0   = float4{CosA, 0.0f, -SinA, 0.0f};
+    m_Constants.LocalToWorld1   = float4{0.0f, 1.0f, 0.0f, 0.0f};
+    m_Constants.LocalToWorld2   = float4{SinA, 0.0f, CosA, 0.0f};
+    m_Constants.WorldToLocal0   = WorldToLocal[0];
+    m_Constants.WorldToLocal1   = WorldToLocal[1];
+    m_Constants.WorldToLocal2   = WorldToLocal[2];
+    const float RestoreRadiance = EnvironmentLit ? 1.0f / m_BakedRadianceScale : 0.0f;
     m_Constants.ColorEnabled    = float4{RestoreRadiance, RestoreRadiance, RestoreRadiance, Enabled};
     m_Constants.ImportanceMetadata =
         m_Stats.ImportanceReady ?

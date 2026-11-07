@@ -340,6 +340,16 @@ struct RTXPTEmbeddedView::Impl
         return Rays.Initialize(Device, Context, RaysCI);
     }
 
+    //Points light sampling at the scene's current environment cube and its importance maps.
+    void FollowEnvironment()
+    {
+        const auto& Environment                = Scene->Environment;
+        Lighting.EnvMapParams                  = Environment.GetLightsBakerParams();
+        Lighting.pEnvironmentRadianceMap       = Environment.GetRadianceMapSRV();
+        Lighting.EnvMapImportanceMapResolution = Environment.GetStats().ImportanceResolution;
+        Lighting.EnvMapImportanceMapMipCount   = Environment.GetStats().ImportanceMipLevels;
+    }
+
     //Follows the lighting of the scene frame and binds its resources.
     bool BindFrame(const RTXPTSceneFrame& Frame)
     {
@@ -348,11 +358,8 @@ struct RTXPTEmbeddedView::Impl
         const bool  EnvironmentChanged = EnvironmentRevision != EnvironmentStats.Version;
         if (!LightsBakerReady || Frame.LightingRevision != LightingRevision || EnvironmentChanged)
         {
-            Lighting.ResetFeedback                 = !LightsBakerReady || EnvironmentChanged;
-            Lighting.EnvMapParams                  = S.Environment.GetLightsBakerParams();
-            Lighting.pEnvironmentRadianceMap       = S.Environment.GetRadianceMapSRV();
-            Lighting.EnvMapImportanceMapResolution = EnvironmentStats.ImportanceResolution;
-            Lighting.EnvMapImportanceMapMipCount   = EnvironmentStats.ImportanceMipLevels;
+            Lighting.ResetFeedback = !LightsBakerReady || EnvironmentChanged;
+            FollowEnvironment();
             if (!LightsBaker.UpdateBegin(Device, *Frame.pLights, Lighting))
                 return false;
             LightsBakerReady    = true;
@@ -575,12 +582,8 @@ RTXPTErrorCode RTXPTEmbeddedView::Initialize(IRenderDevice* Device, IDeviceConte
         return RTXPTErrorCode::FrameTargetsFailed;
 
     //Light sampling keeps screen-sized feedback and reads this view's depth and motion every frame, so it is per view.
-    R.Lighting.ImportanceSamplingType = 2;
     R.Lighting.ViewportSize = R.Lighting.PrevViewportSize = float2{float(Width), float(Height)};
-    R.Lighting.EnvMapParams                               = S.Environment.GetLightsBakerParams();
-    R.Lighting.pEnvironmentRadianceMap                    = S.Environment.GetRadianceMapSRV();
-    R.Lighting.EnvMapImportanceMapResolution              = S.Environment.GetStats().ImportanceResolution;
-    R.Lighting.EnvMapImportanceMapMipCount                = S.Environment.GetStats().ImportanceMipLevels;
+    R.FollowEnvironment();
     RTXPTLightsBakerCreateInfo LightsBakerCI;
     LightsBakerCI.pEngineFactory   = Factory;
     LightsBakerCI.pStateCache      = R.Cache;

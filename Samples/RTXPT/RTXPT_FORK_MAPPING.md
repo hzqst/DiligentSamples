@@ -664,15 +664,14 @@ Raygen locals become camelCase:
   up to 16 disks, transforms their world directions into environment-local space and
   uses the upstream four-corner coverage approximation. A source cube smaller than
   2048 is enlarged when it contains a sun, preserving a 0.53-degree disk with the
-  upstream default cube resolution. Compute
-  baking leaves the host's render targets intact during lighting updates. Source
-  color/intensity is baked separately from directional radiance, so a disabled or
-  black sky does not disable a scene's sun. The upstream 1/4 FP16 storage scale is
-  undone at evaluation; brighter directional lights reduce this storage scale further
-  to retain headroom. Changes in disks, source color, or rotation with disks rebuild
-  the cube and importance maps, advance the environment version, and refresh each
-  embedded view's proposals and feedback. Frustum and
-  intensity-change importance boosts, source history-ID remapping and environment
+  upstream default cube resolution. Compute baking leaves the host's render targets
+  intact during lighting updates. Source color/intensity is baked separately from
+  directional radiance, so a disabled or black sky does not disable a scene's sun.
+  The upstream 1/4 FP16 storage scale is undone at evaluation; brighter directional
+  lights reduce this storage scale further to retain headroom. Changes in disks,
+  source color, or rotation with disks rebuild the cube and importance maps, advance
+  the environment version, and refresh each embedded view's proposals and feedback.
+  Frustum and intensity-change importance boosts, source history-ID remapping and environment
   split/merge mapping are implemented (see the history alignment section below).
   Separate typed light storage and atomic proxy allocation still differ from the
   upstream representation; this is not bit-for-bit equivalence of the entire baker.

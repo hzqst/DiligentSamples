@@ -38,6 +38,7 @@
 #include "Texture.h"
 #include "TextureView.h"
 
+#include "RTXPTFrameConstants.hpp"
 #include "RTXPTLights.hpp"
 #include "RTXPTLightsBakerPass.hpp"
 #include "RTXPTLightProxyBuildPass.hpp"
@@ -69,7 +70,7 @@ struct LightsBakerEnvMapParamsCPU
 
 struct RTXPTLightsBakerSettings
 {
-    Uint32                     ImportanceSamplingType             = 2; // 0=Uniform, 1=Power+, 2=NEE-AT.
+    Uint32                     ImportanceSamplingType             = kNEETypeNEEAT; // kNEETypeUniform, kNEETypePowerPlus or kNEETypeNEEAT.
     float3                     CameraPosition                     = float3{0, 0, 0};
     float3                     CameraDirection                    = float3{0, 0, -1};
     float                      AverageContentsDistance            = 10.0f;

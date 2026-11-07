@@ -177,7 +177,7 @@ RTXPTErrorCode RTXPTRealtimePipeline::Render(IDeviceContext* Context, RTXPTRayTr
     if (!Context || !DisplayRTV || DisplayRTV->GetDesc().Format != m_DisplayFormat ||
         DisplayRTV->GetTexture()->GetDesc().Width != DisplayWidth || DisplayRTV->GetTexture()->GetDesc().Height != DisplayHeight ||
         Input.ptConsts.imageWidth != Width || Input.ptConsts.imageHeight != Height ||
-        Input.ptConsts.NEEType > 2 || ToneParameters.AutoExposure || (m_SuperResolution && !History.Upscaler) ||
+        Input.ptConsts.NEEType > kNEETypeNEEAT || ToneParameters.AutoExposure || (m_SuperResolution && !History.Upscaler) ||
         (bReconstruction && !History.Reconstruction) || (AutoExposure && !AutoExposure->GetUsedExposure()))
         return RTXPTErrorCode::InvalidArgument;
 

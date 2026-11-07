@@ -51,6 +51,11 @@ constexpr float kPolymorphicLightTypePoint       = 4.0f;
 constexpr float kDefaultPunctualLightRadius      = 0.01f;
 constexpr float kDefaultDirectionalAngularSize   = PI_F * 0.53f / 180.0f;
 
+bool IsDirectionalLight(const PolymorphicLightInfo& Light)
+{
+    return GetPolymorphicLightType(Light) == static_cast<Uint32>(kPolymorphicLightTypeDirectional);
+}
+
 float DegreesToRadians(float AngleInDegrees)
 {
     return AngleInDegrees * (PI_F / 180.0f);
@@ -257,8 +262,10 @@ bool RTXPTLights::Upload(IRenderDevice* pDevice, const GLTF::Scene& Scene, const
             continue;
 
         const auto Light = PackAnalyticLight(MakeLightData(*pNode->pLight, Transforms.NodeGlobalMatrices[pNode->Index]));
-        if (pNode->pLight->Type == GLTF::Light::TYPE::DIRECTIONAL)
+        if (IsDirectionalLight(Light.Base))
+        {
             m_DirectionalLights.push_back(Light.Base);
+        }
         else
         {
             m_AnalyticSources.push_back({{0u, reinterpret_cast<Uint64>(pNode), 0u, 0u}, static_cast<Uint32>(Lights.size()), 1u});
@@ -381,8 +388,7 @@ bool RTXPTLights::UploadAnalyticLights(IRenderDevice* pDevice, const std::vector
     Lights.reserve(SceneLights.size());
     for (const RTXPTSceneLight& Light : SceneLights)
     {
-        const Uint32 Type = (Light.Light.Base.ColorTypeAndFlags >> kPolymorphicLightTypeShift) & kPolymorphicLightTypeMask;
-        if (Type == static_cast<Uint32>(kPolymorphicLightTypeDirectional))
+        if (IsDirectionalLight(Light.Light.Base))
         {
             m_DirectionalLights.push_back(Light.Light.Base);
             continue;

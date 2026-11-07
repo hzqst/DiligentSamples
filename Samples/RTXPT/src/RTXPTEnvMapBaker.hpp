@@ -40,6 +40,7 @@
 #include "Texture.h"
 #include "TextureView.h"
 
+#include "RTXPTEnvCubeBakeConstants.hpp"
 #include "RTXPTLightsBaker.hpp"
 #include "RTXPTFrameConstants.hpp"
 #include "RTXPTEnvMapBakerPass.hpp"
@@ -189,7 +190,7 @@ private:
     LightsBakerEnvMapParamsCPU        m_LightsBakerParams;
     RTXPTEnvMapSettings               m_LastSettings;
     std::vector<PolymorphicLightInfo> m_DirectionalLights;
-    float                             m_BakedRadianceScale = 0.25f;
+    float                             m_BakedRadianceScale = kEnvironmentRadianceScale;
     RTXPTEnvMapBakerStats             m_Stats;
 };
 
