@@ -95,8 +95,7 @@ AnalyticLightData MakeSphereLightData(const float3& Color, float Intensity, cons
 
 AnalyticLightData MakeDirectionalLightData(const float3& Color, float Intensity, const float4x4& Transform, float AngularSizeRadians)
 {
-    const float  HalfAngle  = std::max(AngularSizeRadians * 0.5f, 0.00001f);
-    const float  SolidAngle = std::max(2.0f * PI_F * (1.0f - std::cos(HalfAngle)), 1.0e-8f);
+    const float  SolidAngle = ComputeRTXPTDirectionalLightSolidAngle(AngularSizeRadians);
     const float3 Radiance   = Color * std::max(Intensity, 0.0f) / SolidAngle;
 
     AnalyticLightData Data;
