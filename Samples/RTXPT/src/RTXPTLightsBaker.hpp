@@ -69,7 +69,7 @@ struct LightsBakerEnvMapParamsCPU
 
 struct RTXPTLightsBakerSettings
 {
-    Uint32                     ImportanceSamplingType             = 1; // 0=Uniform, 1=Power+, 2=NEE-AT.
+    Uint32                     ImportanceSamplingType             = 2; // 0=Uniform, 1=Power+, 2=NEE-AT.
     float3                     CameraPosition                     = float3{0, 0, 0};
     float3                     CameraDirection                    = float3{0, 0, -1};
     float                      AverageContentsDistance            = 10.0f;
@@ -92,12 +92,6 @@ struct RTXPTLightsBakerSettings
     float                      ImportanceBoostFrustumFadeDistance = 5.0f;
     Int64                      FrameIndex                         = -1;
 };
-
-// The DistantVsLocalImportanceScale that weighs an environment quad by its radiance times its solid angle, the unit of
-// explicit distant lights (luma times solid angle), for an equal-area importance map ImportanceMapResolution texels
-// wide. Upstream bakes distant lights into the environment and keeps the scale at 1; next to an explicit sun, that
-// scale gives the environment's quads most of the light samples.
-float ComputeExplicitDistantLightsImportanceScale(Uint32 ImportanceMapResolution);
 
 struct RTXPTLightsBakerStats
 {

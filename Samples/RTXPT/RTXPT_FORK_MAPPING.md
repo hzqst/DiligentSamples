@@ -434,7 +434,8 @@ rename tables below. GPU storage now follows upstream's 32-byte
 | `TriangleLight::CalcSample` (one-sided) | `GenerateDirectLightCandidate` emissive branch + `PathTracerClosestHit.rchit` frontFacing emission/pdf gates | R2-done: one-sided (front-face only) NEE/MIS/emission; winding fix on mirrored instances |
 | `LightsBaker.hlsl` `ComputeWeight` / `ComputeWeights` / `ComputeProxyCounts` / `CreateProxyJobs` / `ExecuteProxyJobs` | `LightProxyBuild.hlsl` `ComputeWeightsCS` / `ComputeProxyCountsCS` / `ScatterProxiesCS` (+ `ResetProxyBuildCS`) driven by `RTXPTLightProxyBuildPass` | GPU per-light power weights + power-proportional proxy table; atomic running-offset scatter replaces upstream prefix-sum + task system (same per-light proxy counts; only the proxy-table order differs, which sampling is invariant to) |
 | `TriangleLight::GetPower` (`area*PI*Luminance`) | `LightProxyBuild.hlsl` `ComputeEmissiveTriangleWeight` (`pow(area*PI*Luminance, 0.8)`) | analytic weights keep the prior `EstimateAnalyticWeight` heuristic |
-| `LightsBaker` `DistantVsLocalImportanceScale` (UI value, default 1) | `ComputeExplicitDistantLightsImportanceScale` set by `RTXPTEmbeddedRenderer` | Upstream bakes distant lights into the environment; the embedded renderer keeps them explicit (weight `luma * solidAngle`), so it weighs environment quads as radiance times solid angle (`4 pi / (0.0002 * resolution^2)`) instead of letting them take most light samples next to a sun |
+| `LightsBaker` `DistantVsLocalImportanceScale` (UI value, default 1) | `RTXPTLightsBakerSettings::DistantVsLocalImportanceScale`, default 1 | Directional lights are baked into the environment as upstream; the explicit-distant normalization override is removed. Embedded views default to NEE-AT with 5 candidates and 1 full sample. |
+| `EnvMapBaker` directional disks | `RTXPTLights::GetDirectionalLights`, `RTXPTEnvMapBakerUpdateAttribs::pLights`, `EnvCubeBakeCS` | Directional records are excluded from local analytic-light storage and baked into the cube used by both miss rays and environment importance sampling. |
 | `SampleTriangleUniform` / `pdfAtoW` / `MAX_SOLID_ANGLE_PDF` | `SampleTriangleUniform` / `pdfAtoW` / `kMaxSolidAnglePdf` (style) | |
 | `LightsBaker` emissive triangle list | `RTXPTLights::UploadEmissiveTriangles` + `RTXPTEmissiveTrianglePass` (GPU build from current geometry) | full `LightsBaker` parity target; keep the Diligent-native scene plumbing |
 
@@ -659,8 +660,18 @@ Raygen locals become camelCase:
   changing per-light multiplicities. Separate typed buffers hold environment,
   analytic and triangle records in one logical index space.
 
-  Broader baker differences remain explicit: Diligent retains analytic directional
-  lights instead of baking their disks into the source environment. Frustum and
+  Directional lights now follow the upstream environment path: the cube bake accepts
+  up to 16 disks, transforms their world directions into environment-local space and
+  uses the upstream four-corner coverage approximation. A source cube smaller than
+  2048 is enlarged when it contains a sun, preserving a 0.53-degree disk with the
+  upstream default cube resolution. Compute
+  baking leaves the host's render targets intact during lighting updates. Source
+  color/intensity is baked separately from directional radiance, so a disabled or
+  black sky does not disable a scene's sun. The upstream 1/4 FP16 storage scale is
+  undone at evaluation; brighter directional lights reduce this storage scale further
+  to retain headroom. Changes in disks, source color, or rotation with disks rebuild
+  the cube and importance maps, advance the environment version, and refresh each
+  embedded view's proposals and feedback. Frustum and
   intensity-change importance boosts, source history-ID remapping and environment
   split/merge mapping are implemented (see the history alignment section below).
   Separate typed light storage and atomic proxy allocation still differ from the

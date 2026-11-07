@@ -81,9 +81,22 @@ struct RTXPTEmbeddedScene::Impl
     RTXPTSceneFrameBuilder Frames;
     RTXPTEnvMapBaker       Environment;
     RTXPTEnvMapSettings    EnvironmentSettings;
+    std::string            EnvironmentAssetsRoot;
     bool                   Ready{};
     bool                   EnableProfiling{};
     RTXPTGpuProfiler       Profiler;
+
+    RTXPTErrorCode UpdateEnvironment(IDeviceContext* Context, bool ForceRebuild = false)
+    {
+        RTXPTEnvMapBakerUpdateAttribs Update;
+        Update.pEngineFactory   = Device->GetEngineFactory();
+        Update.AssetsRoot       = EnvironmentAssetsRoot;
+        Update.Settings         = EnvironmentSettings;
+        Update.pLights          = Frames.GetFrame().pLights;
+        Update.ForceRebuild     = ForceRebuild;
+        Update.ComputeSupported = true;
+        return Environment.Update(Device, Context, Update) ? RTXPTErrorCode::Ok : RTXPTErrorCode::EnvironmentFailed;
+    }
 
     RTXPTErrorCode Prepare(IDeviceContext* Context, const RTXPTSceneSnapshotPtr& Snapshot)
     {
@@ -92,7 +105,8 @@ struct RTXPTEmbeddedScene::Impl
         RTXPTShaderSourceScope  ShaderScope{Shaders};
         auto                    Timing = Profiler.BeginFrame(Device, Context, EnableProfiling, {}, Frames.GetStats().PrepareCount + 1);
         RTXPTGpuProfiler::Scope PrepareTiming{&Profiler, Context, RTXPTGpuProfiler::Stage::ScenePrepare};
-        return Frames.Prepare(Context, Snapshot, &Profiler);
+        const auto              Code = Frames.Prepare(Context, Snapshot, &Profiler);
+        return Code == RTXPTErrorCode::Ok ? UpdateEnvironment(Context) : Code;
     }
 };
 
@@ -150,28 +164,21 @@ RTXPTErrorCode RTXPTEmbeddedScene::Initialize(IRenderDevice* Device, IDeviceCont
         return FramesCode;
 
     const auto& Graph = Scene.GetSceneGraphData();
-    //Only the scene can opt into an environment. Absence means black, never the Sample's default sky.
+    //Only the scene can opt into a background sky; its directional lights are baked over that source or black.
     S.EnvironmentSettings         = RTXPTEnvMapBaker::MakeSceneDefaultSettings(Graph);
     S.EnvironmentSettings.Enabled = std::any_of(Graph.Lights.begin(), Graph.Lights.end(),
                                                 [](const auto& Light) { return Light.Type == "EnvironmentLight"; });
-    //The Sample's disabled-environment shader evaluates a procedural fallback. Zero its multiplier as well
-    //so an unlit embedded scene is black, including primary misses and indirect rays.
-    if (!S.EnvironmentSettings.Enabled)
-        S.EnvironmentSettings.RadianceScale = float3{0, 0, 0};
+    S.EnvironmentAssetsRoot       = Scene.GetAssetsRoot();
     S.Environment.SetFileSource(Scene.GetFileSource());
-    RTXPTEnvMapBakerUpdateAttribs EnvironmentUpdate;
-    EnvironmentUpdate.pEngineFactory   = Factory;
-    EnvironmentUpdate.AssetsRoot       = Scene.GetAssetsRoot();
-    EnvironmentUpdate.Settings         = S.EnvironmentSettings;
-    EnvironmentUpdate.ForceRebuild     = true;
-    EnvironmentUpdate.ComputeSupported = true;
-    if (!S.Environment.CreateResources(Device, Context, Factory, S.Cache, S.PSOCache, true) ||
-        !S.Environment.Update(Device, Context, EnvironmentUpdate))
+    if (!S.Environment.CreateResources(Device, Context, Factory, S.Cache, S.PSOCache, true))
         return RTXPTErrorCode::EnvironmentFailed;
 
     const RTXPTErrorCode PrepareCode = S.Frames.Prepare(Context, Snapshot);
     if (PrepareCode != RTXPTErrorCode::Ok)
         return PrepareCode;
+    const auto EnvironmentCode = S.UpdateEnvironment(Context, true);
+    if (EnvironmentCode != RTXPTErrorCode::Ok)
+        return EnvironmentCode;
     Context->Flush();
     Context->WaitForIdle();
     S.Ready = true;
@@ -238,7 +245,7 @@ struct RTXPTEmbeddedView::Impl
     double                   PreviousTime{};
     Uint32                   Width{}, Height{}, DisplayWidth{}, DisplayHeight{}, FrameIndex{}, Samples{};
     //The scene frame revisions this view's light sampling and history last followed.
-    Uint64           LightingRevision{}, EmissiveRevision{}, ContentRevision{};
+    Uint64           LightingRevision{}, EmissiveRevision{}, ContentRevision{}, EnvironmentRevision{};
     bool             LightsBakerReady{};
     bool             Ready{};
     bool             OutputValid{};
@@ -336,15 +343,22 @@ struct RTXPTEmbeddedView::Impl
     //Follows the lighting of the scene frame and binds its resources.
     bool BindFrame(const RTXPTSceneFrame& Frame)
     {
-        const auto& S = *Scene;
-        if (!LightsBakerReady || Frame.LightingRevision != LightingRevision)
+        const auto& S                  = *Scene;
+        const auto& EnvironmentStats   = S.Environment.GetStats();
+        const bool  EnvironmentChanged = EnvironmentRevision != EnvironmentStats.Version;
+        if (!LightsBakerReady || Frame.LightingRevision != LightingRevision || EnvironmentChanged)
         {
-            Lighting.ResetFeedback = !LightsBakerReady;
+            Lighting.ResetFeedback                 = !LightsBakerReady || EnvironmentChanged;
+            Lighting.EnvMapParams                  = S.Environment.GetLightsBakerParams();
+            Lighting.pEnvironmentRadianceMap       = S.Environment.GetRadianceMapSRV();
+            Lighting.EnvMapImportanceMapResolution = EnvironmentStats.ImportanceResolution;
+            Lighting.EnvMapImportanceMapMipCount   = EnvironmentStats.ImportanceMipLevels;
             if (!LightsBaker.UpdateBegin(Device, *Frame.pLights, Lighting))
                 return false;
-            LightsBakerReady = true;
-            LightingRevision = Frame.LightingRevision;
-            EmissiveRevision = Frame.EmissiveRevision;
+            LightsBakerReady    = true;
+            LightingRevision    = Frame.LightingRevision;
+            EmissiveRevision    = Frame.EmissiveRevision;
+            EnvironmentRevision = EnvironmentStats.Version;
         }
         else if (Frame.EmissiveRevision != EmissiveRevision)
         {
@@ -561,14 +575,12 @@ RTXPTErrorCode RTXPTEmbeddedView::Initialize(IRenderDevice* Device, IDeviceConte
         return RTXPTErrorCode::FrameTargetsFailed;
 
     //Light sampling keeps screen-sized feedback and reads this view's depth and motion every frame, so it is per view.
-    R.Lighting.ImportanceSamplingType = 1;
+    R.Lighting.ImportanceSamplingType = 2;
     R.Lighting.ViewportSize = R.Lighting.PrevViewportSize = float2{float(Width), float(Height)};
     R.Lighting.EnvMapParams                               = S.Environment.GetLightsBakerParams();
     R.Lighting.pEnvironmentRadianceMap                    = S.Environment.GetRadianceMapSRV();
     R.Lighting.EnvMapImportanceMapResolution              = S.Environment.GetStats().ImportanceResolution;
-    //Distant lights stay explicit here, so the environment is weighed in their unit (see the function).
-    R.Lighting.DistantVsLocalImportanceScale = ComputeExplicitDistantLightsImportanceScale(R.Lighting.EnvMapImportanceMapResolution);
-    R.Lighting.EnvMapImportanceMapMipCount   = S.Environment.GetStats().ImportanceMipLevels;
+    R.Lighting.EnvMapImportanceMapMipCount                = S.Environment.GetStats().ImportanceMipLevels;
     RTXPTLightsBakerCreateInfo LightsBakerCI;
     LightsBakerCI.pEngineFactory   = Factory;
     LightsBakerCI.pStateCache      = R.Cache;
@@ -651,6 +663,8 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
     const RTXPTSceneFrame& Frame = S.Frames.GetFrame();
     if (!Frame.pTLAS || !Frame.Prepared.IsValid())
         return RTXPTErrorCode::FrameNotPrepared;
+    if (!S.Environment.GetStats().Ready)
+        return RTXPTErrorCode::EnvironmentFailed;
     const bool CameraCorrespondenceValid = !ResetHistory && R.LastScene.IsPreviousOf(Frame.Prepared);
     if (R.IsRealtime())
         ResetHistory = !CameraCorrespondenceValid;
@@ -689,7 +703,8 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
     PT.camera                           = FrameCamera;
     PT.prevCamera                       = ResetHistory ? FrameCamera : R.PreviousCamera;
     PT.analyticLightCount               = Frame.pLights->GetStats().LightCount;
-    PT.environmentNEEEnabled            = (Frame.pLights->GetEmissiveTriangleCount() << 1u) | (S.EnvironmentSettings.Enabled ? 1u : 0u);
+    PT.NEEType                          = R.Lighting.ImportanceSamplingType;
+    PT.environmentNEEEnabled            = (Frame.pLights->GetEmissiveTriangleCount() << 1u) | (S.Environment.GetLightsBakerParams().Enabled > 0.0f ? 1u : 0u);
     Constants.envMap                    = S.Environment.GetConstants();
     if (R.IsRealtime())
     {

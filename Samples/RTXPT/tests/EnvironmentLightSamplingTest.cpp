@@ -15,6 +15,7 @@
 #include "../src/RTXPTLightPacking.hpp"
 #include "../src/RTXPTEnvironmentLights.hpp"
 #include "../src/RTXPTLightHistory.hpp"
+#include "ShaderMacroHelper.hpp"
 using namespace Diligent;
 using uint     = Uint32;
 using float3x4 = std::array<float4, 3>;
@@ -37,14 +38,158 @@ struct Quad
     Uint32 X, Y, Dim, Padding;
     float4 RadianceAndWeight;
 };
+
+//Exercise the production cube-bake entry point independently of proxy selection and path-tracer MIS.
+void TestDirectionalBake(IRenderDevice* Device, IDeviceContext* Context, IEngineFactory* Factory)
+{
+    constexpr Uint32 Resolution       = 2048;
+    constexpr Uint32 DirectionalLimit = RTXPT_ENVMAP_MAX_DIRECTIONAL_LIGHTS;
+    constexpr float  Illuminance      = 14.0f;
+    constexpr float  Diameter         = 0.53f * PI_F / 180.0f;
+    const float      SolidAngle       = 2.0f * PI_F * (1.0f - std::cos(Diameter * 0.5f));
+    struct Constants
+    {
+        float4x4                                           Rotation = float4x4::Identity();
+        float4                                             WorldToLocal0{1, 0, 0, 0}, WorldToLocal1{0, 1, 0, 0}, WorldToLocal2{0, 0, 1, 0};
+        float4                                             SourceColor{};
+        float                                              RadianceScale    = 0.25f;
+        Uint32                                             DirectionalCount = 1, CubeDim = Resolution, Padding = 0;
+        std::array<PolymorphicLightInfo, DirectionalLimit> Lights{};
+    };
+    static_assert(sizeof(Constants) == 656, "Directional cube-bake constant layout");
+    RefCntAutoPtr<IShaderSourceInputStreamFactory> Source;
+    CreateRTXPTShaderSourceFactory(Factory, "shaders;shaders/PathTracer", &Source);
+    ShaderMacroHelper Macros;
+    Macros.Add("ENV_BAKE_SOURCE_CUBE", 1);
+    ShaderCreateInfo SCI;
+    SCI.Desc                       = {"Directional environment bake test", SHADER_TYPE_COMPUTE, false};
+    SCI.SourceLanguage             = SHADER_SOURCE_LANGUAGE_HLSL;
+    SCI.ShaderCompiler             = SHADER_COMPILER_DXC;
+    SCI.CompileFlags               = SHADER_COMPILE_FLAG_PACK_MATRIX_ROW_MAJOR;
+    SCI.FilePath                   = "PathTracer/Lighting/EnvMapImportanceBaker.hlsl";
+    SCI.EntryPoint                 = "EnvCubeBakeCS";
+    SCI.pShaderSourceStreamFactory = Source;
+    SCI.Macros                     = Macros;
+    RefCntAutoPtr<IShader> Shader;
+    Device->CreateShader(SCI, &Shader);
+    Require(Shader != nullptr, "Compile the production directional cube bake");
+    ComputePipelineStateCreateInfo PCI;
+    PCI.PSODesc.Name                               = "Directional environment bake test";
+    PCI.PSODesc.PipelineType                       = PIPELINE_TYPE_COMPUTE;
+    PCI.PSODesc.ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC;
+    PCI.pCS                                        = Shader;
+    RefCntAutoPtr<IPipelineState> PSO;
+    Device->CreateComputePipelineState(PCI, &PSO);
+    Require(PSO != nullptr, "Create the directional cube-bake pipeline");
+    RefCntAutoPtr<IShaderResourceBinding> SRB;
+    PSO->CreateShaderResourceBinding(&SRB, true);
+    BufferDesc CBDesc;
+    CBDesc.Name      = "Directional bake test constants";
+    CBDesc.Size      = sizeof(Constants);
+    CBDesc.BindFlags = BIND_UNIFORM_BUFFER;
+    RefCntAutoPtr<IBuffer> CB;
+    Device->CreateBuffer(CBDesc, nullptr, &CB);
+    const float4                     Black{};
+    std::array<TextureSubResData, 6> BlackFaces;
+    for (auto& Face : BlackFaces) Face = TextureSubResData{&Black, sizeof(Black)};
+    TextureDesc BlackDesc;
+    BlackDesc.Name  = "Directional bake black source";
+    BlackDesc.Type  = RESOURCE_DIM_TEX_CUBE;
+    BlackDesc.Width = BlackDesc.Height = 1;
+    BlackDesc.ArraySize                = 6;
+    BlackDesc.Format                   = TEX_FORMAT_RGBA32_FLOAT;
+    BlackDesc.BindFlags                = BIND_SHADER_RESOURCE;
+    TextureData             BlackData{BlackFaces.data(), static_cast<Uint32>(BlackFaces.size())};
+    RefCntAutoPtr<ITexture> BlackCube;
+    Device->CreateTexture(BlackDesc, &BlackData, &BlackCube);
+    TextureDesc OutputDesc;
+    OutputDesc.Name      = "Directional bake face";
+    OutputDesc.Type      = RESOURCE_DIM_TEX_2D_ARRAY;
+    OutputDesc.ArraySize = 1;
+    OutputDesc.Width = OutputDesc.Height = Resolution;
+    OutputDesc.Format                    = TEX_FORMAT_RGBA16_FLOAT;
+    OutputDesc.BindFlags                 = BIND_UNORDERED_ACCESS;
+    RefCntAutoPtr<ITexture> Output, Readback;
+    Device->CreateTexture(OutputDesc, nullptr, &Output);
+    OutputDesc.Name           = "Directional bake readback";
+    OutputDesc.Usage          = USAGE_STAGING;
+    OutputDesc.BindFlags      = BIND_NONE;
+    OutputDesc.CPUAccessFlags = CPU_ACCESS_READ;
+    Device->CreateTexture(OutputDesc, nullptr, &Readback);
+    RefCntAutoPtr<ISampler> Sampler;
+    Device->CreateSampler(SamplerDesc{}, &Sampler);
+    Require(CB && BlackCube && Output && Readback && Sampler, "Create directional bake test resources");
+    SRB->GetVariableByName(SHADER_TYPE_COMPUTE, "cbEnvCubeBake")->Set(CB);
+    SRB->GetVariableByName(SHADER_TYPE_COMPUTE, "g_EnvBakeSource")->Set(BlackCube->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
+    SRB->GetVariableByName(SHADER_TYPE_COMPUTE, "g_EnvBakeSourceSampler")->Set(Sampler);
+    SRB->GetVariableByName(SHADER_TYPE_COMPUTE, "g_EnvBakeOutput")->Set(Output->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
+    const auto Half = [](Uint16 Value) {
+        const Uint32 Exponent = (Value >> 10u) & 31u;
+        Require((Value & 0x8000u) == 0u && Exponent != 31u, "Baked radiance is finite and nonnegative");
+        return Exponent == 0u ? std::ldexp(float(Value & 1023u), -24) : std::ldexp(1.0f + float(Value & 1023u) / 1024.0f, int(Exponent) - 15);
+    };
+    std::array<double, 5> Energy{};
+    for (Uint32 Case = 0; Case < Energy.size(); ++Case)
+    {
+        Constants         C;
+        AnalyticLightData Light;
+        const float       Intensity = Case == 1u ? 2.0f * Illuminance : Illuminance;
+        Light.colorType             = float4{Intensity / SolidAngle, Intensity / SolidAngle, Intensity / SolidAngle, 2};
+        Light.directionRange        = Case == 3u ? float4{0, 0, 1, 0} : float4{0, 0, -1, 0};
+        Light.shaping.w             = SolidAngle;
+        if (Case == 1u) C.RadianceScale = 0.125f;
+        if (Case == 2u) C.DirectionalCount = 0;
+        if (Case == 4u)
+        {
+            Light.directionRange = float4{-1, 0, 0, 0};
+            C.WorldToLocal0      = float4{0, 0, 1, 0};
+            C.WorldToLocal2      = float4{-1, 0, 0, 0};
+        }
+        C.Lights[0] = PackAnalyticLight(Light).Base;
+        Context->UpdateBuffer(CB, 0, sizeof(C), &C, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+        Context->SetPipelineState(PSO);
+        Context->CommitShaderResources(SRB, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+        constexpr Uint32 Threads = RTXPT_ENVMAP_BAKE_THREADS;
+        Context->DispatchCompute(DispatchComputeAttribs{Resolution / Threads, Resolution / Threads, 1});
+        CopyTextureAttribs Copy;
+        Copy.pSrcTexture              = Output;
+        Copy.pDstTexture              = Readback;
+        Copy.SrcTextureTransitionMode = Copy.DstTextureTransitionMode = RESOURCE_STATE_TRANSITION_MODE_TRANSITION;
+        Context->CopyTexture(Copy);
+        Context->Flush();
+        Context->WaitForIdle();
+        MappedTextureSubresource Data;
+        Context->MapTextureSubresource(Readback, 0, 0, MAP_READ, MAP_FLAG_DO_NOT_WAIT, nullptr, Data);
+        Require(Data.pData != nullptr, "Read back the baked sun face");
+        for (Uint32 Y = 0; Y < Resolution; ++Y)
+        {
+            const auto*  Row = reinterpret_cast<const Uint16*>(static_cast<const Uint8*>(Data.pData) + Y * Data.Stride);
+            const double V   = 2.0 * (Y + 0.5) / Resolution - 1.0;
+            for (Uint32 X = 0; X < Resolution; ++X)
+            {
+                const double U               = 2.0 * (X + 0.5) / Resolution - 1.0;
+                const double DistanceSquared = 1.0 + U * U + V * V;
+                Energy[Case] += Half(Row[X * 4]) * (4.0 / (double(Resolution) * Resolution * DistanceSquared * DistanceSquared)) / C.RadianceScale;
+            }
+        }
+        Context->UnmapTextureSubresource(Readback, 0, 0);
+        std::cout << "Directional bake case " << Case << ": integrated illuminance " << Energy[Case] << '\n';
+    }
+    //Upstream's coverage approximation shaves the disk edge; allow that rasterization error, not a unit conversion.
+    Require(Energy[0] > Illuminance * 0.8 && Energy[0] < Illuminance * 1.1, "Baked sun irradiance agrees with its input illuminance");
+    Require(std::abs(Energy[1] / Energy[0] - 2.0) < 0.02, "FP16 bake scaling preserves doubled solar energy");
+    Require(Energy[2] == 0 && Energy[3] == 0, "Disabled and opposite-facing suns leave this face black");
+    Require(std::abs(Energy[4] / Energy[0] - 1.0) < 0.02, "Environment rotation preserves the sun's world direction and energy");
+}
 } // namespace
 
 int main(int Argc, char** Argv)
 try
 {
     Require(Argc == 2, "Run from the RTXPT sample directory: EnvironmentLightSamplingTest <engine DLL>");
-    const std::string DLL   = Argv[1];
-    const auto        Slash = DLL.find_last_of("/\\");
+    const std::string DLL        = Argv[1];
+    const auto        Slash      = DLL.find_last_of("/\\");
+    const std::string DXCompiler = Slash != std::string::npos ? DLL.substr(0, Slash + 1) + "dxcompiler.dll" : "dxcompiler.dll";
     if (Slash != std::string::npos) SetDllDirectoryA(DLL.substr(0, Slash).c_str());
     HMODULE Library = LoadLibraryA(Argv[1]);
     Require(Library != nullptr, "Cannot load graphics engine");
@@ -68,9 +213,11 @@ try
         Factory->SetMessageCallback(Message);
         EngineVkCreateInfo CI;
         CI.EnableValidation = true;
+        CI.pDxCompilerPath  = DXCompiler.c_str();
         Vk()->CreateDeviceAndContextsVk(CI, &Device, &Context);
     }
     Require(Device && Context, "Cannot create device");
+    TestDirectionalBake(Device, Context, Factory);
     RTXPTEnvironmentLights Baker;
     Require(Baker.Initialize(Device, Factory, nullptr, nullptr), "Cannot initialize production environment baker");
     RTXPTLightHistory History;

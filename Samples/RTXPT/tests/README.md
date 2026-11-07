@@ -1846,3 +1846,27 @@ exposure 0.15000002 (0.15 in float32) in the metadata and the texture, forward s
 depth from 6.02 to the sky's 5,000,000, unit normals, and roughness and albedos within
 [0,1]. The Sample does not profile its embedded views, so the capture carries no GPU
 timing; the Backend's captures do. Not covered: a Vulkan run of RR11.
+
+## Directional lights in the environment (2026-11-07)
+
+`EnvironmentLightSamplingTest` also dispatches the production `EnvCubeBakeCS`
+entry point and reads back its FP16 output before proxy selection, path tracing,
+firefly filtering or tone mapping. It integrates the outgoing radiance against
+the cube-face solid angle and receiver cosine for a 14-lux, 0.53-degree disk.
+The cases cover doubled energy with reciprocal storage scaling, disabled and
+opposite-facing disks, and an environment rotation that keeps the world-space sun
+fixed. Vulkan explicitly loads `dxcompiler.dll` beside the requested engine DLL.
+
+On RTX 5060, Debug, D3D12 and Vulkan both give 11.2474 lux, 22.5085 lux, zero,
+zero and 11.2518 lux respectively. The roughly 20% edge loss comes from the
+upstream four-corner coverage approximation and its fourth-power AA curve; the
+test allows that approximation while requiring linear scaling and correct
+directions. It does not claim exact disk-energy conservation.
+
+Hosts should additionally test lighting updates through `RTXPTEmbeddedScene`:
+the same receiver with only a sun and with strong local lights behind its front
+face; normal, off, doubled and restored light intensity; sky-only and sun-only
+scenes; and Reference, Raw and Native output. The receiver's rough diffuse BRDF
+must be included in its physical reference, and HDR checks must precede display
+tone mapping. Sky intensity changes must not rescale the sun, and no directional
+record may remain in the analytic sampling domain after it enters the cube.

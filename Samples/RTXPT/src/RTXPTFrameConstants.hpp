@@ -117,7 +117,7 @@ struct PathTracerConstants
     Uint32 genericTSPlaneStride           = 1;
 
     Uint32 NEEEnabled          = 1;
-    Uint32 NEEType             = 1;
+    Uint32 NEEType             = 2;
     Uint32 NEECandidateSamples = 5;
     Uint32 NEEFullSamples      = 1;
 

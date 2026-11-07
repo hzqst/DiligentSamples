@@ -159,6 +159,7 @@ void RTXPTLights::Reset()
     m_LightExBuffer.Release();
     m_EmissiveTriangleBuffer.Release();
     m_AnalyticLights.clear();
+    m_DirectionalLights.clear();
     m_AnalyticSources.clear();
     m_TriangleSources.clear();
     m_EmissiveProxyWeight = 0.0f;
@@ -255,8 +256,14 @@ bool RTXPTLights::Upload(IRenderDevice* pDevice, const GLTF::Scene& Scene, const
         if (pNode->Index < 0 || static_cast<size_t>(pNode->Index) >= Transforms.NodeGlobalMatrices.size())
             continue;
 
-        m_AnalyticSources.push_back({{0u, reinterpret_cast<Uint64>(pNode), 0u, 0u}, static_cast<Uint32>(Lights.size()), 1u});
-        Lights.emplace_back(PackAnalyticLight(MakeLightData(*pNode->pLight, Transforms.NodeGlobalMatrices[pNode->Index])));
+        const auto Light = PackAnalyticLight(MakeLightData(*pNode->pLight, Transforms.NodeGlobalMatrices[pNode->Index]));
+        if (pNode->pLight->Type == GLTF::Light::TYPE::DIRECTIONAL)
+            m_DirectionalLights.push_back(Light.Base);
+        else
+        {
+            m_AnalyticSources.push_back({{0u, reinterpret_cast<Uint64>(pNode), 0u, 0u}, static_cast<Uint32>(Lights.size()), 1u});
+            Lights.push_back(Light);
+        }
     }
 
     return UploadLightBuffer(pDevice, Lights);
@@ -369,10 +376,17 @@ bool RTXPTLights::UploadAnalyticLights(IRenderDevice* pDevice, const std::vector
     m_LightBuffer.Release();
     m_LightExBuffer.Release();
     m_AnalyticSources.clear();
+    m_DirectionalLights.clear();
     std::vector<PolymorphicLightInfoFull> Lights;
     Lights.reserve(SceneLights.size());
     for (const RTXPTSceneLight& Light : SceneLights)
     {
+        const Uint32 Type = (Light.Light.Base.ColorTypeAndFlags >> kPolymorphicLightTypeShift) & kPolymorphicLightTypeMask;
+        if (Type == static_cast<Uint32>(kPolymorphicLightTypeDirectional))
+        {
+            m_DirectionalLights.push_back(Light.Light.Base);
+            continue;
+        }
         m_AnalyticSources.push_back({Light.Key, static_cast<Uint32>(Lights.size()), 1u});
         Lights.push_back(Light.Light);
     }

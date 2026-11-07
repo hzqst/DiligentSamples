@@ -1,6 +1,10 @@
 #ifndef __ENVIRONMENT_LIGHT_CONFIG_H__
 #define __ENVIRONMENT_LIGHT_CONFIG_H__
 
+//RTXPT-fork's environment baker accepts up to sixteen directional disks.
+#define RTXPT_ENVMAP_MAX_DIRECTIONAL_LIGHTS 16
+#define RTXPT_ENVMAP_BAKE_THREADS           8
+
 // RTXPT-fork LightingConfig.h: two-stage adaptive environment quadtree.
 #define RTXPT_NEEAT_ENVMAP_QT_BASE_RESOLUTION       4
 #define RTXPT_NEEAT_ENVMAP_QT_SUBDIVISIONS          20

@@ -93,9 +93,11 @@ public:
     IBuffer*                                     GetEmissiveTriangleBuffer() const { return m_EmissiveTriangleBuffer; }
     Uint32                                       GetEmissiveTriangleCount() const { return m_Stats.EmissiveTriangleCount; }
     const std::vector<PolymorphicLightInfoFull>& GetAnalyticLights() const { return m_AnalyticLights; }
-    float                                        GetEmissiveProxyWeight() const { return m_EmissiveProxyWeight; }
-    const std::vector<RTXPTLightSourceRange>&    GetAnalyticSources() const { return m_AnalyticSources; }
-    const std::vector<RTXPTLightSourceRange>&    GetTriangleSources() const { return m_TriangleSources; }
+    //Distant lights are baked into the environment, outside the local analytic-light sampling domain.
+    const std::vector<PolymorphicLightInfo>&  GetDirectionalLights() const { return m_DirectionalLights; }
+    float                                     GetEmissiveProxyWeight() const { return m_EmissiveProxyWeight; }
+    const std::vector<RTXPTLightSourceRange>& GetAnalyticSources() const { return m_AnalyticSources; }
+    const std::vector<RTXPTLightSourceRange>& GetTriangleSources() const { return m_TriangleSources; }
 
 private:
     bool UploadLightBuffer(IRenderDevice* pDevice, std::vector<PolymorphicLightInfoFull>& Lights);
@@ -105,6 +107,7 @@ private:
     RefCntAutoPtr<IBuffer>                m_LightExBuffer;
     RefCntAutoPtr<IBuffer>                m_EmissiveTriangleBuffer;
     std::vector<PolymorphicLightInfoFull> m_AnalyticLights;
+    std::vector<PolymorphicLightInfo>     m_DirectionalLights;
     std::vector<RTXPTLightSourceRange>    m_AnalyticSources, m_TriangleSources;
     float                                 m_EmissiveProxyWeight = 0.0f;
     RTXPTLightStats                       m_Stats;

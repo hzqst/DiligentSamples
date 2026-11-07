@@ -134,13 +134,6 @@ Uint32 FloatAsUint(float Value)
 
 } // namespace
 
-float ComputeExplicitDistantLightsImportanceScale(Uint32 ImportanceMapResolution)
-{
-    // An environment quad's weight counts its importance-map texels, each 4 pi / resolution^2 steradians.
-    const float Texels = static_cast<float>(ImportanceMapResolution) * static_cast<float>(ImportanceMapResolution);
-    return Texels > 0.0f ? kSphereSolidAngle / (kDistantVsLocalImportanceBaseScale * Texels) : 1.0f;
-}
-
 void RTXPTLightsBaker::Reset()
 {
     m_ProxyBuildPass.Reset();

@@ -98,6 +98,7 @@ struct RTXPTEnvMapBakerUpdateAttribs
     IEngineFactory*     pEngineFactory = nullptr;
     std::string         AssetsRoot;
     RTXPTEnvMapSettings Settings;
+    const RTXPTLights*  pLights          = nullptr;
     bool                ForceRebuild     = false;
     bool                ComputeSupported = false;
 };
@@ -138,7 +139,7 @@ private:
     bool            LoadSourceTexture(IRenderDevice* pDevice, const std::string& AssetsRoot, const RTXPTEnvMapSettings& Settings);
     bool            CreateProceduralSourceTexture(IRenderDevice* pDevice, const RTXPTEnvMapSettings& Settings);
     bool            PrecomputeCubemap(IRenderDevice* pDevice, IDeviceContext* pContext, IEngineFactory* pEngineFactory, const RTXPTEnvMapSettings& Settings);
-    bool            BakeHighResEnvironmentCube(IRenderDevice* pDevice, IDeviceContext* pContext, IEngineFactory* pEngineFactory);
+    bool            BakeHighResEnvironmentCube(IRenderDevice* pDevice, IDeviceContext* pContext, IEngineFactory* pEngineFactory, const RTXPTEnvMapSettings& Settings);
     bool            EnsureEnvCubeBakePipeline(IRenderDevice* pDevice, IEngineFactory* pEngineFactory, bool SourceIsCube);
     bool            CreateImportanceMaps(IRenderDevice* pDevice, IDeviceContext* pContext, IEngineFactory* pEngineFactory, const RTXPTEnvMapSettings& Settings, bool ComputeSupported);
     bool            CreateImportanceTextures(IRenderDevice* pDevice, Uint32 Resolution);
@@ -184,10 +185,12 @@ private:
     RTXPTEnvMapBakerPass                  m_BuildImportanceBasePass;
     RTXPTEnvMapBakerPass                  m_ReduceImportanceMipPass;
 
-    RTXPTEnvMapConstants       m_Constants;
-    LightsBakerEnvMapParamsCPU m_LightsBakerParams;
-    RTXPTEnvMapSettings        m_LastSettings;
-    RTXPTEnvMapBakerStats      m_Stats;
+    RTXPTEnvMapConstants              m_Constants;
+    LightsBakerEnvMapParamsCPU        m_LightsBakerParams;
+    RTXPTEnvMapSettings               m_LastSettings;
+    std::vector<PolymorphicLightInfo> m_DirectionalLights;
+    float                             m_BakedRadianceScale = 0.25f;
+    RTXPTEnvMapBakerStats             m_Stats;
 };
 
 } // namespace Diligent

@@ -5,6 +5,8 @@
 #define __ENVMAP_IMPORTANCE_BAKER_HLSL__
 
 #include "../Config.h"
+#include "LightPacking.hlsli"
+#include "EnvironmentLightConfig.h"
 
 #define RTXPT_ENVMAP_IMPORTANCE_THREADS 16
 
@@ -52,15 +54,14 @@ float3 OctToDirEqualArea(float2 uv)
 }
 
 // ------------------------------------------------------------------------------------------------
-// High-resolution environment-cube bake (graphics pass).
+// High-resolution environment-cube bake (compute pass).
 //
 // Renders the loaded source (a cube map, or a 2D equirectangular sky) into a high-resolution cube
 // map that the path tracer samples directly as the distant environment. This mirrors upstream RTXPT
 // (Rtxpt/Lighting/Distant/EnvMapBaker), which bakes a high-res environment cube instead of relying on
 // the low-resolution GGX-prefiltered IBL cube; the latter washes out fine detail seen through small
-// apertures such as windows. The vertex stage (EnvCubeBakeVS) replicates DiligentFX's CubemapFace.vsh
-// and is driven with the same per-face rotations as PBR_Renderer::PrecomputeCubemaps, so the baked
-// cube keeps the same orientation as the prefiltered cube it replaces.
+// apertures such as windows. The per-face rotations match PBR_Renderer::PrecomputeCubemaps.
+// Compute baking preserves the host's render targets during frame-time lightstyle updates.
 // ENV_BAKE_SOURCE_CUBE selects between a cube source and a 2D equirectangular source.
 cbuffer cbEnvCubeBake
 {
@@ -68,18 +69,15 @@ cbuffer cbEnvCubeBake
     // face. Matches the rotations used by DiligentFX CubemapFace.vsh / PBR_Renderer::PrecomputeCubemaps,
     // so the baked cube keeps the same orientation as the previously used prefiltered cube.
     float4x4 g_EnvCubeRotation;
-}
-
-void EnvCubeBakeVS(in uint vertexId : SV_VertexID, out float4 position : SV_Position, out float3 worldPos : WORLD_POS)
-{
-    float2 quadXY[4];
-    quadXY[0] = float2(-1.0, -1.0);
-    quadXY[1] = float2(-1.0, +1.0);
-    quadXY[2] = float2(+1.0, -1.0);
-    quadXY[3] = float2(+1.0, +1.0);
-    position             = float4(quadXY[vertexId], 1.0, 1.0);
-    const float4 worldH  = mul(g_EnvCubeRotation, position);
-    worldPos             = worldH.xyz / worldH.w;
+    float4 g_EnvBakeWorldToLocal0;
+    float4 g_EnvBakeWorldToLocal1;
+    float4 g_EnvBakeWorldToLocal2;
+    float4 g_EnvBakeSourceColor;
+    float g_EnvBakeRadianceScale;
+    uint g_EnvBakeDirectionalLightCount;
+    uint g_EnvBakeCubeDim;
+    uint g_EnvBakePadding;
+    PolymorphicLightInfo g_EnvBakeDirectionalLights[RTXPT_ENVMAP_MAX_DIRECTIONAL_LIGHTS];
 }
 
 #if defined(ENV_BAKE_SOURCE_CUBE)
@@ -88,6 +86,7 @@ TextureCube<float4> g_EnvBakeSource;
 Texture2D<float4>   g_EnvBakeSource;
 #endif
 SamplerState g_EnvBakeSourceSampler;
+VK_IMAGE_FORMAT("rgba16f") RWTexture2DArray<float4> g_EnvBakeOutput;
 
 // Matches DiligentFX ShaderUtilities.fxh TransformDirectionToSphereMapUV so 2D sources keep their
 // existing orientation.
@@ -97,14 +96,63 @@ float2 RTXPTDirToSphereMapUV(float3 dir)
     return OneOverPi * float2(0.5 * atan2(dir.z, dir.x), asin(clamp(dir.y, -1.0, 1.0))) + float2(0.5, 0.5);
 }
 
-float4 SampleEnvToCubePS(float4 position : SV_Position, float3 worldPos : WORLD_POS) : SV_Target
+float4 BakeEnvironment(float3 worldPos, float3 corners[4])
 {
     const float3 dir = normalize(worldPos);
 #if defined(ENV_BAKE_SOURCE_CUBE)
-    return g_EnvBakeSource.SampleLevel(g_EnvBakeSourceSampler, dir, 0.0);
+    float3 radiance = g_EnvBakeSource.SampleLevel(g_EnvBakeSourceSampler, dir, 0.0).rgb;
 #else
-    return g_EnvBakeSource.SampleLevel(g_EnvBakeSourceSampler, RTXPTDirToSphereMapUV(dir), 0.0);
+    float3 radiance = g_EnvBakeSource.SampleLevel(g_EnvBakeSourceSampler, RTXPTDirToSphereMapUV(dir), 0.0).rgb;
 #endif
+    radiance *= g_EnvBakeSourceColor.rgb;
+    //Match upstream EnvMapBaker::ComputeLightContribution's four-corner disk coverage and AA curve.
+    for (uint i = 0u; i < g_EnvBakeDirectionalLightCount; ++i)
+    {
+        const PolymorphicLightInfo light = g_EnvBakeDirectionalLights[i];
+        const float3 worldDirection = UnpackLightDirection(light.Direction1);
+        const float3 direction = -mul(worldDirection, float3x3(g_EnvBakeWorldToLocal0.xyz,
+                                                              g_EnvBakeWorldToLocal1.xyz,
+                                                              g_EnvBakeWorldToLocal2.xyz));
+        const float sourceSolidAngle = max(f16tof32(light.Scalars >> 16u), 1e-8);
+        const float angularSize = max(2.0 * acos(clamp(1.0 - sourceSolidAngle / (2.0 * kEnvMapImportancePi), -1.0, 1.0)),
+                                      2.0 * kEnvMapImportancePi / float(g_EnvBakeCubeDim));
+        float dotMin = 1.0;
+        float dotMax = -1.0;
+        [unroll] for (uint corner = 0u; corner < 4u; ++corner)
+        {
+            const float value = dot(direction, corners[corner]);
+            dotMin = min(dotMin, value);
+            dotMax = max(dotMax, value);
+        }
+        const float angleMin = acos(clamp(dotMax, -1.0, 1.0));
+        const float angleMax = acos(clamp(dotMin, -1.0, 1.0));
+        const float coverage = pow(saturate((angularSize * 0.5 - angleMin) / (angleMax - angleMin + 1e-24)), 4.0);
+        const float solidAngle = 2.0 * kEnvMapImportancePi * (1.0 - cos(angularSize * 0.5));
+        radiance += coverage * UnpackLightColor(light) * (sourceSolidAngle / max(solidAngle, 1e-8));
+    }
+    return float4(clamp(radiance * g_EnvBakeRadianceScale, 0.0, 65504.0), 1.0);
+}
+
+float3 EnvCubeBakePosition(float2 pixel)
+{
+    const float2 uv = pixel / float(g_EnvBakeCubeDim);
+    const float4 world = mul(g_EnvCubeRotation, float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 1.0, 1.0));
+    return world.xyz / world.w;
+}
+
+[numthreads(RTXPT_ENVMAP_BAKE_THREADS, RTXPT_ENVMAP_BAKE_THREADS, 1)]
+void EnvCubeBakeCS(uint3 threadId : SV_DispatchThreadID)
+{
+    if (any(threadId.xy >= g_EnvBakeCubeDim))
+        return;
+    const float2 pixel = float2(threadId.xy) + 0.5;
+    const float fadeRange = 0.55; //Half of upstream's 1.1-texel coverage range.
+    float3 corners[4] = {
+        normalize(EnvCubeBakePosition(pixel + float2(-fadeRange, -fadeRange))),
+        normalize(EnvCubeBakePosition(pixel + float2(+fadeRange, -fadeRange))),
+        normalize(EnvCubeBakePosition(pixel + float2(-fadeRange, +fadeRange))),
+        normalize(EnvCubeBakePosition(pixel + float2(+fadeRange, +fadeRange)))};
+    g_EnvBakeOutput[uint3(threadId.xy, 0u)] = BakeEnvironment(EnvCubeBakePosition(pixel), corners);
 }
 
 [numthreads(RTXPT_ENVMAP_IMPORTANCE_THREADS, RTXPT_ENVMAP_IMPORTANCE_THREADS, 1)]
