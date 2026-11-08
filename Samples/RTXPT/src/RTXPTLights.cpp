@@ -45,11 +45,8 @@ namespace Diligent
 namespace
 {
 
-constexpr float kPolymorphicLightTypeSphere      = 0.0f;
-constexpr float kPolymorphicLightTypeDirectional = 2.0f;
-constexpr float kPolymorphicLightTypePoint       = 4.0f;
-constexpr float kDefaultPunctualLightRadius      = 0.01f;
-constexpr float kDefaultDirectionalAngularSize   = PI_F * 0.53f / 180.0f;
+constexpr float kDefaultPunctualLightRadius    = 0.01f;
+constexpr float kDefaultDirectionalAngularSize = PI_F * 0.53f / 180.0f;
 
 bool IsDirectionalLight(const PolymorphicLightInfo& Light)
 {
