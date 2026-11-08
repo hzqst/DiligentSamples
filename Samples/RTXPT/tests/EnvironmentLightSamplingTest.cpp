@@ -45,7 +45,6 @@ struct Quad
 constexpr Uint32 kBakeResolution            = 2048;
 constexpr float  kTestSunIlluminance        = 14.0f;
 constexpr float  kTestSunDiameterDegrees    = 0.53f;
-constexpr float  kDirectionalLightType      = 2.0f; //AnalyticLightData::colorType.w of a directional light.
 constexpr double kMinBakedIlluminanceRatio  = 0.8;
 constexpr double kMaxBakedIlluminanceRatio  = 1.1;
 constexpr double kBakedEnergyRatioTolerance = 0.02;
@@ -152,7 +151,7 @@ double BakeDirectionalIlluminance(IDeviceContext* Context, const DirectionalBake
     const float Radiance   = Case.Illuminance / SolidAngle;
 
     AnalyticLightData Light;
-    Light.colorType      = float4{Radiance, Radiance, Radiance, kDirectionalLightType};
+    Light.colorType      = float4{Radiance, Radiance, Radiance, kPolymorphicLightTypeDirectional};
     Light.directionRange = float4{Case.Direction, 0};
     Light.shaping.w      = SolidAngle;
     EnvCubeBakeConstantsCPU C;
