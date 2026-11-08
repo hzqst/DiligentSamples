@@ -26,6 +26,11 @@ struct AnalyticLightData
     float4 shaping        = float4{-1, 0, 0, 0};
 };
 
+// AnalyticLightData::colorType.w of each authored light type, the packed PolymorphicLightInfo type.
+constexpr float kPolymorphicLightTypeSphere      = 0.0f;
+constexpr float kPolymorphicLightTypeDirectional = 2.0f;
+constexpr float kPolymorphicLightTypePoint       = 4.0f;
+
 // Full angular diameter in radians. Keep the existing floor for the hard-shadow limit.
 inline float ComputeRTXPTDirectionalLightSolidAngle(float AngularSizeRadians)
 {
@@ -39,10 +44,11 @@ inline float ComputeRTXPTDirectionalLightSolidAngle(float AngularSizeRadians)
 // The diameter must be finite and in [0, PI]. Invalid input or unrepresentable radiance leaves Light unchanged.
 inline bool SetRTXPTDirectionalLightAngularSize(AnalyticLightData& Light, float AngularSizeRadians)
 {
-    constexpr float  DirectionalLightType = 2.0f;
-    constexpr size_t ColorChannels        = 3;
-    if (Light.colorType.w != DirectionalLightType || !std::isfinite(AngularSizeRadians) ||
-        AngularSizeRadians < 0 || AngularSizeRadians > PI_F || !std::isfinite(Light.shaping.w) || Light.shaping.w <= 0)
+    constexpr size_t ColorChannels    = 3;
+    const bool       bDirectional     = Light.colorType.w == kPolymorphicLightTypeDirectional;
+    const bool       bValidAngle      = std::isfinite(AngularSizeRadians) && AngularSizeRadians >= 0 && AngularSizeRadians <= PI_F;
+    const bool       bValidSolidAngle = std::isfinite(Light.shaping.w) && Light.shaping.w > 0;
+    if (!bDirectional || !bValidAngle || !bValidSolidAngle)
         return false;
 
     const float       SolidAngle  = ComputeRTXPTDirectionalLightSolidAngle(AngularSizeRadians);
@@ -126,7 +132,7 @@ inline PolymorphicLightInfoFull PackAnalyticLight(const AnalyticLightData& Sourc
     Light.Base.Center            = float3{Source.positionRadius.x, Source.positionRadius.y, Source.positionRadius.z};
     Light.Base.ColorTypeAndFlags = Type << kPolymorphicLightTypeShift;
     PackLightColor(float3{Source.colorType.x, Source.colorType.y, Source.colorType.z}, Light.Base);
-    if (Type == 2u)
+    if (Type == static_cast<Uint32>(kPolymorphicLightTypeDirectional))
     {
         Light.Base.Direction1 = PackLightDirection(float3{Source.directionRange.x, Source.directionRange.y, Source.directionRange.z});
         const float HalfAngle = std::acos(std::clamp(1.0f - Source.shaping.w / (2.0f * PI_F), -1.0f, 1.0f));
