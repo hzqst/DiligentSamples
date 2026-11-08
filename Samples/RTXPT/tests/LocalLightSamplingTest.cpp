@@ -350,7 +350,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     {
         auto&       Source                       = PackingSources[N];
         const float Intensity                    = N % 7 == 0 ? 0.0f : std::exp2(float(N % 25) - 8.0f);
-        Source.colorType                         = float4{Intensity, Intensity * 0.3f, Intensity * 0.7f, N % 3 == 0 ? 2.0f : 0.0f};
+        Source.colorType                         = float4{Intensity, Intensity * 0.3f, Intensity * 0.7f, N % 3 == 0 ? kPolymorphicLightTypeDirectional : kPolymorphicLightTypeSphere};
         Source.positionRadius                    = float4{float(N), -float(N), 0.25f, float(N + 1) / 16.0f};
         const float3 Axis                        = normalize(float3{N & 1 ? -1.0f : 1.0f, N & 2 ? -2.0f : 2.0f, N & 4 ? -3.0f : 3.0f});
         Source.directionRange                    = float4{Axis, 0.0f};
@@ -521,7 +521,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         Require(FloatAt(ValueBase + 2) >= 0.0f, "Invalid specular radiance average");
         Require(std::abs(0.5f - FloatAt(ValueBase + 3)) < 1e-6f, "Spotlight falloff differs from upstream smoothstep");
         const auto& Source      = PackingSources[N];
-        const bool  Directional = Source.colorType.w == 2.0f;
+        const bool  Directional = Source.colorType.w == kPolymorphicLightTypeDirectional;
         for (Uint32 C = 0; C < 3; ++C)
         {
             Require(Source.positionRadius[C] == FloatAt((384 + N) * 4 + C), "Packed light FP32 center");
