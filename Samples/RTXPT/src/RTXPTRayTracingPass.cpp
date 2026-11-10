@@ -457,10 +457,30 @@ bool RTXPTRayTracingPass::Bind(IDeviceContext* pContext, const RTXPTRayTracingBi
     const Uint32 TextureCount  = Bindings.MaterialTextureCount;
     const bool   TexturesEqual = m_BoundTextures.size() == TextureCount &&
         std::equal(m_BoundTextures.begin(), m_BoundTextures.end(), Bindings.pMaterialTextures);
-    RTXPTRayTracingBindings Key = Bindings;
-    Key.TLASBuildIndex          = m_Bound.TLASBuildIndex;
-    Key.pMaterialTextures       = m_Bound.pMaterialTextures;
-    const bool ObjectsEqual     = m_HasBindings && TexturesEqual && std::memcmp(&Key, &m_Bound, sizeof(Key)) == 0;
+    // Compare resource identities without structure padding. Texture contents are compared above;
+    // TLASBuildIndex only controls the shader binding table refresh below.
+    const bool ObjectsEqual = m_HasBindings && TexturesEqual &&
+        Bindings.pTLAS == m_Bound.pTLAS &&
+        Bindings.pMaterialBuffer == m_Bound.pMaterialBuffer &&
+        Bindings.pSubInstanceBuffer == m_Bound.pSubInstanceBuffer &&
+        Bindings.pVertexBuffer == m_Bound.pVertexBuffer &&
+        Bindings.pSkinnedVertexBuffer == m_Bound.pSkinnedVertexBuffer &&
+        Bindings.pIndexBuffer == m_Bound.pIndexBuffer &&
+        Bindings.MaterialTextureCount == m_Bound.MaterialTextureCount &&
+        Bindings.pLightBuffer == m_Bound.pLightBuffer &&
+        Bindings.pLightExBuffer == m_Bound.pLightExBuffer &&
+        Bindings.pLightingControlBuffer == m_Bound.pLightingControlBuffer &&
+        Bindings.pLightProxyCounters == m_Bound.pLightProxyCounters &&
+        Bindings.pLightSamplingProxies == m_Bound.pLightSamplingProxies &&
+        Bindings.pLocalSamplingBuffer == m_Bound.pLocalSamplingBuffer &&
+        Bindings.pEnvironmentLightLookup == m_Bound.pEnvironmentLightLookup &&
+        Bindings.pFeedbackTotalWeightUAV == m_Bound.pFeedbackTotalWeightUAV &&
+        Bindings.pFeedbackCandidatesUAV == m_Bound.pFeedbackCandidatesUAV &&
+        Bindings.pEnvironmentMapSRV == m_Bound.pEnvironmentMapSRV &&
+        Bindings.pEnvironmentImportanceMapSRV == m_Bound.pEnvironmentImportanceMapSRV &&
+        Bindings.pEnvironmentRadianceMapSRV == m_Bound.pEnvironmentRadianceMapSRV &&
+        Bindings.pEnvironmentSampler == m_Bound.pEnvironmentSampler &&
+        Bindings.pEnvironmentImportanceSampler == m_Bound.pEnvironmentImportanceSampler;
 
     if (!ObjectsEqual && !CreateBindings(Bindings))
     {
