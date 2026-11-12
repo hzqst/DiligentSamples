@@ -108,8 +108,9 @@ void DLSSRRDenoiserPrepareInputs(uint2 pixelPos)
     if (Average(diffAlbedo + specAlbedo) < kMinAlbedo)
         diffAlbedo += kMinAlbedo;
 
-    // Color is scene-linear, not pre-exposed. CPU supplies the clamp threshold;
-    // PreExposure and ExposureScale at the RR consumer must both be 1.
+    // Color is scene-linear, not pre-exposed: the layers hold it in working units (ptConsts.radianceScale), which the
+    // clamp threshold the CPU supplies is in, and the output divides by. PreExposure and ExposureScale at the RR
+    // consumer must both be 1.
     const float maxRadiance = max(combinedRadiance.x, max(combinedRadiance.y, combinedRadiance.z));
     const float brightnessClamp = g_Frame.ptConsts.DLSSRRBrightnessClampK;
     const float clampMax = isfinite(brightnessClamp) && brightnessClamp > 0.0 ?
@@ -117,7 +118,7 @@ void DLSSRRDenoiserPrepareInputs(uint2 pixelPos)
     if (maxRadiance > clampMax)
         combinedRadiance *= clampMax / maxRadiance;
 
-    u_OutputColor[pixelPos] = float4(combinedRadiance, 1);
+    u_OutputColor[pixelPos] = float4(min(combinedRadiance / g_Frame.ptConsts.radianceScale, HLF_MAX.xxx), 1);
     u_RRDiffuseAlbedo[pixelPos] = float4(saturate(diffAlbedo), 1);
     u_RRSpecAlbedo[pixelPos] = float4(saturate(specAlbedo), 1);
     u_RRNormalsAndRoughness[pixelPos] = float4(guideNormals, saturate(roughness));

@@ -192,16 +192,10 @@ RTXPTErrorCode RTXPTRealtimePipeline::Render(IDeviceContext* Context, RTXPTRayTr
     PT.maxDenoisingLayerVertexDepth = std::min(PT.bounceCount, kMaxLayerVertexDepth);
     PT.genericTSLineStride          = static_cast<Uint32>(ComputeRTXPTLayerLineStride(Width));
     PT.genericTSPlaneStride         = static_cast<Uint32>(ComputeRTXPTLayerPlaneStride(Width, Height));
-    if (AutoExposure)
-    {
-        RTXPTToneMappingParameters TraceClamp = ToneParameters;
-        TraceClamp.ExposureCompensation       = std::log2(RTXPTAutoExposureTraceClampExposure);
-        PT.preExposedGrayLuminance            = m_PostProcess.GetToneMapping().ComputePreExposedGrayLuminance(TraceClamp, true);
-    }
-    else
-    {
-        PT.preExposedGrayLuminance = m_PostProcess.GetToneMapping().ComputePreExposedGrayLuminance(ToneParameters, true);
-    }
+    //The clamps of the traced radiance use a fixed reference, not the display exposure (RTXPTTraceClampExposure).
+    RTXPTToneMappingParameters TraceClamp = ToneParameters;
+    TraceClamp.ExposureCompensation       = std::log2(RTXPTTraceClampExposure);
+    PT.preExposedGrayLuminance            = m_PostProcess.GetToneMapping().ComputePreExposedGrayLuminance(TraceClamp, true);
     //Textures are sampled for the output resolution the upscaler or reconstruction produces.
     if (DisplayWidth != Width || DisplayHeight != Height)
         PT.texLODBias += RTXPTSuperResolutionInputs::ComputeTexLODBias(Width, Height, DisplayWidth, DisplayHeight);

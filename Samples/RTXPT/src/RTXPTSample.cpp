@@ -1398,7 +1398,7 @@ void RTXPTSample::UpdateFrameConstants(double CurrTime)
     PtConsts.resetAccumulation = m_ResetAccumulationPending ? 1u : 0u;
 
     PtConsts.denoisingLayersSplitStopThreshold = m_RealtimeUI.DenoisingLayersSplitStopThreshold;
-    PtConsts._padding3                         = 0.0f;
+    PtConsts.radianceScale                     = 1.0f;
     PtConsts._padding4                         = 0u;
     PtConsts.denoisingLayersSuppressPrimaryIndirectSpecularK =
         m_RealtimeUI.DenoisingLayersSuppressPrimaryIndirectSpecular ?

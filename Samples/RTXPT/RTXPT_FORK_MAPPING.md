@@ -1146,7 +1146,18 @@ wrong dimensions/formats, output aliasing, and aliasing with StableRadiance.
 | `u_RRNormalsAndRoughness` | RGB unit world-space normal [-1,1], including stable-plane virtual image transform; W linear roughness [0,1], not GGX alpha | `pNormalsSRV`; set `RoughnessPacked = True`, `pRoughnessSRV = nullptr` |
 
 Radiance is **not pre-exposed** in this port. `preExposedGrayLuminance` affects
-firefly/clamp thresholds, not the units of stored radiance. The CPU supplies
+firefly/clamp thresholds, not the units of stored radiance. The shared realtime
+pipeline (`RTXPTRealtimePipeline`: embedded views and the Sample's
+`--realtime_native` preset) derives it from a fixed reference
+(`RTXPTTraceClampExposure`), never from the display exposure; the Sample's own
+NRD path still derives it from its tone mapping controls.
+The layers, StableRadiance and the NRD/RR prepare inputs hold radiance in working
+units: `ptConsts.radianceScale` times the scene radiance, applied where a path
+evaluates a light sample, the environment or surface emission (light records, the
+environment cube and material factors stay in scene units). The thresholds are in
+working units, and the prepare/merge passes divide `u_OutputColor` by the scale and
+limit it to fp16, so every published HDR stays scene-linear. The Sample and
+Reference use a scale of 1. The CPU supplies
 `DLSSRRBrightnessClampK = UIClamp * preExposedGrayLuminance` when positive; the
 prepare shader treats that as a threshold in the stored radiance domain. Set
 `PreExposure = 1`, `ExposureScale = 1` at execution. Do not apply tone-map

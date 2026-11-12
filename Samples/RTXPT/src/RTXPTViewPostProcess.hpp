@@ -25,16 +25,16 @@ constexpr float RTXPTMaxBloomRadius    = 64.0f;
 constexpr float RTXPTMaxBloomIntensity = 0.1f;
 
 //The display transform of one frame of a view. Exposure is the linear multiplier tone mapping applies to the
-//scene-linear HDR before ToneMapOperator, and the exposure ray reconstruction and the realtime firefly and brightness
-//clamps scale with. WhiteMaxLuminance is the white point of ReinhardModified and WhiteScale that of HableUc2; each
-//operator ignores the other's. Bloom is the Sample's Bloom (RTXPTBloomPass) on the display-size HDR before tone mapping:
-//(1 - Intensity) * HDR + Intensity * HDR blurred at a quarter of the display width and height. It is off by default,
-//unlike the Sample's controls; a zero radius or intensity bypasses it as Enabled = false does. AutoExposure, when
-//enabled, replaces Exposure: tone mapping and ray reconstruction read the exposure the view's RTXPTAutoExposure adapts on
-//the GPU, metered from the HDR before Bloom, and the realtime clamps use RTXPTAutoExposureTraceClampExposure. Values
-//outside the ranges above (IsValidRTXPTAutoExposure for AutoExposure, whatever Enabled) or an unknown operator are
-//rejected instead of clamped (IsValidRTXPTViewDisplaySettings). None of them rescales or blurs the HDR they read, and
-//changing them restarts no history.
+//scene-linear HDR before ToneMapOperator, and the exposure ray reconstruction reads. WhiteMaxLuminance is the white
+//point of ReinhardModified and WhiteScale that of HableUc2; each operator ignores the other's. Bloom is the Sample's
+//Bloom (RTXPTBloomPass) on the display-size HDR before tone mapping: (1 - Intensity) * HDR + Intensity * HDR blurred at
+//a quarter of the display width and height. It is off by default, unlike the Sample's controls; a zero radius or
+//intensity bypasses it as Enabled = false does. AutoExposure, when enabled, replaces Exposure: tone mapping and ray
+//reconstruction read the exposure the view's RTXPTAutoExposure adapts on the GPU, metered from the HDR before Bloom. The
+//realtime clamps of the traced radiance follow neither exposure (RTXPTTraceClampExposure). Values outside the ranges
+//above (IsValidRTXPTAutoExposure for AutoExposure, whatever Enabled) or an unknown operator are rejected instead of
+//clamped (IsValidRTXPTViewDisplaySettings). None of them rescales or blurs the HDR they read, and changing them restarts
+//no history.
 struct RTXPTViewDisplaySettings
 {
     float                       Exposure          = 1.0f;
@@ -49,9 +49,8 @@ struct RTXPTViewDisplaySettings
 bool IsValidRTXPTViewDisplaySettings(const RTXPTViewDisplaySettings& Display);
 
 //The tone mapping parameters of Display: manual exposure with the default camera (ISO 100, f/1, 1 s, a factor of 1), so
-//ExposureCompensation = log2(Exposure) is the only exposure the tone mapper, ray reconstruction and the realtime clamps
-//derive. With auto exposure the exposure is resolved on the GPU instead, and ExposureCompensation is 0. Display must be
-//valid.
+//ExposureCompensation = log2(Exposure) is the only exposure the tone mapper and ray reconstruction derive. With auto
+//exposure the exposure is resolved on the GPU instead, and ExposureCompensation is 0. Display must be valid.
 RTXPTToneMappingParameters MakeRTXPTToneMappingParameters(const RTXPTViewDisplaySettings& Display);
 
 //Creates the display target of a view at Width x Height: an RGBA8 texture whose sRGB RTV (*RTV) encodes the tone mapped

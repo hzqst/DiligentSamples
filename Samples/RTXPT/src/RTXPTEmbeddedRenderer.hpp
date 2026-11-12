@@ -63,7 +63,12 @@ enum class RTXPTRayReconstructionQuality
 class RTXPTEmbeddedScene;
 
 //The source of an RTXPTEmbeddedScene and how it compiles shaders. Scene, Materials, Shaders and Cache are required;
-//PSOCache is optional.
+//PSOCache is optional. RadianceScale is the working units of the traced radiance per unit of the scene's radiance, a
+//finite positive number: the realtime views of the scene scale the radiance of every light, emissive surface and the
+//environment by it where a path evaluates it, so that their fp16 layers, firefly filter and denoiser inputs, whose
+//clamps are fixed in working units (RTXPTTraceClampExposure), suit scenes lit in large units such as lux, and divide the
+//HDR they hand on by it. The HDR of a view stays in scene units whatever the scale; Reference views trace in scene
+//units. Changing it needs a new scene.
 struct RTXPTEmbeddedSceneCreateInfo
 {
     RTXPTScene*                      Scene           = nullptr;
@@ -72,6 +77,7 @@ struct RTXPTEmbeddedSceneCreateInfo
     IRenderStateCache*               Cache           = nullptr;
     IPipelineStateCache*             PSOCache        = nullptr;
     bool                             EnableProfiling = false;
+    float                            RadianceScale   = 1.0f;
 };
 
 enum class RTXPTViewOutput

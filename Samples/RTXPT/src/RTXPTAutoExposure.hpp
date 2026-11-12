@@ -17,10 +17,11 @@ constexpr float RTXPTDefaultAutoExposureKey = 0.042f;
 constexpr float RTXPTMinAutoExposureEV      = -32.0f;
 constexpr float RTXPTMaxAutoExposureEV      = 32.0f;
 //The display exposure whose pre-exposed gray luminance the clamps of the traced radiance (the realtime firefly filter,
-//RR's brightness clamp and the guides' average layer radiance) use under auto exposure: a fixed scene-linear reference,
-//not the exposure the GPU adapts, so adapting changes no sampling, path weight or clamp. 1 makes the clamps those of
-//the default Manual exposure.
-constexpr float RTXPTAutoExposureTraceClampExposure = 1.0f;
+//the denoiser's radiance clamp, RR's brightness clamp and the guides' average layer radiance) use, whatever the display
+//exposure, manual or adapted on the GPU: a fixed reference in the working units of the traced radiance
+//(PathTracerConstants::radianceScale), so neither a display exposure nor adapting changes a sampling, path weight or
+//clamp.
+constexpr float RTXPTTraceClampExposure = 1.0f;
 //The longest frame time one adaptation step uses: a longer pause or missing frames adapt as if this much had passed.
 constexpr double RTXPTMaxAutoExposureDeltaSeconds = 1.0;
 
