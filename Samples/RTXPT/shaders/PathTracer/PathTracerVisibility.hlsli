@@ -67,8 +67,8 @@ namespace Bridge
     }
 
     // The distance to the closest occluder of the ray with the visibility-ray candidate filter, or missDistance
-    // when nothing occludes it.
-    float traceVisibilityRayHitDistance(RayDesc ray, float missDistance)
+    // when nothing occludes it. Keep visibility separate from the clamped distance: a distant occluder is still a hit.
+    float traceVisibilityRayHitDistance(RayDesc ray, float missDistance, out bool visible)
     {
         RayQuery<RAY_FLAG_NONE> rayQuery;
         rayQuery.TraceRayInline(t_SceneBVH, RAY_FLAG_NONE, 0xFF, ray);
@@ -81,7 +81,8 @@ namespace Bridge
                     rayQuery.CommitNonOpaqueTriangleHit();
             }
         }
-        return rayQuery.CommittedStatus() == COMMITTED_NOTHING ? missDistance : min(rayQuery.CommittedRayT(), missDistance);
+        visible = rayQuery.CommittedStatus() == COMMITTED_NOTHING;
+        return visible ? missDistance : min(rayQuery.CommittedRayT(), missDistance);
     }
 #endif
 }

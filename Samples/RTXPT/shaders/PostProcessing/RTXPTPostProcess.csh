@@ -273,7 +273,7 @@ void main(uint3 DispatchThreadID : SV_DispatchThreadID)
         RTXPTDenoiserPostDenoiseProcess(DiffBSDFEstimate, SpecBSDFEstimate, DiffRadiance, SpecRadiance);
 
         float3 WorkingRadiance = max(0.0.xxx, DiffRadiance.rgb + SpecRadiance.rgb);
-        // The direct sunlight the layer 0 surface left out of its radiance, shadowed by SIGMA.
+        // The diffuse sunlight the layer 0 surface left out of its radiance, shadowed by SIGMA. Specular stays in radiance.
         if (SunShadow)
             WorkingRadiance += t_SunDirectLighting[PixelPos].rgb * RTXPTDenoiserSigmaUnpackShadow(t_SunShadow[PixelPos]);
         const float3 LayerRadiance = RTXPTSceneRadiance(WorkingRadiance);

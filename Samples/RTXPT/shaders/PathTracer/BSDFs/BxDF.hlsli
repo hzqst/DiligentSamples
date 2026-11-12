@@ -872,10 +872,11 @@ struct FalcorBSDF
         deltaLobes[1] = deltaReflection;
     }
 
-    float4 eval(const float3 wi, const float3 wo)
+    // Both components include the incident cosine, as does eval(). Keep the RGB lobes separate for sun-shadow denoising.
+    void evalComponents(const float3 wi, const float3 wo, out float3 diffuse, out float3 specular)
     {
-        float3 diffuse = float3(0.0, 0.0, 0.0);
-        float3 specular = float3(0.0, 0.0, 0.0);
+        diffuse = float3(0.0, 0.0, 0.0);
+        specular = float3(0.0, 0.0, 0.0);
 
         if (pDiffuseReflection > 0.0)
             diffuse += (1.0 - specTrans) * (1.0 - diffTrans) * diffuseReflection.eval(wi, wo);
@@ -885,7 +886,12 @@ struct FalcorBSDF
             specular += (1.0 - specTrans) * specularReflection.eval(wi, wo);
         if (pSpecularReflectionTransmission > 0.0)
             specular += specTrans * specularReflectionTransmission.eval(wi, wo);
+    }
 
+    float4 eval(const float3 wi, const float3 wo)
+    {
+        float3 diffuse, specular;
+        evalComponents(wi, wo, diffuse, specular);
         return float4(diffuse + specular, Average(specular));
     }
 
@@ -1005,16 +1011,25 @@ void EvalBSDF(SurfaceBSDFData bsdfData, float3 wo, float3 wi, float specProb, ou
     pdf = bsdf.evalPdf(viewLocal, scatterLocal);
 }
 
-float4 EvalBSDFValue(SurfaceBSDFData bsdfData, float3 wo, float3 wi)
+void EvalBSDFValueComponents(SurfaceBSDFData bsdfData, float3 wo, float3 wi, out float3 diffuse, out float3 specular)
 {
+    diffuse = float3(0.0, 0.0, 0.0);
+    specular = float3(0.0, 0.0, 0.0);
     float3 tangent, bitangent;
     BranchlessONB(bsdfData.N, tangent, bitangent);
     const float3 viewLocal = float3(dot(wo, tangent), dot(wo, bitangent), dot(bsdfData.N, wo));
     const float3 scatterLocal = float3(dot(wi, tangent), dot(wi, bitangent), dot(bsdfData.N, wi));
     if (viewLocal.z < kMinCosTheta || abs(scatterLocal.z) < kMinCosTheta)
-        return 0.0;
+        return;
     FalcorBSDF bsdf = FalcorBSDF::make(MakeMaterialHeader(bsdfData), bsdfData.N, wo, bsdfData);
-    return bsdf.eval(viewLocal, scatterLocal);
+    bsdf.evalComponents(viewLocal, scatterLocal, diffuse, specular);
+}
+
+float4 EvalBSDFValue(SurfaceBSDFData bsdfData, float3 wo, float3 wi)
+{
+    float3 diffuse, specular;
+    EvalBSDFValueComponents(bsdfData, wo, wi, diffuse, specular);
+    return float4(diffuse + specular, Average(specular));
 }
 
 // Candidate selection needs only the PDF. Keep full BSDF evaluation after visibility,
