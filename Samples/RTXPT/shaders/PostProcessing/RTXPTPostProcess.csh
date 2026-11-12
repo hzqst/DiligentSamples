@@ -50,6 +50,9 @@ Texture2D<float4>       t_DenoiserOutSpecRadianceHitDist;
 Texture2D<float4>       t_DenoiserOutValidation;
 Texture2D<float>        t_DenoiserViewspaceZ;
 Texture2D<float>        t_DenoiserDisocclusionThresholdMix;
+Texture2D<float>        t_SunHitDistance;
+Texture2D<float4>       t_SunDirectLighting;
+Texture2D<float>        t_SunShadow;
 
 VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4>      u_OutputColor;
 VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4>      u_StableRadiance;
@@ -62,6 +65,7 @@ VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4>      u_DenoiserDiffRadianceHitDis
 VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4>      u_DenoiserSpecRadianceHitDist;
 VK_IMAGE_FORMAT("r8")      RWTexture2D<float>       u_DenoiserDisocclusionThresholdMix;
 VK_IMAGE_FORMAT("r8")      RWTexture2D<float>       u_CombinedHistoryClampRelax;
+VK_IMAGE_FORMAT("r16f")    RWTexture2D<float>       u_SunPenumbra;
 
 // The scene-linear radiance of a radiance in the working units of the layers (ptConsts.radianceScale), within fp16.
 float3 RTXPTSceneRadiance(float3 Radiance)
@@ -142,9 +146,14 @@ void main(uint3 DispatchThreadID : SV_DispatchThreadID)
 #if RTXPT_POST_PROCESS_MODE == RTXPT_POST_PROCESS_RELAX_PREPARE_INPUTS || RTXPT_POST_PROCESS_MODE == RTXPT_POST_PROCESS_REBLUR_PREPARE_INPUTS
     const uint DenoisingLayerIndex       = g_Mini.params.x;
     const bool InitWithStableRadiance = g_Mini.params.y != 0;
+    const bool SunShadow              = g_Mini.params.z != 0;
     const uint ActiveDenoisingLayerCount = min(g_Frame.ptConsts.GetActiveDenoisingLayerCount(), cDenoisingLayerCount);
     if (DenoisingLayerIndex >= ActiveDenoisingLayerCount)
         return;
+
+    // SIGMA reads the guides of layer 0 with this penumbra; pixels without a layer 0 surface are outside its range.
+    if (SunShadow)
+        u_SunPenumbra[PixelPos] = RTXPTDenoiserSigmaPackPenumbra(t_SunHitDistance[PixelPos], g_Frame.sun.TanAngularRadius);
 
     DenoisingLayersContext DenoisingLayers = DenoisingLayersContext::make(
         u_DenoisingLayersHeader, u_DenoisingLayersBuffer, u_StableRadiance, g_Frame.ptConsts);
@@ -237,6 +246,7 @@ void main(uint3 DispatchThreadID : SV_DispatchThreadID)
 #if RTXPT_POST_PROCESS_MODE == RTXPT_POST_PROCESS_RELAX_FINAL_MERGE || RTXPT_POST_PROCESS_MODE == RTXPT_POST_PROCESS_REBLUR_FINAL_MERGE
     const uint DenoisingLayerIndex = g_Mini.params.x;
     const bool HasValidation    = g_Mini.params.y != 0;
+    const bool SunShadow        = g_Mini.params.z != 0;
     const uint ActiveDenoisingLayerCount = min(g_Frame.ptConsts.GetActiveDenoisingLayerCount(), cDenoisingLayerCount);
     if (DenoisingLayerIndex >= ActiveDenoisingLayerCount)
         return;
@@ -262,7 +272,11 @@ void main(uint3 DispatchThreadID : SV_DispatchThreadID)
         SpecRadiance = t_DenoiserOutSpecRadianceHitDist[PixelPos];
         RTXPTDenoiserPostDenoiseProcess(DiffBSDFEstimate, SpecBSDFEstimate, DiffRadiance, SpecRadiance);
 
-        const float3 LayerRadiance = RTXPTSceneRadiance(max(0.0.xxx, DiffRadiance.rgb + SpecRadiance.rgb));
+        float3 WorkingRadiance = max(0.0.xxx, DiffRadiance.rgb + SpecRadiance.rgb);
+        // The direct sunlight the layer 0 surface left out of its radiance, shadowed by SIGMA.
+        if (SunShadow)
+            WorkingRadiance += t_SunDirectLighting[PixelPos].rgb * RTXPTDenoiserSigmaUnpackShadow(t_SunShadow[PixelPos]);
+        const float3 LayerRadiance = RTXPTSceneRadiance(WorkingRadiance);
         u_OutputColor[PixelPos].xyz = min(u_OutputColor[PixelPos].xyz + LayerRadiance, HLF_MAX.xxx);
     }
 

@@ -161,10 +161,25 @@ void RTXPTLights::Reset()
     m_EmissiveTriangleBuffer.Release();
     m_AnalyticLights.clear();
     m_DirectionalLights.clear();
+    m_SunLight    = {};
+    m_HasSunLight = false;
     m_AnalyticSources.clear();
     m_TriangleSources.clear();
     m_EmissiveProxyWeight = 0.0f;
     m_Stats               = {};
+}
+
+void RTXPTLights::SelectSunLight()
+{
+    //The first of the brightest directional lights becomes the sun; the others keep their order in the environment.
+    const auto Brightest = std::max_element(m_DirectionalLights.begin(), m_DirectionalLights.end(),
+                                            [](const PolymorphicLightInfo& A, const PolymorphicLightInfo& B) {
+                                                return ComputeRTXPTDirectionalLightIlluminance(A) < ComputeRTXPTDirectionalLightIlluminance(B);
+                                            });
+    m_HasSunLight        = Brightest != m_DirectionalLights.end();
+    m_SunLight           = m_HasSunLight ? *Brightest : PolymorphicLightInfo{};
+    if (m_HasSunLight)
+        m_DirectionalLights.erase(Brightest);
 }
 
 bool RTXPTLights::UploadLightBuffer(IRenderDevice* pDevice, std::vector<PolymorphicLightInfoFull>& Lights)
@@ -268,6 +283,7 @@ bool RTXPTLights::Upload(IRenderDevice* pDevice, const GLTF::Scene& Scene, const
             Lights.push_back(Light);
         }
     }
+    SelectSunLight();
 
     return UploadLightBuffer(pDevice, Lights);
 }
@@ -392,6 +408,7 @@ bool RTXPTLights::UploadAnalyticLights(IRenderDevice* pDevice, const std::vector
         m_AnalyticSources.push_back({Light.Key, static_cast<Uint32>(Lights.size()), 1u});
         Lights.push_back(Light.Light);
     }
+    SelectSunLight();
     return UploadLightBuffer(pDevice, Lights);
 }
 
@@ -465,6 +482,27 @@ bool RTXPTLights::UploadEmissiveTriangles(IRenderDevice* pDevice, const RTXPTSce
 
     m_Stats.EmissiveTriangleCount = static_cast<Uint32>(EmissiveTriangleCount);
     return UploadEmissiveTriangleBuffer(pDevice, m_Stats.EmissiveTriangleCount);
+}
+
+RTXPTSunConstants MakeRTXPTSunConstants(const RTXPTLights& Lights)
+{
+    RTXPTSunConstants           Sun;
+    const PolymorphicLightInfo* pSun = Lights.GetSunLight();
+    if (pSun != nullptr)
+    {
+        // The disk is the cone of the packed solid angle: cos(radius) = 1 - SolidAngle / (2 * PI).
+        const float CosRadius = std::clamp(1.0f - UnpackLightFloat16(pSun->Scalars >> 16u) / (2.0f * PI_F), 0.0f, 1.0f);
+        Sun.Light             = *pSun;
+        Sun.Enabled           = 1u;
+        Sun.TanAngularRadius  = CosRadius > 0.0f ? std::sqrt(1.0f - CosRadius * CosRadius) / CosRadius : 0.0f;
+    }
+    return Sun;
+}
+
+float3 GetRTXPTSunDirection(const RTXPTSunConstants& Sun)
+{
+    // The packed direction is the one the light travels in.
+    return Sun.Enabled != 0u ? -UnpackLightDirection(Sun.Light.Direction1) : float3{0, 0, 0};
 }
 
 } // namespace Diligent

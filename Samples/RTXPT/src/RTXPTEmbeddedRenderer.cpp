@@ -611,7 +611,9 @@ RTXPTErrorCode RTXPTEmbeddedView::Initialize(IRenderDevice* Device, IDeviceConte
         RealtimeCI.Width                         = Width;
         RealtimeCI.Height                        = Height;
         RealtimeCI.DisplayFormat                 = CreateInfo.DisplayRTVFormat;
-        RealtimeCI.Denoiser                      = R.IsDenoised() ? RTXPTRealtimeDenoiser::NrdRelax : RTXPTRealtimeDenoiser::None;
+        const auto NativeDenoiser                = CreateInfo.NativeDenoiser == RTXPTNrdMethod::RELAX ? RTXPTRealtimeDenoiser::NrdRelax : RTXPTRealtimeDenoiser::NrdReblur;
+        RealtimeCI.Denoiser                      = R.IsDenoised() ? NativeDenoiser : RTXPTRealtimeDenoiser::None;
+        RealtimeCI.SunShadowDenoising            = CreateInfo.NativeSunShadowDenoising;
         RealtimeCI.Reconstructor                 = bReconstruction ? RTXPTRealtimeReconstructor::DLSSRR : RTXPTRealtimeReconstructor::None;
         RealtimeCI.HistoryConfidence             = CreateInfo.NativeHistoryConfidence;
         RealtimeCI.ReconstructionDisplayExposure = CreateInfo.ReconstructionDisplayExposure;
@@ -713,6 +715,7 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
     PT.NEEType                          = R.Lighting.ImportanceSamplingType;
     PT.environmentNEEEnabled            = (Frame.pLights->GetEmissiveTriangleCount() << 1u) | (S.Environment.GetLightsBakerParams().Enabled > 0.0f ? 1u : 0u);
     Constants.envMap                    = S.Environment.GetConstants();
+    Constants.sun                       = MakeRTXPTSunConstants(*Frame.pLights);
     if (R.IsRealtime())
     {
         // Build supplies per-pixel path validity. Also reset the shared light proposals conservatively when

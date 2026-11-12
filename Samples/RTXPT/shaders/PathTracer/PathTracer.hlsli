@@ -22,6 +22,8 @@
 
 static const float kVisibilityRayTMin = 0.0;
 static const float kVisibilityRayTMax = 1e30;
+// The occluder distance of an unoccluded sun shadow ray, NRD_FP16_MAX: SIGMA reads at least this as no occluder.
+static const float kSunShadowMissDistance = 65504.0;
 
 // Production pipelines specialize these settings, as in RTXPT-fork. Retain
 // runtime defaults for shader consumers that do not supply the permutation.
@@ -79,6 +81,35 @@ namespace PathTracer
 #endif
     }
 
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_FILL_DENOISING_LAYERS || defined(__INTELLISENSE__)
+    // The distance to the closest occluder of a visibility ray, or kSunShadowMissDistance when nothing occludes it.
+    float TraceVisibilityRayHitDistance(float3 origin, float3 dir, float tMax)
+    {
+        RayDesc ray;
+        ray.Origin    = origin;
+        ray.Direction = dir;
+        ray.TMin      = kVisibilityRayTMin;
+        ray.TMax      = tMax;
+
+#if RTXPT_USE_INLINE_VISIBILITY
+        return Bridge::traceVisibilityRayHitDistance(ray, kSunShadowMissDistance);
+#else
+        // Unlike TraceVisibilityRay, the closest hit runs: it stores the hit distance in the first payload word.
+        PathPayload payload = MakeVisibilityPayload(Bridge::getPixelPosition());
+        TraceRay(t_SceneBVH,
+                 RAY_FLAG_NONE,
+                 0xFF,
+                 RTXPT_VISIBILITY_RAY_INDEX,
+                 RTXPT_HIT_GROUP_STRIDE,
+                 RTXPT_VISIBILITY_RAY_INDEX,
+                 ray,
+                 payload);
+        const bool bOccluded = PathPayload::unpack(payload).isActive();
+        return bOccluded ? min(asfloat(payload.packed[0].x), kSunShadowMissDistance) : kSunShadowMissDistance;
+#endif
+    }
+#endif
+
     float3 MakeVisibilityOrigin(float3 hitPos, float3 faceNormal, float3 shadingNormal, float3 dir, float posErrorScale)
     {
         const float side = dot(shadingNormal, dir) >= 0.0 ? 1.0 : -1.0;
@@ -92,6 +123,43 @@ namespace PathTracer
             1.0;
     }
 
+    // The sun of RTXPTSunConstants as a directional light. The sun is neither in the environment nor in the light list:
+    // every surface that runs NEE samples it on its own, and BSDF rays see its disk only where their vertex did not
+    // (EvalSunDisk), so its samples need no BSDF MIS.
+    AnalyticLightData LoadSunLight()
+    {
+        PolymorphicLightInfoFull light = (PolymorphicLightInfoFull)0;
+        light.Base                     = Bridge::getSun().Light;
+        return UnpackAnalyticLight(light);
+    }
+
+    // Whether a ray leaving the scene sees the sun disk: rays from the camera, from a delta scatter or from a vertex
+    // that did not sample the sun (no NEE, or past the NEE bounces of Reference), because NEE gives the sunlight of
+    // the other scatters. BUILD follows camera and delta rays alone.
+    bool SeesSunDisk(const PathState path)
+    {
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
+        return true;
+#else
+        return path.hasFlag(PathFlags::delta) || !NEEBSDFMISInfo::Unpack16bit(path.GetPackedMISInfo()).SunSampled;
+#endif
+    }
+
+    // The radiance of the sun disk in the direction of a ray that leaves the scene and SeesSunDisk.
+    float3 EvalSunDisk(const PathState path, float3 rayDir)
+    {
+        if (Bridge::getSun().Enabled == 0u || !SeesSunDisk(path))
+            return float3(0.0, 0.0, 0.0);
+
+        const AnalyticLightData sun = LoadSunLight();
+        float3                  axis;
+        if (!tryNormalize(-sun.directionRange.xyz, axis))
+            return float3(0.0, 0.0, 0.0);
+
+        const float cosThetaMax = clamp(1.0 - max(sun.shaping.w, 1.0e-8) / kLightTwoPi, -1.0, 1.0);
+        const bool  bInDisk     = dot(rayDir, axis) >= cosThetaMax;
+        return bInDisk ? max(sun.colorType.rgb, float3(0.0, 0.0, 0.0)) * g_Const.ptConsts.radianceScale : float3(0.0, 0.0, 0.0);
+    }
 #if PATH_TRACER_MODE != PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
     float ComputeLightVsBSDFMISForLightSample(DirectLightSample sample, uint fullSamples, uint candidates, float thisPdf, float otherPdf, float bsdfPdf)
     {
@@ -190,6 +258,78 @@ namespace PathTracer
 
         return result;
     }
+
+    // One shadowed sample of the sun disk, weighted like a light-list NEE sample without the path throughput.
+    float3 SampleSunNEE(SurfaceBSDFData bsdfData, float3 hitPos, float3 faceNormal, float posErrorScale, float shadowNoLFadeout,
+                        float3 wo, inout SampleGenerator sg, float fireflyFilterK, float3 pathThroughput, out float specularRadianceAvg)
+    {
+        specularRadianceAvg  = 0.0;
+        const LightSample ls = SampleDirectionalLight(LoadSunLight(), sampleNext2D(sg));
+        if (!ls.valid || ls.solidAnglePdf <= 0.0)
+            return float3(0.0, 0.0, 0.0);
+
+        const float3 visibilityOrigin = MakeVisibilityOrigin(hitPos, faceNormal, bsdfData.N, ls.dir, posErrorScale);
+        if (!TraceVisibilityRay(visibilityOrigin, ls.dir, ls.distance))
+            return float3(0.0, 0.0, 0.0);
+
+        const float  fadeOut          = ComputeShadowNoLFadeout(ls.dir, faceNormal, shadowNoLFadeout);
+        const float4 bsdfValue        = EvalBSDFValue(bsdfData, wo, ls.dir);
+        const float3 incidentRadiance = ls.radiance * (g_Const.ptConsts.radianceScale * fadeOut / ls.solidAnglePdf);
+        float3       contribution     = bsdfValue.rgb * incidentRadiance;
+        specularRadianceAvg           = bsdfValue.w * Average(incidentRadiance) * Average(pathThroughput);
+
+        const float ffThreshold = g_Const.ptConsts.fireflyFilterThreshold;
+        if (ffThreshold != 0.0)
+        {
+            const float neeK = ComputeNewScatterFireflyFilterK(fireflyFilterK, ls.solidAnglePdf, 1.0);
+            contribution *= FireflyFilterShort(Average(contribution), ffThreshold, neeK);
+        }
+        return contribution;
+    }
+
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_FILL_DENOISING_LAYERS || defined(__INTELLISENSE__)
+    // Whether the sun shadow denoiser takes the sunlight of this NEE vertex: the surface of denoising layer 0 itself.
+    bool IsSunShadowDenoiserSurface(const PathState preScatterPath)
+    {
+        const bool bLayer0Surface = preScatterPath.hasFlag(PathFlags::denoisingLayerOnPlane) && preScatterPath.getDenoisingLayerIndex() == 0u &&
+            preScatterPath.getCounter(PackedCounters::BouncesFromDenoisingLayer) == 0u;
+        return Bridge::getSun().ShadowDenoising != 0u && bLayer0Surface;
+    }
+
+    // Stores the inputs of the sun shadow denoiser instead of a sun sample:
+    //  - u_SunDirectLighting: the direct sunlight of the disk centre without shadow, with the path throughput, in
+    //    working units. The final merge of layer 0 adds it times the denoised shadow.
+    //  - u_SunHitDistance: the distance to the closest occluder of a ray to a random point of the disk, 0 where the
+    //    surface gets no sunlight and kSunShadowMissDistance when nothing occludes it. Prepare packs it as penumbra.
+    void StoreSunShadowDenoiserInputs(SurfaceBSDFData bsdfData, float3 hitPos, float3 faceNormal, float posErrorScale, float shadowNoLFadeout,
+                                      float3 wo, inout SampleGenerator sg, float3 pathThroughput, uint2 pixelPos)
+    {
+        const AnalyticLightData sun            = LoadSunLight();
+        float3                  directLighting = float3(0.0, 0.0, 0.0);
+        float3                  axis;
+        if (tryNormalize(-sun.directionRange.xyz, axis))
+        {
+            const float  fadeOut    = ComputeShadowNoLFadeout(axis, faceNormal, shadowNoLFadeout);
+            const float4 bsdfValue  = EvalBSDFValue(bsdfData, wo, axis);
+            const float3 irradiance = max(sun.colorType.rgb, float3(0.0, 0.0, 0.0)) * max(sun.shaping.w, 0.0);
+            directLighting          = pathThroughput * bsdfValue.rgb * irradiance * (g_Const.ptConsts.radianceScale * fadeOut);
+        }
+
+        float hitDistance = 0.0;
+        if (any(directLighting > 0.0))
+        {
+            const LightSample ls = SampleDirectionalLight(sun, sampleNext2D(sg));
+            if (ls.valid)
+            {
+                const float3 visibilityOrigin = MakeVisibilityOrigin(hitPos, faceNormal, bsdfData.N, ls.dir, posErrorScale);
+                hitDistance                   = TraceVisibilityRayHitDistance(visibilityOrigin, ls.dir, ls.distance);
+            }
+        }
+        u_SunDirectLighting[pixelPos] = float4(min(directLighting, kSunShadowMissDistance), 0.0);
+        u_SunHitDistance[pixelPos]    = hitDistance;
+    }
+#endif
+
 #endif
 
     inline bool ReferenceShouldRunNEE(const PathState preScatterPath, const WorkingContext workingContext)
@@ -267,6 +407,14 @@ namespace PathTracer
     {
 #if PATH_TRACER_MODE != PATH_TRACER_MODE_REFERENCE || defined(__INTELLISENSE__)
         workingContext.DenoisingLayers.StartPixel(path.GetPixelPos());
+#endif
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
+        // Pixels without a surface of layer 0 keep no sunlight and no occluder.
+        if (Bridge::getSun().ShadowDenoising != 0u)
+        {
+            u_SunDirectLighting[path.GetPixelPos()] = float4(0.0, 0.0, 0.0, 0.0);
+            u_SunHitDistance[path.GetPixelPos()]    = 0.0;
+        }
 #endif
 
 #if PATH_TRACER_MODE == PATH_TRACER_MODE_REFERENCE || PATH_TRACER_MODE == PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
@@ -385,13 +533,58 @@ namespace PathTracer
 
         const bool enableNEE     = workingContext.PtConsts.NEEEnabled != 0u;
         const uint fullSamples   = RTXPT_NEE_FULL_SAMPLE_COUNT;
-        if (!enableNEE || fullSamples == 0u)
+        const bool bNonDelta     = (FalcorBSDF::getLobes(surfaceData.bsdf.standardData) & kLobeTypeNonDelta) != 0u;
+        if (!enableNEE || !bNonDelta || !ReferenceShouldRunNEE(preScatterPath, workingContext))
             return result;
-        if (!ReferenceShouldRunNEE(preScatterPath, workingContext))
-            return result;
+
+        // The sun has its own sample sequence, so that the light-list samples do not change with it.
+        if (Bridge::getSun().Enabled != 0u)
+        {
+            result.BSDFMISInfo.SunSampled = true;
+            SampleGenerator sgSun = SampleGenerator_makeStateless(preScatterPath.GetPixelPos(),
+                                                                  preScatterPath.getVertexIndex(),
+                                                                  Bridge::getSampleIndex(),
+                                                                  kSampleEffect_SunLightSampler);
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_FILL_DENOISING_LAYERS
+            const bool bSunShadowDenoiser = IsSunShadowDenoiserSurface(preScatterPath);
+#else
+            const bool bSunShadowDenoiser = false;
+#endif
+            if (bSunShadowDenoiser)
+            {
+#if PATH_TRACER_MODE == PATH_TRACER_MODE_FILL_DENOISING_LAYERS
+                StoreSunShadowDenoiserInputs(surfaceData.bsdf.standardData,
+                                             surfaceData.shadingData.posW,
+                                             surfaceData.shadingData.faceNCorrected,
+                                             surfaceData.shadingData.posErrorScale,
+                                             surfaceData.shadingData.shadowNoLFadeout,
+                                             surfaceData.shadingData.V,
+                                             sgSun,
+                                             preScatterPath.GetThp(),
+                                             preScatterPath.GetPixelPos());
+#endif
+            }
+            else
+            {
+                float        sunSpecularRadianceAvg = 0.0;
+                const float3 sunRadiance            = SampleSunNEE(surfaceData.bsdf.standardData,
+                                                                   surfaceData.shadingData.posW,
+                                                                   surfaceData.shadingData.faceNCorrected,
+                                                                   surfaceData.shadingData.posErrorScale,
+                                                                   surfaceData.shadingData.shadowNoLFadeout,
+                                                                   surfaceData.shadingData.V,
+                                                                   sgSun,
+                                                                   preScatterPath.GetFireflyFilterK(),
+                                                                   preScatterPath.GetThp(),
+                                                                   sunSpecularRadianceAvg) *
+                    preScatterPath.GetThp();
+                if (any(sunRadiance > 0.0))
+                    result.AccumulateRadiance(sunRadiance, sunSpecularRadianceAvg);
+            }
+        }
+
         const LightingControlData ctrl = Bridge::getLightingControl();
-        if (ctrl.TotalLightCount == 0u || (ctrl.ImportanceSamplingType != 0u && ctrl.SamplingProxyCount == 0u) ||
-            (FalcorBSDF::getLobes(surfaceData.bsdf.standardData) & kLobeTypeNonDelta) == 0u)
+        if (fullSamples == 0u || ctrl.TotalLightCount == 0u || (ctrl.ImportanceSamplingType != 0u && ctrl.SamplingProxyCount == 0u))
             return result;
         const bool coherent = IsScreenSpaceCoherent(ctrl, preScatterPath.rayCone.getWidth(), preScatterPath.GetSceneLength());
 
@@ -681,7 +874,10 @@ namespace PathTracer
             environmentEmission *= ComputeLightVsBSDFMISForBSDF(path.GetPixelPos(), lightIndex, path.GetBsdfScatterPdf(),
                 solidAnglePdf, prevMISInfo.CandidateSamples, prevMISInfo.FullSamples, prevMISInfo.LightSamplingIsSSC);
         }
+        environmentEmission += EvalSunDisk(path, rayDir);
         environmentEmission = ApplyEmissionFireflyFilter(environmentEmission, path, workingContext);
+#else
+        environmentEmission += EvalSunDisk(path, rayDir);
 #endif
 
 #if PATH_TRACER_MODE != PATH_TRACER_MODE_REFERENCE || defined(__INTELLISENSE__)

@@ -1870,3 +1870,90 @@ scenes; and Reference, Raw and Native output. The receiver's rough diffuse BRDF
 must be included in its physical reference, and HDR checks must precede display
 tone mapping. Sky intensity changes must not rescale the sun, and no directional
 record may remain in the analytic sampling domain after it enters the cube.
+
+## Sun shadow denoising (#325)
+
+Since #325 the brightest directional light is the scene's sun: it is not baked into
+the cube above, every NEE vertex of every mode samples its disk with a sample
+generator of its own, and miss rays see the disk only where no NEE accounted for
+it. RealtimeNative and RealtimeDLSSSR leave the direct sunlight of the layer 0
+surface out of the layer radiance and denoise its shadow with `SIGMA_SHADOW` in
+the NRD instance of layer 0; the inputs are described in
+[NRD_INPUT_CONTRACTS.md](NRD_INPUT_CONTRACTS.md#sun-shadow-inputs-325). RELAX stays
+the radiance denoiser; REBLUR is selectable but not the default (see the host
+evidence below). Measured on RTX 5060 / Windows, 2026-11-12, against Samples
+`d857a43d` as the base; evidence is in the local `build/issue325/` directory.
+
+`NrdSunShadowTest.hpp`, part of `NrdHitDistanceTest`, runs the production prepare
+and merge entry points on two pixels: the penumbra of an occluded and an
+unoccluded sun ray, the merge of layer 0 with a denoised shadow, sky pixels and
+the disabled state. Debug, D3D12 and Vulkan pass. The other GPU and CPU tests
+touched by the change also pass on Release, D3D12 and Vulkan:
+`LocalLightSamplingTest`, `EnvironmentLightSamplingTest`, `LightFeedbackTest`,
+`SubSamplingTest`, `AsyncPrefixTest`, `VisibilityRayTest` (uint32, uint16; the
+HitObject case needs D3D12) and `SharcCacheTest` (D3D12). Two of them no longer
+built before this change and are fixed with it: `build_visibility_test.bat` now
+compiles `RTXPTSceneJson.cpp`, which implements the `RTXPTFileSource` that
+`RTXPTMaterials.cpp` reads external textures through, and `SharcCacheTest.cpp`
+defines the `MATERIAL_TEXTURE_COUNT` of the bindless material table.
+
+Reference equivalence: convergence-test (a 2.86-degree sun), 320x240, 4096
+Reference samples, two seeds per build. The whole image of the new estimator is
+0.41% brighter than the base; 40x40 blocks differ by a median of +0.30% and a 95th
+percentile of +1.44%, while the whole image of either build changes by less than
+0.01% between seeds.
+The difference is the energy the cube bake loses at the disk edge, which a
+numerical model of the `EnvCubeBakeCS` disk coverage puts at 3.2% of a
+2.86-degree sun on a 2048 cube (2 degrees: 4.4-4.8%; 0.53 degrees: 16-19%, as
+measured on the GPU in [Directional lights in the environment](#directional-lights-in-the-environment-2026-11-07)). The cube is 2048 texels
+whenever it bakes a directional light, so direct sunlight grows by about 5% for a
+2-degree sun and by 19-24% for a 0.53-degree one. In an embedding host's
+de_dust2 package (a 2-degree sun) the sunlit ground of a converged Reference got
+3% brighter after ACES tone mapping.
+
+`capture_realtime_baseline.py --repeats 3`, convergence-test, 320x240, Power+ NEE,
+Release (base: Debug). RMSE is against the mean of 4096 undenoised frames and "tail"
+is frames 65-128, as in [RealtimeNative evidence](#realtimenative-evidence):
+
+| Configuration | Tail mean RMSE | Adjacent luminance MAE | Frame 32 / tail | First frame RMSE |
+| --- | --- | --- | --- | --- |
+| Native default (RELAX + SIGMA), D3D12 | 0.0854 / 0.0850 / 0.0859 | 0.002506 / 0.002502 / 0.002515 | 1.026 / 1.031 / 1.029 | 0.1814 / 0.1835 / 0.1836 |
+| Native default (RELAX + SIGMA), Vulkan | 0.0855 / 0.0858 / 0.0855 | 0.002518 / 0.002512 / 0.002517 | 1.040 / 1.027 / 1.019 | 0.1814 / 0.1810 / 0.1803 |
+| Native, `--sun-shadow false`, D3D12 | 0.1089 / 0.1087 / 0.1093 | 0.002727 / 0.002724 / 0.002719 | 1.031 / 1.035 / 1.033 | 0.2853 / 0.2850 / 0.2849 |
+| Native, `--denoiser reblur`, D3D12 | 0.1032 / 0.1030 / 0.1032 | 0.000429 / 0.000426 / 0.000425 | 1.123 / 1.118 / 1.114 | 0.1886 / 0.1891 / 0.1884 |
+| Sample route (`--preset sample`), D3D12 | 0.1093 / 0.1096 / 0.1091 | 0.002724 / 0.002724 / 0.002725 | 1.030 / 1.035 / 1.024 | 0.2842 / 0.2856 / 0.2852 |
+| Sample route (`--preset sample`), Vulkan | 0.1092 / 0.1094 / 0.1095 | 0.002733 / 0.002735 / 0.002731 | 1.035 / 1.032 / 1.035 | 0.2847 / 0.2843 / 0.2847 |
+| Base Native, D3D12 | 0.1067 / 0.1038 / 0.1050 | 0.002935 / 0.002940 / 0.002942 | 1.050 / 1.001 / 1.068 | 0.2184 / 0.2138 / 0.2152 |
+
+The tail RMSE of the undenoised frames drops from 0.712 (base) to 0.646-0.654.
+The 128th denoised frame keeps 0.948 of the mean luminance with SIGMA, 0.946
+without it and 0.943 in the base, so the lower RMSE is not a smaller energy
+difference of prepare. Without SIGMA the first frame is worse than the base: the
+sun's highlight on a glossy surface of the scene, which the cube bake blurred, now
+has a 4096-frame mean of 48.4 instead of 20.8 at its peak pixel, and the spatial
+filter of a first RELAX frame flattens it to 2.4. All of the increase lies in that
+one 40x40 block. With SIGMA the noise-free sunlight gives 48.7 there from the
+first frame on.
+
+An embedding host's GPU tests (`goldsrc_render_package_pt_{d3d12,vulkan}`,
+RelWithDebInfo) cover the shadow and the defaults:
+
+- A sun-only scene with an occluder in front of a receiver, 0.53 degrees: over 252
+  shadow-edge pixels, the mean absolute luminance difference between the 32nd
+  Native frame and a 512-frame mean of Raw frames, relative to the lit level, is
+  0.0014 (D3D12) and 0.0016 (Vulkan) with SIGMA and 0.1545 without it; the limit
+  is 0.015.
+- Without a sun no frame denoises with SIGMA, and the output equals that of a view
+  with `NativeSunShadowDenoising = false`.
+- The replaced-instance case of RealtimeNative (an instance whose history
+  confidence is zero): with RELAX its first frame has a red ratio of 0.0339, equal
+  to restarted controls (0.0339, limit 0.0508). With REBLUR it is 0.248, and still
+  0.163, 0.126 and 0.106 in the next three frames, because REBLUR only scales the
+  accumulation speed by the confidence (`accumSpeed *= lerp(c, 1, 1/(1+a))`) and
+  its stabilized history ignores it, while RELAX limits the accumulated frames to
+  the confidence. REBLUR therefore is not the default.
+
+Sample smoke runs (Debug, D3D12 and Vulkan, `--realtime_native true`, 135 frames)
+report `nrdMethod=RELAX sunShadowDenoises=135` by default, `REBLUR` with
+`--nrd_method reblur` and `sunShadowDenoises=0` with `--nrd_sun_shadow false`,
+without graphics errors.

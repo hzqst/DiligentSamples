@@ -163,6 +163,11 @@ RWStructuredBuffer<float4> u_TestResult;
         auto        Combined      = MakeTexture(TEX_FORMAT_R8_UNORM);
         auto        LegacySpec    = MakeTexture(TEX_FORMAT_R32_FLOAT);
         auto        Results       = MakeBuffer(nullptr, sizeof(float) * ResultChannels * ResultCount, sizeof(float) * ResultChannels);
+        // Prepare and merge reflect the sun shadow inputs even when the frame does not separate the sunlight.
+        auto SunHitDistance    = MakeTexture(TEX_FORMAT_R32_FLOAT);
+        auto SunPenumbra       = MakeTexture(TEX_FORMAT_R16_FLOAT);
+        auto SunDirectLighting = MakeTexture(TEX_FORMAT_RGBA16_FLOAT);
+        auto SunShadow         = MakeTexture(TEX_FORMAT_R8_UNORM);
 
         SampleConstants Frame{};
         Frame.ptConsts.imageWidth = Frame.ptConsts.camera.ViewportWidth = 2;
@@ -215,6 +220,10 @@ RWStructuredBuffer<float4> u_TestResult;
         Bind("u_DenoiserDisocclusionThresholdMix", Disocclusion->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
         Bind("u_CombinedHistoryClampRelax", Combined->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
         Bind("t_SpecularHitT", LegacySpec->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
+        Bind("t_SunHitDistance", SunHitDistance->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
+        Bind("u_SunPenumbra", SunPenumbra->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
+        Bind("t_SunDirectLighting", SunDirectLighting->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
+        Bind("t_SunShadow", SunShadow->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
         Bind("t_DenoiserViewspaceZ", ViewZIn->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
         Bind("t_DenoiserOutDiffRadianceHitDist", DenoisedDiff->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
         Bind("t_DenoiserOutSpecRadianceHitDist", DenoisedSpec->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));

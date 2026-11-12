@@ -152,6 +152,17 @@ nrd::ReblurSettings RTXPTMakeReblurSettings(const RTXPTNrdReblurUiSettings& Ui)
     return Settings;
 }
 
+nrd::SigmaSettings RTXPTMakeSigmaSettings(const RTXPTNrdSigmaUiSettings& Ui, const float3& SunDirection)
+{
+    nrd::SigmaSettings Settings;
+    Settings.lightDirection[0]        = SunDirection.x;
+    Settings.lightDirection[1]        = SunDirection.y;
+    Settings.lightDirection[2]        = SunDirection.z;
+    Settings.planeDistanceSensitivity = Ui.PlaneDistanceSensitivity;
+    Settings.maxStabilizedFrameNum    = Ui.MaxStabilizedFrameNum;
+    return Settings;
+}
+
 #endif
 
 } // namespace Diligent

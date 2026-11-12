@@ -30,6 +30,7 @@ static void Require(bool OK, const char* Text)
 #include "NrdPrepareInputsTest.hpp"
 #include "NrdRadianceScaleTest.hpp"
 #include "NrdHistoryConfidenceTest.hpp"
+#include "NrdSunShadowTest.hpp"
 
 int main(int argc, char** argv)
 try
@@ -199,6 +200,7 @@ RWStructuredBuffer<float4> u_Result;
     Require(R[6][0] == 100000 && R[6][1] == 65504 && std::abs(R[6][2] - R[6][3]) < 1e-6f, "large geometry distances normalize before format clamping");
     RunNrdPrepareInputsTest(Device, Context, Source);
     RunNrdRadianceScaleTest(Device, Context, Source);
+    RunNrdSunShadowTest(Device, Context, Source);
     Require(Errors == 0, "GPU validation errors");
     std::cout << "NRD hit distance GPU regression passed\n";
     return 0;

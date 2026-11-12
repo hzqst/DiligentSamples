@@ -1,6 +1,7 @@
 #include "RTXPTRealtimePipeline.hpp"
 #include "AsyncPrefix.hpp"
 #include "MapHelper.hpp"
+#include "RTXPTLights.hpp"
 #include "RTXPTNrdConfig.hpp"
 #include "RTXPTSuperResolutionInputs.hpp"
 #if RTXPT_HAS_RAY_RECONSTRUCTION
@@ -15,8 +16,8 @@ namespace Diligent
 namespace
 {
 //RealtimeNative traces and prepares its layers with the Sample's realtime defaults (RTXPTRealtimeSettings), the
-//configuration whose RELAX output the M3.0 baseline thresholds were measured on. RealtimeDLSSRR conditions its layers
-//the same way (D5).
+//configuration whose RELAX output the M3.0 baseline thresholds were measured on (with SIGMA on the sun shadow from
+//#325). RealtimeDLSSRR conditions its layers the same way (D5).
 constexpr float  kNativeFireflyFilterThreshold         = 0.10f;
 constexpr float  kFireflyFilterThresholdScale          = 1000.0f;
 constexpr float  kNativeDenoiserRadianceClampK         = 8.0f;
@@ -62,6 +63,7 @@ RTXPTErrorCode RTXPTRealtimePipeline::Initialize(const RTXPTRealtimePipelineCrea
     m_ReconstructionDisplayExposure = CreateInfo.ReconstructionDisplayExposure;
     m_ReconstructionExposureValue   = 0;
     m_SuperResolution               = CreateInfo.SuperResolution;
+    m_SunShadowDenoising            = CreateInfo.SunShadowDenoising;
     auto* const  Device             = CreateInfo.Device;
     auto* const  Cache              = CreateInfo.Cache;
     const Uint32 Width = CreateInfo.Width, Height = CreateInfo.Height;
@@ -81,7 +83,7 @@ RTXPTErrorCode RTXPTRealtimePipeline::Initialize(const RTXPTRealtimePipelineCrea
     if (bReconstruction)
         return RTXPTErrorCode::RayReconstructionUnavailable;
 #endif
-    const bool bNative = m_Denoiser == RTXPTRealtimeDenoiser::NrdRelax;
+    const bool bNative = IsNrdDenoised();
     if (bNative && !RTXPTIsNrdAvailable())
         return RTXPTErrorCode::DenoiserUnavailable;
     RTXPTRenderTargetCreateInfo Targets;
@@ -126,9 +128,11 @@ RTXPTErrorCode RTXPTRealtimePipeline::Initialize(const RTXPTRealtimePipelineCrea
             return RTXPTErrorCode::FrameTargetsFailed;
         m_ReconstructionExposureValue = InitialExposure;
     }
-    auto*      Factory = Device->GetEngineFactory();
+    auto*      Factory       = Device->GetEngineFactory();
+    const auto NativePassSet = m_Denoiser == RTXPTRealtimeDenoiser::NrdRelax ? RTXPTPostProcessPassSet::RealtimeNativeRelax :
+                                                                               RTXPTPostProcessPassSet::RealtimeNativeReblur;
     const auto PassSet = bReconstruction ? RTXPTPostProcessPassSet::RealtimeRR :
-                                           (bNative ? RTXPTPostProcessPassSet::RealtimeNative : RTXPTPostProcessPassSet::RealtimeRaw);
+                                           (bNative ? NativePassSet : RTXPTPostProcessPassSet::RealtimeRaw);
     if (!m_Guides.Initialize(Device, Factory, Cache, m_Constants, true) ||
         !m_Merge.Initialize(Device, Factory, Cache, m_Constants, true, PassSet) ||
         !m_PostProcess.Initialize(Device, Cache, CreateInfo.PSOCache, DisplayWidth, DisplayHeight, m_DisplayFormat))
@@ -138,9 +142,10 @@ RTXPTErrorCode RTXPTRealtimePipeline::Initialize(const RTXPTRealtimePipelineCrea
         return RTXPTErrorCode::SuperResolutionInputsFailed;
     if (bNative)
     {
-        //RELAX with the Sample's default settings, the configuration of the M3.0 baseline.
+        //The Sample's default settings of the method, the configuration of the M3.0 baseline. Layer 0 carries SIGMA
+        //whenever sun shadow denoising is on; frames without a sun do not dispatch it.
         m_NrdSettings           = {};
-        m_NrdSettings.NRDMethod = RTXPTNrdMethod::RELAX;
+        m_NrdSettings.NRDMethod = m_Denoiser == RTXPTRealtimeDenoiser::NrdRelax ? RTXPTNrdMethod::RELAX : RTXPTNrdMethod::REBLUR;
         RTXPTNrdIntegrationCreateInfo NrdCI;
         NrdCI.pEngineFactory   = Factory;
         NrdCI.pStateCache      = Cache;
@@ -148,11 +153,14 @@ RTXPTErrorCode RTXPTRealtimePipeline::Initialize(const RTXPTRealtimePipelineCrea
         NrdCI.Width            = Width;
         NrdCI.Height           = Height;
         NrdCI.ComputeSupported = true;
+        NrdCI.SunShadow        = m_SunShadowDenoising;
         if (!m_Nrd.Prepare(Device, NrdCI))
             return RTXPTErrorCode::DenoiserSetupFailed;
-        m_Stats.NrdInstances      = kRTXPTDenoisingLayerCount;
-        m_Stats.NrdPoolBytes      = m_Nrd.GetPoolTextureBytes();
-        m_Stats.HistoryConfidence = CreateInfo.HistoryConfidence;
+        m_Stats.NrdInstances       = kRTXPTDenoisingLayerCount;
+        m_Stats.NrdPoolBytes       = m_Nrd.GetPoolTextureBytes();
+        m_Stats.HistoryConfidence  = CreateInfo.HistoryConfidence;
+        m_Stats.NrdMethod          = m_NrdSettings.NRDMethod;
+        m_Stats.SunShadowDenoising = m_SunShadowDenoising;
     }
     m_Ready = true;
     return RTXPTErrorCode::Ok;
@@ -199,7 +207,9 @@ RTXPTErrorCode RTXPTRealtimePipeline::Render(IDeviceContext* Context, RTXPTRayTr
     //Textures are sampled for the output resolution the upscaler or reconstruction produces.
     if (DisplayWidth != Width || DisplayHeight != Height)
         PT.texLODBias += RTXPTSuperResolutionInputs::ComputeTexLODBias(Width, Height, DisplayWidth, DisplayHeight);
-    if (m_Denoiser == RTXPTRealtimeDenoiser::NrdRelax || bReconstruction)
+    //Only an NRD view separates the direct sunlight of layer 0; every other mode keeps it in the layer radiance.
+    Constants.sun.ShadowDenoising = IsNrdDenoised() && m_SunShadowDenoising && Constants.sun.Enabled != 0u ? 1u : 0u;
+    if (IsNrdDenoised() || bReconstruction)
     {
         //As RTXPTSample::UpdateFrameConstants converts the Sample's realtime firefly threshold.
         PT.denoisingEnabled                                = 1;
@@ -239,6 +249,8 @@ RTXPTErrorCode RTXPTRealtimePipeline::Render(IDeviceContext* Context, RTXPTRayTr
     Dispatch.pStableRadianceUAV        = m_Targets.GetStableRadianceUAV();
     Dispatch.pDenoisingLayersHeaderUAV = m_Targets.GetDenoisingLayersHeaderUAV();
     Dispatch.pDenoisingLayersBufferUAV = m_Targets.GetDenoisingLayersBufferUAV();
+    Dispatch.pSunDirectLightingUAV     = m_Targets.GetSunDirectLightingUAV();
+    Dispatch.pSunHitDistanceUAV        = m_Targets.GetSunHitDistanceUAV();
     {
         RTXPTGpuProfiler::Scope Timing{Profiler, Context, RTXPTGpuProfiler::Stage::Build};
         if (!Lights.PrepareLightBuffers(Context) || !Rays.Dispatch(Context, RTXPTPathTraceVariant::BuildDenoisingLayers, Dispatch))
@@ -247,7 +259,7 @@ RTXPTErrorCode RTXPTRealtimePipeline::Render(IDeviceContext* Context, RTXPTRayTr
     ++m_Stats.BuildDispatches;
     RTXPTRayTracingPass::InsertUAVBarrier(Context, m_Targets.GetDenoisingLayersBuffer());
     for (auto* View : {Dispatch.pDenoisingLayersHeaderUAV, Dispatch.pStableRadianceUAV, Dispatch.pDepthUAV,
-                       Dispatch.pMotionVectorsUAV, Dispatch.pThroughputUAV})
+                       Dispatch.pMotionVectorsUAV, Dispatch.pThroughputUAV, Dispatch.pSunDirectLightingUAV, Dispatch.pSunHitDistanceUAV})
         RTXPTRayTracingPass::InsertUAVBarrier(Context, View);
     Lights.UpdateFrame(Input.view.MatWorldToClip, Input.camera.PosW);
     {
@@ -263,7 +275,8 @@ RTXPTErrorCode RTXPTRealtimePipeline::Render(IDeviceContext* Context, RTXPTRayTr
     }
     ++m_Stats.FillDispatches;
     RTXPTRayTracingPass::InsertUAVBarrier(Context, m_Targets.GetDenoisingLayersBuffer());
-    RTXPTRayTracingPass::InsertUAVBarrier(Context, Dispatch.pSpecularHitTUAV);
+    for (auto* View : {Dispatch.pSpecularHitTUAV, Dispatch.pSunDirectLightingUAV, Dispatch.pSunHitDistanceUAV})
+        RTXPTRayTracingPass::InsertUAVBarrier(Context, View);
     {
         RTXPTGpuProfiler::Scope Timing{Profiler, Context, RTXPTGpuProfiler::Stage::Guides};
         if (!m_Guides.Bake(Context, m_Targets, RTXPTDenoisingGuideDebugView::Disabled, RTXPTGuideHistoryMode::CurrentFrame))
@@ -278,7 +291,7 @@ RTXPTErrorCode RTXPTRealtimePipeline::Render(IDeviceContext* Context, RTXPTRayTr
     }
     else
     {
-        if (m_Denoiser == RTXPTRealtimeDenoiser::NrdRelax)
+        if (IsNrdDenoised())
         {
             const auto Code = Denoise(Context, Constants, History, Profiler);
             if (Code != RTXPTErrorCode::Ok)
@@ -314,9 +327,11 @@ RTXPTErrorCode RTXPTRealtimePipeline::Render(IDeviceContext* Context, RTXPTRayTr
     return RTXPTErrorCode::Ok;
 }
 
-/* Denoises each active layer with its own RELAX instance (RTXPTNrdDenoiser): prepare demodulates the layer and writes
+/* Denoises each active layer with its own NRD instance (RTXPTNrdDenoiser): prepare demodulates the layer and writes
  * its history confidence (0 where the layer path has no valid previous correspondence), NRD denoises it with the
- * layer's history, and the merge remodulates it into the linear HDR output. History.Reset restarts every layer
+ * layer's history, and the merge remodulates it into the linear HDR output. In frames whose constants separate the
+ * direct sunlight (sun.ShadowDenoising), layer 0 also denoises the sun shadow with SIGMA and its merge adds the
+ * shadowed sunlight. History.Reset restarts every layer
  * (CLEAR_AND_RESTART). NRD advances its history with the dispatch, so a later failure of this frame leaves the host
  * to restart the next one, as for every failure.
  */
@@ -332,6 +347,8 @@ RTXPTErrorCode RTXPTRealtimePipeline::Denoise(IDeviceContext* Context, const Sam
     Attribs.TimeDeltaSeconds            = History.TimeDeltaSeconds;
     Attribs.ResetHistory                = History.Reset;
     Attribs.HistoryConfidence           = m_Stats.HistoryConfidence;
+    Attribs.SunShadow                   = Constants.sun.ShadowDenoising != 0u;
+    Attribs.SunDirection                = GetRTXPTSunDirection(Constants.sun);
     {
         RTXPTGpuProfiler::Scope Timing{Profiler, Context, RTXPTGpuProfiler::Stage::Denoise};
         if (!m_Nrd.Denoise(Context, m_Merge, Attribs, Profiler))
@@ -340,6 +357,8 @@ RTXPTErrorCode RTXPTRealtimePipeline::Denoise(IDeviceContext* Context, const Sam
     ++m_Stats.DenoiseDispatches;
     m_Stats.HistoryResets += History.Reset ? 1u : 0u;
     m_Stats.LastHistoryReset = History.Reset;
+    m_Stats.SunShadowDenoises += Attribs.SunShadow ? 1u : 0u;
+    m_Stats.LastSunShadowDenoised = Attribs.SunShadow;
     return RTXPTErrorCode::Ok;
 }
 

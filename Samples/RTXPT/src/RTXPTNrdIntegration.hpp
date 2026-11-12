@@ -61,6 +61,10 @@ struct RTXPTNrdFrameAttribs
     bool                         EnableValidation = false;
     // Binds the plane's current assessment in previous-frame coordinates to NRD's confidence inputs.
     bool HistoryConfidence = false;
+    // Runs SIGMA on the sun shadow of the plane (SunPenumbra to SunShadow) before the radiance denoiser; requires an
+    // integration created with SunShadow. SunDirection points from the surfaces to the sun.
+    bool   SunShadow    = false;
+    float3 SunDirection = float3{0, 0, 0};
 };
 
 struct RTXPTNrdIntegrationCreateInfo
@@ -71,19 +75,24 @@ struct RTXPTNrdIntegrationCreateInfo
     Uint32             Width            = 0;
     Uint32             Height           = 0;
     bool               ComputeSupported = false;
+    // Adds SIGMA_SHADOW to the instance, sharing its pools and common settings with the radiance denoiser.
+    bool SunShadow = false;
 };
 
 struct RTXPTNrdIntegrationStats
 {
-    bool           Ready                = false;
-    bool           LastDispatchExecuted = false;
-    Uint32         DispatchCount        = 0;
-    Uint32         LastPlaneIndex       = 0;
-    Uint32         LastDispatches       = 0;
-    Uint32         Width                = 0;
-    Uint32         Height               = 0;
-    Uint64         PoolTextureBytes     = 0;
-    RTXPTNrdMethod Method               = RTXPTNrdMethod::REBLUR;
+    bool           Ready                 = false;
+    bool           LastDispatchExecuted  = false;
+    bool           SunShadow             = false;
+    bool           LastSunShadowExecuted = false;
+    Uint32         DispatchCount         = 0;
+    Uint32         SunShadowDenoises     = 0;
+    Uint32         LastPlaneIndex        = 0;
+    Uint32         LastDispatches        = 0;
+    Uint32         Width                 = 0;
+    Uint32         Height                = 0;
+    Uint64         PoolTextureBytes      = 0;
+    RTXPTNrdMethod Method                = RTXPTNrdMethod::REBLUR;
     std::string    LastFailureReason;
 };
 
@@ -100,6 +109,7 @@ public:
 
     bool                            IsReady() const { return m_Stats.Ready; }
     RTXPTNrdMethod                  GetMethod() const { return m_Stats.Method; }
+    bool                            HasSunShadow() const { return m_Stats.SunShadow; }
     Uint32                          GetWidth() const { return m_Stats.Width; }
     Uint32                          GetHeight() const { return m_Stats.Height; }
     const char*                     GetLastFailureReason() const { return m_Stats.LastFailureReason.c_str(); }
@@ -119,7 +129,7 @@ private:
         std::vector<std::pair<Uint32, std::string>> TextureUAVNames;
     };
 
-    bool CreateInstance(RTXPTNrdMethod Method);
+    bool CreateInstance(RTXPTNrdMethod Method, bool SunShadow);
     bool CreateConstantBuffer(IRenderDevice* pDevice);
     bool CreateSamplers(IRenderDevice* pDevice);
     bool CreatePipelines(IRenderDevice* pDevice, IEngineFactory* pEngineFactory, IRenderStateCache* pStateCache);
@@ -131,8 +141,11 @@ private:
                                const RTXPTNrdFrameAttribs& Attribs);
     void PopulateCommonSettings(nrd::CommonSettings& Settings, const RTXPTNrdFrameAttribs& Attribs) const;
 
-    nrd::Instance*                       m_Instance   = nullptr;
-    nrd::Identifier                      m_Identifier = 0;
+    // The radiance denoiser and the optional SIGMA of the instance.
+    static constexpr nrd::Identifier kRadianceIdentifier  = 0;
+    static constexpr nrd::Identifier kSunShadowIdentifier = 1;
+
+    nrd::Instance*                       m_Instance = nullptr;
     RefCntAutoPtr<IRenderDevice>         m_Device;
     RefCntAutoPtr<IBuffer>               m_ConstantBuffer;
     std::vector<PipelineState>           m_Pipelines;

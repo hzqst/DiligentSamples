@@ -29,6 +29,7 @@
 #include <cstddef>
 
 #include "BasicMath.hpp"
+#include "../shaders/PathTracer/Lighting/PolymorphicLight.h"
 
 namespace Diligent
 {
@@ -173,6 +174,23 @@ static_assert(offsetof(RTXPTEnvMapConstants, WorldToLocal0) == 48, "RTXPTEnvMapC
 static_assert(offsetof(RTXPTEnvMapConstants, ColorEnabled) == 96, "RTXPTEnvMapConstants ColorEnabled offset must match PathTracer/PathTracerShared.h");
 static_assert(offsetof(RTXPTEnvMapConstants, ImportanceMetadata) == 112, "RTXPTEnvMapConstants ImportanceMetadata offset must match PathTracer/PathTracerShared.h");
 
+// The sun of RTXPTLights::GetSunLight, sampled on its own at every surface. Mirrors RTXPTSunConstants in
+// PathTracer/PathTracerShared.h.
+struct RTXPTSunConstants
+{
+    PolymorphicLightInfo Light = {};
+    // Nonzero when the scene has a sun; Light is then a directional light.
+    Uint32 Enabled = 0;
+    // Nonzero when the primary surface of the frame separates the direct sunlight from the denoised radiance
+    // (SunDirectLighting and SunPenumbra) for the sun shadow denoiser.
+    Uint32 ShadowDenoising = 0;
+    // The tangent of the angular radius of the sun disk, which scales the penumbra of the sun shadow denoiser.
+    float  TanAngularRadius = 0;
+    Uint32 _padding1        = 0;
+};
+static_assert(sizeof(RTXPTSunConstants) == 48, "RTXPTSunConstants layout must match PathTracer/PathTracerShared.h");
+static_assert(offsetof(RTXPTSunConstants, Enabled) == 32, "RTXPTSunConstants Enabled offset must match PathTracer/PathTracerShared.h");
+
 struct SampleConstants
 {
     float4x4             viewProj                  = float4x4::Identity();
@@ -184,8 +202,9 @@ struct SampleConstants
     PathTracerCameraData camera                    = {};
     PathTracerConstants  ptConsts                  = {};
     RTXPTEnvMapConstants envMap                    = {};
+    RTXPTSunConstants    sun                       = {};
 };
-static_assert(sizeof(SampleConstants) == 1536, "SampleConstants layout must match PathTracer/PathTracerShared.h");
+static_assert(sizeof(SampleConstants) == 1584, "SampleConstants layout must match PathTracer/PathTracerShared.h");
 static_assert(offsetof(SampleConstants, cameraPositionAndTime) == 128, "SampleConstants cameraPositionAndTime offset must match PathTracer/PathTracerShared.h");
 static_assert(offsetof(SampleConstants, viewportSizeAndFrameIndex) == 144, "SampleConstants viewportSizeAndFrameIndex offset must match PathTracer/PathTracerShared.h");
 static_assert(offsetof(SampleConstants, view) == 160, "SampleConstants view offset must match PathTracer/PathTracerShared.h");
@@ -193,6 +212,7 @@ static_assert(offsetof(SampleConstants, previousView) == 528, "SampleConstants p
 static_assert(offsetof(SampleConstants, camera) == 896, "SampleConstants camera offset must match PathTracer/PathTracerShared.h");
 static_assert(offsetof(SampleConstants, ptConsts) == 1008, "SampleConstants ptConsts offset must match PathTracer/PathTracerShared.h");
 static_assert(offsetof(SampleConstants, envMap) == 1408, "SampleConstants envMap offset must match PathTracer/PathTracerShared.h");
+static_assert(offsetof(SampleConstants, sun) == 1536, "SampleConstants sun offset must match PathTracer/PathTracerShared.h");
 
 struct SampleMiniConstants
 {

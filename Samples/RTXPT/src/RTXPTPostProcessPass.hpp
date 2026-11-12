@@ -53,8 +53,10 @@ enum class RTXPTPostProcessPassSet
     All,
     // The current-frame merge of RealtimeRaw.
     RealtimeRaw,
+    // The REBLUR prepare and merge passes of RealtimeNative.
+    RealtimeNativeReblur,
     // The RELAX prepare and merge passes of RealtimeNative.
-    RealtimeNative,
+    RealtimeNativeRelax,
     // The DLSS RR input preparation of RealtimeDLSSRR.
     RealtimeRR,
 };
@@ -82,6 +84,9 @@ struct RTXPTDenoiserPostProcessAttribs
     Uint32                    PlaneIndex      = 0;
     bool                      InitOutput      = false;
     bool                      HasValidation   = false;
+    // Layer 0 of a frame with the sun shadow denoiser: prepare packs SunHitDistance into the SIGMA penumbra, and the
+    // merge adds SunDirectLighting times the denoised SunShadow.
+    bool SunShadow = false;
     // Internal scratch for the clear -> prepare/scatter -> resolve sequence.
     ITextureView* pHistoryConfidenceCoverageUAV = nullptr;
     // RR prepare only: distinct render-size UAVs, owned by the caller.

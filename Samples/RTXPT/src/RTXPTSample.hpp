@@ -141,6 +141,10 @@ private:
     bool                                   m_RealtimeRawEnabled    = false;
     bool                                   m_RealtimeNativeEnabled = false;
     std::unique_ptr<RTXPTRealtimePipeline> m_SharedRealtime;
+    //--realtime_native denoises its layers with RELAX unless --nrd_method selects another denoiser, and the sun shadow
+    //of layer 0 with SIGMA unless --nrd_sun_shadow is false.
+    RTXPTNrdMethod m_RealtimeNativeMethod    = RTXPTNrdMethod::RELAX;
+    bool           m_RealtimeNativeSunShadow = true;
 
     //RealtimeDLSSSR: the device's super resolution factory, shared by the embedded views.
     RefCntAutoPtr<ISuperResolutionFactory> m_EmbeddedSuperResolutionFactory;

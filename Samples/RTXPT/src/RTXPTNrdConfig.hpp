@@ -26,6 +26,7 @@
 
 #pragma once
 
+#include "BasicMath.hpp"
 #include "RTXPTRealtimeSettings.hpp"
 #include <cmath>
 
@@ -59,6 +60,8 @@ bool        RTXPTIsNrdAvailable();
 nrd::Denoiser       RTXPTToNrdDenoiser(RTXPTNrdMethod Method);
 nrd::RelaxSettings  RTXPTMakeRelaxSettings(const RTXPTNrdRelaxUiSettings& Ui);
 nrd::ReblurSettings RTXPTMakeReblurSettings(const RTXPTNrdReblurUiSettings& Ui);
+// SunDirection points from the surfaces to the sun.
+nrd::SigmaSettings RTXPTMakeSigmaSettings(const RTXPTNrdSigmaUiSettings& Ui, const float3& SunDirection);
 
 // Appends the default search directories of the NRD shaders and headers. They are used only without a host
 // shader source (see RTXPTShaderSource.hpp): first shaders/NRD, where rtxpt_stage_shaders() deploys them,

@@ -67,7 +67,8 @@ public:
                      << ",\"valid_previous_rigid_instances\":" << History.ValidPreviousRigidInstances
                      << ",\"valid_previous_skinned_instances\":" << History.ValidPreviousSkinnedInstances
                      << ",\"invalid_history_instances\":" << History.InvalidHistoryInstances
-                     << ",\"denoiser\":" << (bNative ? "\"NRD_RELAX\"" : "null")
+                     << ",\"denoiser\":" << (!bNative ? "null" : Stats.NrdMethod == RTXPTNrdMethod::RELAX ? "\"NRD_RELAX\"" : "\"NRD_REBLUR\"")
+                     << ",\"sun_shadow_denoiser\":" << (bNative && Stats.LastSunShadowDenoised ? "\"SIGMA_SHADOW\"" : "null")
                      << ",\"denoiser_history_reset\":" << (bNative ? (Stats.LastHistoryReset ? "true" : "false") : "null")
                      << ",\"denoiser_history_confidence\":" << (bNative ? (Stats.HistoryConfidence ? "true" : "false") : "null")
                      << ",\"nrd_instances\":" << Stats.NrdInstances << ",\"nrd_pool_bytes\":" << Stats.NrdPoolBytes << ','

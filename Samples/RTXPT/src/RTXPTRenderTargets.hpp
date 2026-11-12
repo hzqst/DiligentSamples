@@ -78,6 +78,10 @@ struct RTXPTRenderTargetFormats
     TEXTURE_FORMAT DenoiserOutValidation            = TEX_FORMAT_RGBA8_UNORM;
     TEXTURE_FORMAT DenoiserHistoryConfidence        = TEX_FORMAT_R8_UNORM;
     TEXTURE_FORMAT DenoiserAvgLayerRadianceHalfRes  = TEX_FORMAT_RGBA16_FLOAT;
+    TEXTURE_FORMAT SunDirectLighting                = TEX_FORMAT_RGBA16_FLOAT;
+    TEXTURE_FORMAT SunHitDistance                   = TEX_FORMAT_R16_FLOAT;
+    TEXTURE_FORMAT SunPenumbra                      = TEX_FORMAT_R16_FLOAT; // SIGMA IN_PENUMBRA
+    TEXTURE_FORMAT SunShadow                        = TEX_FORMAT_R8_UNORM;  // SIGMA_SHADOW OUT_SHADOW_TRANSLUCENCY
 };
 
 struct RTXPTRenderTargetDimensions
@@ -272,6 +276,16 @@ public:
     ITextureView* GetDenoiserHistoryConfidenceSRV(Uint32 PlaneIndex) const;
     ITextureView* GetDenoiserAvgLayerRadianceHalfResUAV() const;
     ITextureView* GetDenoiserAvgLayerRadianceHalfResSRV() const;
+    // The sun shadow denoiser inputs FILL writes on the surface of layer 0 (realtime resources), and the SIGMA input
+    // prepare packs and the SIGMA output the final merge reads (NRD resources).
+    ITextureView* GetSunDirectLightingUAV() const;
+    ITextureView* GetSunDirectLightingSRV() const;
+    ITextureView* GetSunHitDistanceUAV() const;
+    ITextureView* GetSunHitDistanceSRV() const;
+    ITextureView* GetSunPenumbraUAV() const;
+    ITextureView* GetSunPenumbraSRV() const;
+    ITextureView* GetSunShadowUAV() const;
+    ITextureView* GetSunShadowSRV() const;
 
     ITextureView* GetAccumulationOutputUAV() const;
     ITextureView* GetSuperResolutionColorSRV() const;
@@ -335,6 +349,10 @@ private:
     RefCntAutoPtr<ITexture>                                        m_DenoiserOutValidation;
     std::array<RefCntAutoPtr<ITexture>, kRTXPTDenoisingLayerCount> m_DenoiserHistoryConfidence;
     RefCntAutoPtr<ITexture>                                        m_DenoiserAvgLayerRadianceHalfRes;
+    RefCntAutoPtr<ITexture>                                        m_SunDirectLighting;
+    RefCntAutoPtr<ITexture>                                        m_SunHitDistance;
+    RefCntAutoPtr<ITexture>                                        m_SunPenumbra;
+    RefCntAutoPtr<ITexture>                                        m_SunShadow;
     // Fixed RR formats match the prepare shader, independently of NRD encoding.
     RefCntAutoPtr<ITexture>     m_RRDiffuseAlbedo;
     RefCntAutoPtr<ITexture>     m_RRSpecAlbedo;

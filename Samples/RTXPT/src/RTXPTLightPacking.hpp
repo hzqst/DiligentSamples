@@ -89,6 +89,19 @@ inline Uint32 PackLightDirection(float3 Direction)
         (Uint32(std::clamp(P.y, 0.0f, 1.0f) * 65534.0f) << 16u);
 }
 
+// The inverse of PackLightDirection, as UnpackLightDirection in Lighting/LightPacking.hlsli.
+inline float3 UnpackLightDirection(Uint32 Packed)
+{
+    float2 P{std::clamp(float(Packed & 0xffffu) / 65534.0f, 0.0f, 1.0f), std::clamp(float(Packed >> 16u) / 65534.0f, 0.0f, 1.0f)};
+    P = P * 2.0f - float2{1.0f, 1.0f};
+    P = P * 2.0f - float2{1.0f, 1.0f};
+    float3      N{P.x, P.y, 1.0f - std::abs(P.x) - std::abs(P.y)};
+    const float T = std::clamp(-N.z, 0.0f, 1.0f);
+    N.x += N.x >= 0.0f ? -T : T;
+    N.y += N.y >= 0.0f ? -T : T;
+    return normalize(N);
+}
+
 // LogRadiance keeps the packed log2 radiance in its low 16 bits; 0 marks an unlit light.
 constexpr Uint32 kLightLogRadianceMask  = 0xffffu;
 constexpr float  kLightLogRadianceSteps = 65534.0f;
@@ -104,6 +117,27 @@ inline float UnpackLightRadianceScale(Uint32 Packed)
     return std::exp2(float(Packed - 1u) / kLightLogRadianceSteps *
                          (kPolymorphicLightMaxLog2Radiance - kPolymorphicLightMinLog2Radiance) +
                      kPolymorphicLightMinLog2Radiance);
+}
+
+// The inverse of PackLightFloat16, as f16tof32 decodes it in the shaders.
+inline float UnpackLightFloat16(Uint32 Packed)
+{
+    const Uint32 Bits = ((Packed & 0x8000u) << 16u) | ((Packed & 0x7fffu) << 13u);
+    float        Biased;
+    std::memcpy(&Biased, &Bits, sizeof(Biased));
+    return Biased * std::ldexp(1.0f, 112);
+}
+
+// The illuminance a packed directional light gives a surface facing it in its largest channel: its largest channel
+// radiance times the solid angle of its disk.
+inline float ComputeRTXPTDirectionalLightIlluminance(const PolymorphicLightInfo& Light)
+{
+    constexpr float MaxChannel  = 255.0f;
+    const Uint32    Packed      = Light.LogRadiance & kLightLogRadianceMask;
+    const Uint32    LargestByte = std::max({Light.ColorTypeAndFlags & 255u, (Light.ColorTypeAndFlags >> 8u) & 255u, (Light.ColorTypeAndFlags >> 16u) & 255u});
+    if (Packed == 0u)
+        return 0.0f;
+    return UnpackLightRadianceScale(Packed) * (float(LargestByte) / MaxChannel) * UnpackLightFloat16(Light.Scalars >> 16u);
 }
 
 inline void PackLightColor(const float3& Color, PolymorphicLightInfo& Light)

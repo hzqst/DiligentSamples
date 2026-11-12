@@ -259,6 +259,8 @@ RTXPTRayTracingDispatch MakePathTraceDispatch(const RTXPTRenderTargets&  RenderT
     Dispatch.pStableRadianceUAV        = RenderTargets.GetStableRadianceUAV();
     Dispatch.pDenoisingLayersHeaderUAV = RenderTargets.GetDenoisingLayersHeaderUAV();
     Dispatch.pDenoisingLayersBufferUAV = RenderTargets.GetDenoisingLayersBufferUAV();
+    Dispatch.pSunDirectLightingUAV     = RenderTargets.GetSunDirectLightingUAV();
+    Dispatch.pSunHitDistanceUAV        = RenderTargets.GetSunHitDistanceUAV();
     Dispatch.pMiniConstants            = &MiniConstants;
     Dispatch.Width                     = RenderTargets.GetRenderWidth();
     Dispatch.Height                    = RenderTargets.GetRenderHeight();
@@ -646,6 +648,7 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
     Args.Parse("realtime", m_RealtimeUI.RealtimeMode);
     Args.Parse("realtime_raw", m_RealtimeRawEnabled);
     Args.Parse("realtime_native", m_RealtimeNativeEnabled);
+    Args.Parse("nrd_sun_shadow", m_RealtimeNativeSunShadow);
     Args.Parse("embedded_reference", m_UseEmbeddedView);
     if (Args.ParseEnum<RTXPTViewMode>("embedded_mode", 0,
                                       {{"reference", RTXPTViewMode::Reference}, {"raw", RTXPTViewMode::RealtimeRaw}, {"native", RTXPTViewMode::RealtimeNative}, {"dlss_sr", RTXPTViewMode::RealtimeDLSSSR}, {"dlss_rr", RTXPTViewMode::RealtimeDLSSRR}}, m_EmbeddedMode))
@@ -709,7 +712,8 @@ RTXPTSample::CommandLineStatus RTXPTSample::ProcessCommandLine(int argc, const c
     Args.Parse("scene", m_InitialSceneName);
     Args.Parse("scene_animations", m_RequestSceneAnimations);
     Args.Parse("nrd", m_RealtimeUI.StandaloneDenoiser);
-    Args.ParseEnum<RTXPTNrdMethod>("nrd_method", 0, {{"reblur", RTXPTNrdMethod::REBLUR}, {"relax", RTXPTNrdMethod::RELAX}}, m_RealtimeUI.NRDMethod);
+    if (Args.ParseEnum<RTXPTNrdMethod>("nrd_method", 0, {{"reblur", RTXPTNrdMethod::REBLUR}, {"relax", RTXPTNrdMethod::RELAX}}, m_RealtimeUI.NRDMethod))
+        m_RealtimeNativeMethod = m_RealtimeUI.NRDMethod;
     Args.ParseEnum<RTXPTNrdHitDistanceReconstructionMode>("relax_hit_distance_reconstruction", 0,
                                                           {{"off", RTXPTNrdHitDistanceReconstructionMode::Off}, {"3x3", RTXPTNrdHitDistanceReconstructionMode::Area3x3}, {"5x5", RTXPTNrdHitDistanceReconstructionMode::Area5x5}},
                                                           m_RealtimeUI.RelaxSettings.HitDistanceReconstructionMode);
@@ -1450,6 +1454,7 @@ void RTXPTSample::UpdateFrameConstants(double CurrTime)
     PtConsts.camera             = CurrentCamera;
     PtConsts.prevCamera         = PreviousCamera;
     m_LastFrameConstants.envMap = m_EnvMapBaker.GetConstants();
+    m_LastFrameConstants.sun    = pSceneLights != nullptr ? MakeRTXPTSunConstants(*pSceneLights) : RTXPTSunConstants{};
 
     if (m_FrameConstantsCB)
     {
@@ -2303,19 +2308,23 @@ bool RTXPTSample::RunSharedRealtime()
     if (!PrepareSceneFrame())
         return false;
     const Uint32 Width = m_RenderTargets.GetRenderWidth(), Height = m_RenderTargets.GetRenderHeight();
-    if (!m_SharedRealtime || m_SharedRealtime->GetTargets().GetRenderWidth() != Width || m_SharedRealtime->GetTargets().GetRenderHeight() != Height)
+    const auto   NativeDenoiser = m_RealtimeNativeMethod == RTXPTNrdMethod::REBLUR ? RTXPTRealtimeDenoiser::NrdReblur : RTXPTRealtimeDenoiser::NrdRelax;
+    const auto   Denoiser       = m_RealtimeNativeEnabled ? NativeDenoiser : RTXPTRealtimeDenoiser::None;
+    if (!m_SharedRealtime || m_SharedRealtime->GetTargets().GetRenderWidth() != Width || m_SharedRealtime->GetTargets().GetRenderHeight() != Height ||
+        m_SharedRealtime->GetDenoiser() != Denoiser)
     {
         RTXPTRealtimePipelineCreateInfo CreateInfo;
-        CreateInfo.Device        = m_pDevice;
-        CreateInfo.Cache         = m_pStateCache;
-        CreateInfo.PSOCache      = m_pPSOCache;
-        CreateInfo.Constants     = m_FrameConstantsCB;
-        CreateInfo.Width         = Width;
-        CreateInfo.Height        = Height;
-        CreateInfo.DisplayFormat = m_RenderTargets.GetLdrColorRTV()->GetDesc().Format;
-        CreateInfo.Denoiser      = m_RealtimeNativeEnabled ? RTXPTRealtimeDenoiser::NrdRelax : RTXPTRealtimeDenoiser::None;
-        auto       Pipeline      = std::make_unique<RTXPTRealtimePipeline>();
-        const auto Code          = Pipeline->Initialize(CreateInfo);
+        CreateInfo.Device             = m_pDevice;
+        CreateInfo.Cache              = m_pStateCache;
+        CreateInfo.PSOCache           = m_pPSOCache;
+        CreateInfo.Constants          = m_FrameConstantsCB;
+        CreateInfo.Width              = Width;
+        CreateInfo.Height             = Height;
+        CreateInfo.DisplayFormat      = m_RenderTargets.GetLdrColorRTV()->GetDesc().Format;
+        CreateInfo.Denoiser           = Denoiser;
+        CreateInfo.SunShadowDenoising = m_RealtimeNativeSunShadow;
+        auto       Pipeline           = std::make_unique<RTXPTRealtimePipeline>();
+        const auto Code               = Pipeline->Initialize(CreateInfo);
         if (Code != RTXPTErrorCode::Ok)
         {
             RecordRealtimePathTraceStatus(GetRTXPTErrorCodeString(Code));
@@ -2337,7 +2346,9 @@ bool RTXPTSample::RunSharedRealtime()
         RecordRealtimePathTraceStatus(GetRTXPTErrorCodeString(Code));
         return false;
     }
-    RecordRealtimePathTraceStatus(m_RealtimeNativeEnabled ? "RealtimeNative: RELAX per denoising layer" : "RealtimeRaw: current frame");
+    RecordRealtimePathTraceStatus(!m_RealtimeNativeEnabled ? "RealtimeRaw: current frame" :
+                                                             m_SharedRealtime->GetStats().NrdMethod == RTXPTNrdMethod::RELAX ? "RealtimeNative: RELAX per denoising layer" :
+                                                                                                                               "RealtimeNative: REBLUR per denoising layer");
     m_HDRCapture.Capture(m_pDevice, m_pImmediateContext, m_SharedRealtime->GetTargets().GetOutputColorSRV()->GetTexture(), m_FrameIndex);
     return m_BlitPass.Render(m_pImmediateContext, m_pSwapChain, m_RenderTargets.GetPresentationSRV());
 }
@@ -2683,6 +2694,7 @@ void RTXPTSample::Update(double CurrTime, double ElapsedTime, bool DoUpdateUI)
                       << " fill=" << Stats.FillDispatches << " guides=" << Stats.GuideBakes
                       << " merge=" << Stats.MergeDispatches << " denoise=" << Stats.DenoiseDispatches
                       << " historyResets=" << Stats.HistoryResets << " nrdInstances=" << Stats.NrdInstances
+                      << " nrdMethod=" << GetNrdMethodName(Stats.NrdMethod) << " sunShadowDenoises=" << Stats.SunShadowDenoises
                       << " dynamicMotionValidated=" << Stats.DynamicMotionValidated << std::endl;
             PostQuitMessage(m_LastFrameSucceeded && Stats.OutputValid ? 0 : 1);
         }

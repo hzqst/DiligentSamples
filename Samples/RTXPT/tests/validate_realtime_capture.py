@@ -19,13 +19,17 @@ from pathlib import Path
 import struct
 
 
-# Per mode: HDR color resource, required GPU timing stages and denoiser.
+# Per mode: HDR color resource, required GPU timing stages and accepted denoisers (REBLUR by default, RELAX as a
+# validation control).
+NRD_DENOISERS = ("NRD_REBLUR", "NRD_RELAX")
 MODES = {
-    "RealtimeRaw": ("noisy_radiance", ("BUILD", "FILL", "Guides", "Merge", "ToneMapping"), None),
-    "RealtimeNative": ("denoised_radiance", ("BUILD", "FILL", "Guides", "NRD", "ToneMapping"), "NRD_RELAX"),
-    "RealtimeDLSSSR": ("upscaled_radiance", ("BUILD", "FILL", "Guides", "NRD", "SRInputs", "SR", "ToneMapping"), "NRD_RELAX"),
-    "RealtimeDLSSRR": ("reconstructed_radiance", ("BUILD", "FILL", "Guides", "RRPrepare", "RR", "ToneMapping"), None),
+    "RealtimeRaw": ("noisy_radiance", ("BUILD", "FILL", "Guides", "Merge", "ToneMapping"), ()),
+    "RealtimeNative": ("denoised_radiance", ("BUILD", "FILL", "Guides", "NRD", "ToneMapping"), NRD_DENOISERS),
+    "RealtimeDLSSSR": ("upscaled_radiance", ("BUILD", "FILL", "Guides", "NRD", "SRInputs", "SR", "ToneMapping"), NRD_DENOISERS),
+    "RealtimeDLSSRR": ("reconstructed_radiance", ("BUILD", "FILL", "Guides", "RRPrepare", "RR", "ToneMapping"), ()),
 }
+# The sun shadow denoiser of layer 0 in NRD frames with a sun.
+SUN_SHADOW_DENOISER = "SIGMA_SHADOW"
 NATIVE_LAYER_COUNT = 3
 PIXEL_BYTES = {'TEX_FORMAT_RGBA16_FLOAT': 8, 'TEX_FORMAT_R32_FLOAT': 4, 'TEX_FORMAT_RG16_FLOAT': 4,
                'TEX_FORMAT_R8_UNORM': 1, 'TEX_FORMAT_RGBA8_TYPELESS': 4, 'TEX_FORMAT_RGBA32_FLOAT': 16}
@@ -149,13 +153,16 @@ def validate(directory: Path, require_host=False):
     if manifest["schema"] not in (1, 2) or manifest["mode"] not in MODES:
         raise ValueError("Unsupported capture schema/mode")
     mode = manifest["mode"]
-    color_name, timing_stages, denoiser = MODES[mode]
+    color_name, timing_stages, denoisers = MODES[mode]
     if not isinstance(manifest["dynamic_motion_validated"], bool):
         raise ValueError("Realtime capture must state whether its producer validated dynamic motion")
     if manifest["spp"] != 1:
         raise ValueError("Realtime capture must not claim accumulation")
-    if manifest.get("denoiser") != denoiser:
-        raise ValueError(f"{mode} capture must state denoiser {denoiser}")
+    denoiser = manifest.get("denoiser")
+    if (denoiser not in denoisers) if denoisers else (denoiser is not None):
+        raise ValueError(f"{mode} capture must state one of the denoisers {denoisers or (None,)}")
+    if manifest.get("sun_shadow_denoiser") not in ((None, SUN_SHADOW_DENOISER) if denoiser else (None,)):
+        raise ValueError(f"{mode} capture states an unexpected sun shadow denoiser")
     names = {resource["name"] for resource in manifest["resources"]}
     if len(names) != len(manifest['resources']):
         raise ValueError('Duplicate resource name')

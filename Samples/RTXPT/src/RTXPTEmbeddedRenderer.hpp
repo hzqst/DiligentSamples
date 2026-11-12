@@ -3,6 +3,7 @@
 #include <memory>
 #include <string>
 #include "RTXPTFrameConstants.hpp"
+#include "RTXPTRealtimeSettings.hpp"
 #include "RTXPTSceneRuntime.hpp"
 #include "RTXPTSceneHistory.hpp"
 #include "RTXPTViewPostProcess.hpp"
@@ -212,6 +213,11 @@ struct RTXPTEmbeddedViewCreateInfo
     bool DeferredFrameCommit = false;
     //Native validation control only: false makes NRD ignore the per-pixel history validity of the layers.
     bool NativeHistoryConfidence = true;
+    //RealtimeNative and RealtimeDLSSSR: the radiance denoiser of the layers (RTXPTRealtimeDenoiser: REBLUR keeps part
+    //of the history of pixels without history confidence), and whether layer 0 of frames with a sun denoises the sun
+    //shadow with SIGMA. false is a validation control only.
+    RTXPTNrdMethod NativeDenoiser           = RTXPTNrdMethod::RELAX;
+    bool           NativeSunShadowDenoising = true;
     //RealtimeDLSSSR only: the device's super resolution factory, which the view keeps, and the quality.
     ISuperResolutionFactory*     SuperResolutionFactory  = nullptr;
     RTXPTUpscaleQuality          UpscaleQuality          = RTXPTUpscaleQuality::Quality;

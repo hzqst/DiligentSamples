@@ -87,6 +87,9 @@ RWStructuredBuffer<float4> u_TestResult;
         auto         Combined     = MakeTexture(TEX_FORMAT_R8_UNORM);
         auto         LegacySpec   = MakeTexture(TEX_FORMAT_R32_FLOAT);
         const Uint32 Branches[]   = {1, 1, 1, 0}; // Dominant is layer zero.
+        // Prepare reflects the sun shadow inputs even when the frame does not separate the sunlight.
+        auto SunHitDistance = MakeTexture(TEX_FORMAT_R32_FLOAT);
+        auto SunPenumbra    = MakeTexture(TEX_FORMAT_R16_FLOAT);
         for (Uint32 Slice = 0; Slice < 4; ++Slice)
         {
             TextureSubResData Data{&Branches[Slice], sizeof(Uint32)};
@@ -146,6 +149,8 @@ RWStructuredBuffer<float4> u_TestResult;
                 Bind("u_DenoiserDisocclusionThresholdMix", Disocclusion->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
                 Bind("u_CombinedHistoryClampRelax", Combined->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
                 Bind("t_SpecularHitT", LegacySpec->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
+                Bind("t_SunHitDistance", SunHitDistance->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
+                Bind("u_SunPenumbra", SunPenumbra->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS));
                 Bind("u_TestResult", Results->GetDefaultView(BUFFER_VIEW_UNORDERED_ACCESS));
                 Context->SetPipelineState(PSO);
                 Context->CommitShaderResources(SRB, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);

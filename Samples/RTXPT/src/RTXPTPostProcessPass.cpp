@@ -106,7 +106,10 @@ bool IsPassInSet(RTXPTPostProcessPassId Pass, RTXPTPostProcessPassSet PassSet)
     {
         case RTXPTPostProcessPassSet::RealtimeRaw:
             return Pass == RTXPTPostProcessPassId::NoDenoiserFinalMerge;
-        case RTXPTPostProcessPassSet::RealtimeNative:
+        case RTXPTPostProcessPassSet::RealtimeNativeReblur:
+            return Pass == RTXPTPostProcessPassId::ReblurDenoiserPrepareInputs ||
+                Pass == RTXPTPostProcessPassId::ReblurDenoiserFinalMerge || IsHistoryConfidencePass(Pass);
+        case RTXPTPostProcessPassSet::RealtimeNativeRelax:
             return Pass == RTXPTPostProcessPassId::RelaxDenoiserPrepareInputs ||
                 Pass == RTXPTPostProcessPassId::RelaxDenoiserFinalMerge || IsHistoryConfidencePass(Pass);
         case RTXPTPostProcessPassSet::RealtimeRR:
@@ -180,6 +183,8 @@ bool UpdateMiniConstantsBuffer(IDeviceContext*                        pContext,
         MiniConstants.params.y = Attribs.InitOutput ? 1u : 0u;
     else if (IsDenoiserFinalMergePass(Pass))
         MiniConstants.params.y = Attribs.HasValidation ? 1u : 0u;
+    if (IsDenoiserPreparePass(Pass) || IsDenoiserFinalMergePass(Pass))
+        MiniConstants.params.z = Attribs.SunShadow ? 1u : 0u;
 
     MapHelper<SampleMiniConstants> Mapped{pContext, pMiniConstants, MAP_WRITE, MAP_FLAG_DISCARD};
     if (Mapped == nullptr)
@@ -228,6 +233,10 @@ bool BindDispatchResources(IShaderResourceBinding*                pSRB,
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "t_DenoiserOutValidation", pDenoiserOutValidationSRV, FinalMergePass, Pass, "denoiser validation SRV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "t_DenoiserViewspaceZ", RenderTargets.GetDenoiserViewspaceZSRV(), FinalMergePass, Pass, "denoiser viewspace Z SRV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "t_DenoiserDisocclusionThresholdMix", RenderTargets.GetDenoiserDisocclusionThresholdMixSRV(), false, Pass, "denoiser disocclusion threshold mix SRV") &&
+        SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "t_SunHitDistance", RenderTargets.GetSunHitDistanceSRV(), PreparePass, Pass, "sun hit distance SRV") &&
+        SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "t_SunDirectLighting", RenderTargets.GetSunDirectLightingSRV(), FinalMergePass, Pass, "sun direct lighting SRV") &&
+        SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "t_SunShadow", RenderTargets.GetSunShadowSRV(), FinalMergePass, Pass, "sun shadow SRV") &&
+        SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_SunPenumbra", RenderTargets.GetSunPenumbraUAV(), PreparePass, Pass, "sun penumbra UAV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_OutputColor", Attribs.pMergeOutputUAV, !ConfidencePass, Pass, "merge output UAV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_StableRadiance", RenderTargets.GetStableRadianceUAV(), DenoisingLayersRequired, Pass, "stable radiance UAV") &&
         SetSRBVariable(pSRB, SHADER_TYPE_COMPUTE, "u_DenoisingLayersHeader", RenderTargets.GetDenoisingLayersHeaderUAV(), DenoisingLayersRequired, Pass, "stable planes header UAV") &&
@@ -401,6 +410,10 @@ bool RTXPTPostProcessPass::CreatePostProcessPSO(IRenderDevice*          pDevice,
         .AddVariable(SHADER_TYPE_COMPUTE, "t_DenoiserOutValidation", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "t_DenoiserViewspaceZ", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "t_DenoiserDisocclusionThresholdMix", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
+        .AddVariable(SHADER_TYPE_COMPUTE, "t_SunHitDistance", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
+        .AddVariable(SHADER_TYPE_COMPUTE, "t_SunDirectLighting", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
+        .AddVariable(SHADER_TYPE_COMPUTE, "t_SunShadow", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
+        .AddVariable(SHADER_TYPE_COMPUTE, "u_SunPenumbra", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_OutputColor", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_RRDiffuseAlbedo", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
         .AddVariable(SHADER_TYPE_COMPUTE, "u_RRSpecAlbedo", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)

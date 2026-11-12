@@ -140,6 +140,13 @@ struct RTXPTNrdReblurUiSettings
     float                                 SpecularPrepassBlurRadius     = 40.0f;
 };
 
+// SIGMA_SHADOW settings for the sun shadow of layer 0; the defaults are NRD's.
+struct RTXPTNrdSigmaUiSettings
+{
+    float  PlaneDistanceSensitivity = 0.02f;
+    Uint32 MaxStabilizedFrameNum    = 5; // 0 disables the temporal stabilization
+};
+
 struct RTXPTNrdRelaxUiSettings
 {
     bool EnableAntiFirefly = true;
@@ -201,6 +208,7 @@ struct RTXPTRealtimeSettings
     float                    NRDDisocclusionThresholdAlternate       = 0.2f;
     RTXPTNrdReblurUiSettings ReblurSettings;
     RTXPTNrdRelaxUiSettings  RelaxSettings;
+    RTXPTNrdSigmaUiSettings  SigmaSettings;
 
     float DLSSRRBrightnessClampK = 4096.0f;
     float DLSSRRMicroJitter      = 0.1f;
