@@ -872,7 +872,7 @@ struct FalcorBSDF
         deltaLobes[1] = deltaReflection;
     }
 
-    // Both components include the incident cosine, as does eval(). Keep the RGB lobes separate for sun-shadow denoising.
+    // Both components include the incident cosine, as does eval().
     void evalComponents(const float3 wi, const float3 wo, out float3 diffuse, out float3 specular)
     {
         diffuse = float3(0.0, 0.0, 0.0);
@@ -1013,14 +1013,16 @@ void EvalBSDF(SurfaceBSDFData bsdfData, float3 wo, float3 wi, float specProb, ou
 
 void EvalBSDFValueComponents(SurfaceBSDFData bsdfData, float3 wo, float3 wi, out float3 diffuse, out float3 specular)
 {
-    diffuse = float3(0.0, 0.0, 0.0);
-    specular = float3(0.0, 0.0, 0.0);
     float3 tangent, bitangent;
     BranchlessONB(bsdfData.N, tangent, bitangent);
     const float3 viewLocal = float3(dot(wo, tangent), dot(wo, bitangent), dot(bsdfData.N, wo));
     const float3 scatterLocal = float3(dot(wi, tangent), dot(wi, bitangent), dot(bsdfData.N, wi));
     if (viewLocal.z < kMinCosTheta || abs(scatterLocal.z) < kMinCosTheta)
+    {
+        diffuse  = float3(0.0, 0.0, 0.0);
+        specular = float3(0.0, 0.0, 0.0);
         return;
+    }
     FalcorBSDF bsdf = FalcorBSDF::make(MakeMaterialHeader(bsdfData), bsdfData.N, wo, bsdfData);
     bsdf.evalComponents(viewLocal, scatterLocal, diffuse, specular);
 }
