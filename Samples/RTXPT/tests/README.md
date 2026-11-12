@@ -1157,7 +1157,10 @@ All three executables passed on both D3D12 and Vulkan with graphics validation:
   including zero local support and complementary forward/reverse Full MIS.
   Approximate MIS complement, zero-density boundaries and spotlight smoothstep
   are checked separately. The legacy maximum-feedback shader is a table fixture,
-  not the production temporal producer.
+  not the production temporal producer. Packed directional lights include the
+  hard-light disk, whose solid angle is an FP16 subnormal: their sample must carry
+  radiance times the packed solid angle, and only directions inside the disk may
+  see them.
 - `EnvironmentLightSamplingTest`: production base/boost/lookup passes compared with
   an independent CPU subdivision oracle for uniform, concentrated-HDR and black
   maps. Checks all 5368 leaves, radiance/importance, exact coverage, area/PDF

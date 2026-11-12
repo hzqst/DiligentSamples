@@ -59,12 +59,14 @@ void MakeLightBasis(float3 normal, out float3 tangent, out float3 bitangent)
     bitangent        = cross(normal, tangent);
 }
 
-float3 SampleConeUniform(float2 random, float3 axis, float cosThetaMax, out float pdf)
+// Uniformly samples the cone around axis whose 1 - cos(half angle) is oneMinusCosThetaMax. Taking 1 - cos rather than
+// cos keeps the pdf and the directions of a small cone, where cos rounds to 1.
+float3 SampleConeUniformOneMinusCos(float2 random, float3 axis, float oneMinusCosThetaMax, out float pdf)
 {
-    const float oneMinusCosThetaMax = max(1.0 - cosThetaMax, 1.0e-8);
-    const float phi                 = kLightTwoPi * random.x;
-    const float cosTheta            = 1.0 - random.y * oneMinusCosThetaMax;
-    const float sinTheta            = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+    const float phi              = kLightTwoPi * random.x;
+    const float oneMinusCosTheta = random.y * oneMinusCosThetaMax;
+    const float cosTheta         = 1.0 - oneMinusCosTheta;
+    const float sinTheta         = sqrt(max(0.0, oneMinusCosTheta * (2.0 - oneMinusCosTheta)));
 
     float sinPhi;
     float cosPhi;
@@ -76,6 +78,28 @@ float3 SampleConeUniform(float2 random, float3 axis, float cosThetaMax, out floa
 
     pdf = min(kMaxSolidAnglePdf, 1.0 / (kLightTwoPi * oneMinusCosThetaMax));
     return normalize(tangent * (cosPhi * sinTheta) + bitangent * (sinPhi * sinTheta) + axis * cosTheta);
+}
+
+float3 SampleConeUniform(float2 random, float3 axis, float cosThetaMax, out float pdf)
+{
+    return SampleConeUniformOneMinusCos(random, axis, max(1.0 - cosThetaMax, 1.0e-8), pdf);
+}
+
+// 1 - cos(radius) of a directional light's disk, the cone of its packed solid angle. Sampling, BSDF rays and the sun
+// shadow denoiser all take the disk from here, so that they agree with the illuminance radiance * solid angle:
+// cos(radius) = 1 - solidAngle / (2 * PI) rounds to 1 for a small disk. RTXPTLightPacking.hpp keeps the packed solid
+// angle of an authored light positive; a light without one has no disk and gives no light.
+float GetDirectionalLightOneMinusCosRadius(AnalyticLightData light)
+{
+    return clamp(light.shaping.w / kLightTwoPi, 0.0, 2.0);
+}
+
+// Whether a direction lies in a directional light's disk around its axis. 1 - cos of the angle between two unit vectors is
+// |direction - axis|^2 / 2, which does not cancel inside a small disk.
+bool IsInDirectionalLightDisk(AnalyticLightData light, float3 axis, float3 direction)
+{
+    const float3 offset = direction - axis;
+    return 0.5 * dot(offset, offset) <= GetDirectionalLightOneMinusCosRadius(light);
 }
 
 float EvalSpotFalloff(AnalyticLightData light, float3 dirToLight)
@@ -141,21 +165,20 @@ LightSample SampleSphereLight(AnalyticLightData light, float2 random, float3 sur
 
 LightSample SampleDirectionalLight(AnalyticLightData light, float2 random)
 {
-    const float3 radiance  = max(light.colorType.rgb, float3(0.0, 0.0, 0.0));
-    const float  maxEnergy = max(radiance.x, max(radiance.y, radiance.z));
-    if (maxEnergy <= 0.0)
+    const float3 radiance          = max(light.colorType.rgb, float3(0.0, 0.0, 0.0));
+    const float  maxEnergy         = max(radiance.x, max(radiance.y, radiance.z));
+    const float  oneMinusCosRadius = GetDirectionalLightOneMinusCosRadius(light);
+    if (maxEnergy <= 0.0 || oneMinusCosRadius <= 0.0)
         return LightSample_make_empty();
 
     float3 axis;
     if (!tryNormalize(-light.directionRange.xyz, axis))
         return LightSample_make_empty();
 
-    const float solidAngle   = max(light.shaping.w, 1.0e-8);
-    const float cosThetaMax  = clamp(1.0 - solidAngle / kLightTwoPi, -1.0, 1.0);
-    float       sampledPdf   = 0.0;
+    float sampledPdf = 0.0;
 
     LightSample ls     = LightSample_make_empty();
-    ls.dir             = SampleConeUniform(random, axis, cosThetaMax, sampledPdf);
+    ls.dir             = SampleConeUniformOneMinusCos(random, axis, oneMinusCosRadius, sampledPdf);
     ls.distance        = 1.0e30;
     ls.radiance        = radiance;
     ls.solidAnglePdf   = sampledPdf;

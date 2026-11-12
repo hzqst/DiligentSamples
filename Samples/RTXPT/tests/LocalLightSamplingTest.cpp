@@ -343,6 +343,7 @@ void main(uint3 tid : SV_DispatchThreadID)
             Require(0.125f == Global, "Cluster global PDF must include uniform member probability");
         }
     }
+    // Every even directional light (N % 6 == 0) has the hard-light disk, whose packed solid angle is an FP16 subnormal.
     std::vector<AnalyticLightData>      PackingSources(128);
     std::vector<PolymorphicLightInfo>   PackedLights(128);
     std::vector<PolymorphicLightInfoEx> PackedExtensions(128);
@@ -354,7 +355,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         Source.positionRadius                    = float4{float(N), -float(N), 0.25f, float(N + 1) / 16.0f};
         const float3 Axis                        = normalize(float3{N & 1 ? -1.0f : 1.0f, N & 2 ? -2.0f : 2.0f, N & 4 ? -3.0f : 3.0f});
         Source.directionRange                    = float4{Axis, 0.0f};
-        Source.shaping                           = float4{N & 1 ? 0.5f : -1.0f, 0.25f, 0.0f, 0.125f};
+        Source.shaping                           = float4{N & 1 ? 0.5f : -1.0f, 0.25f, 0.0f, N % 6 == 0 ? kRTXPTDirectionalLightMinSolidAngle : 0.125f};
         const auto Packed                        = PackAnalyticLight(Source);
         PackedLights[N]                          = Packed.Base;
         PackedExtensions[N]                      = Packed.Extended;
@@ -463,6 +464,18 @@ void main(uint3 tid : SV_DispatchThreadID)
     u_Contract[256 + n] = uint4(asuint(max(abs(value.x-f.x), max(abs(value.y-f.y), abs(value.z-f.z)))),
                                asuint(expectedLight + expectedBSDF), asuint(value.w),
                                asuint(EvalSpotFalloff(spot, float3(sqrt(1.0 - 0.625 * 0.625), 0, -0.625))));
+    // A directional light's disk follows its packed solid angle down to the hard-light floor: its sample carries
+    // radiance * solid angle, and only directions inside the disk see it.
+    float3 diskAxis = float3(0, 0, 1);
+    tryNormalize(-decoded.directionRange.xyz, diskAxis);
+    float3 diskTangent, diskBitangent;
+    MakeLightBasis(diskAxis, diskTangent, diskBitangent);
+    const float diskRadius = sqrt(2.0 * GetDirectionalLightOneMinusCosRadius(decoded));
+    const LightSample disk = SampleDirectionalLight(decoded, float2(0.25, 0.75));
+    u_Contract[1408 + n] = uint4(asuint(disk.valid ? disk.radiance.x / disk.solidAnglePdf : -1.0),
+        IsInDirectionalLightDisk(decoded, diskAxis, disk.dir) ? 1u : 0u,
+        IsInDirectionalLightDisk(decoded, diskAxis, normalize(diskAxis + diskTangent * (0.5 * diskRadius))) ? 1u : 0u,
+        IsInDirectionalLightDisk(decoded, diskAxis, normalize(diskAxis + diskTangent * (2.0 * diskRadius))) ? 1u : 0u);
 })";
     Shader.Release();
     Device->CreateShader(SCI, &Shader);
@@ -471,7 +484,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     RefCntAutoPtr<IPipelineState> ContractPSO;
     Device->CreateComputePipelineState(PCI, &ContractPSO);
     Require(ContractPSO != nullptr, "Light sampling contract PSO failed");
-    auto                                  ContractOutput = Buffer(Device, "Light sampling contract", 1408 * sizeof(uint4), BIND_UNORDERED_ACCESS, nullptr, sizeof(uint4));
+    auto                                  ContractOutput = Buffer(Device, "Light sampling contract", 1536 * sizeof(uint4), BIND_UNORDERED_ACCESS, nullptr, sizeof(uint4));
     auto                                  PackedInput    = Buffer(Device, "Packed light ABI", PackedLights.size() * sizeof(PolymorphicLightInfo), BIND_SHADER_RESOURCE, PackedLights.data(), sizeof(PolymorphicLightInfo));
     auto                                  PackedExInput  = Buffer(Device, "Packed light extension ABI", PackedExtensions.size() * sizeof(PolymorphicLightInfoEx), BIND_SHADER_RESOURCE, PackedExtensions.data(), sizeof(PolymorphicLightInfoEx));
     auto                                  PackedOutput   = Buffer(Device, "GPU packed triangle ABI", 128 * sizeof(PolymorphicLightInfo), BIND_UNORDERED_ACCESS, nullptr, sizeof(PolymorphicLightInfo));
@@ -534,6 +547,21 @@ void main(uint3 tid : SV_DispatchThreadID)
             Require(Source.positionRadius.w == FloatAt((384 + N) * 4 + 3), "Packed sphere FP16 radius");
         else
             Require(Source.shaping.w == FloatAt((640 + N) * 4 + 3), "Packed distant solid angle");
+        if (Directional)
+        {
+            const size_t DiskBase     = (1408 + N) * 4;
+            const float  DiskEnergy   = FloatAt((512 + N) * 4) * FloatAt((640 + N) * 4 + 3);
+            const bool   bDiskSampled = ContractResults[DiskBase + 1] == 1u && ContractResults[DiskBase + 2] == 1u && ContractResults[DiskBase + 3] == 0u;
+            if (Source.colorType.x > 0.0f)
+            {
+                Require(std::abs(DiskEnergy - FloatAt(DiskBase)) <= DiskEnergy * 1e-5f, "Directional light sample must carry radiance times the packed solid angle");
+                Require(bDiskSampled, "Only directions inside the disk may see a directional light");
+            }
+            else
+            {
+                Require(-1.0f == FloatAt(DiskBase), "Unlit directional light must give no sample");
+            }
+        }
         if (!Directional && (N & 1))
             Require(Source.shaping.x == FloatAt((768 + N) * 4) && Source.shaping.y == FloatAt((768 + N) * 4 + 1), "Packed light shaping extension");
         Require(1000u + N == ContractResults[(768 + N) * 4 + 2] && Uint32(Source.colorType.w) == ContractResults[(768 + N) * 4 + 3], "Packed type and extension stride");

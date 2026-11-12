@@ -31,8 +31,13 @@ int main()
     Original.shaping.w      = OriginalSolidAngle;
     Original.directionRange = float4{0, 0, -1, 0};
 
-    constexpr float DiametersDegrees[] = {0.0f, 0.53f, 2.0f, 5.0f, 180.0f};
+    // Up to about 0.03 degrees, 2 * PI * (1 - cos(half angle)) cancels in float, and the old 1e-8 floor packed as 0.
+    constexpr float DiametersDegrees[] = {0.0f, 0.01f, 0.02f, 0.03f, 0.53f, 2.0f, 5.0f, 180.0f};
+    constexpr float Fp16MantissaStep   = 0x1p-10f;
+    constexpr float RadiusTolerance    = 1.0e-5f;
+    constexpr float PackedTolerance    = 0.01f;
     float           PreviousSolidAngle = 0;
+    const float     LargestIlluminance = std::max({Illuminance.x, Illuminance.y, Illuminance.z});
     for (float Degrees : DiametersDegrees)
     {
         auto Light = Original;
@@ -44,6 +49,20 @@ int main()
         const auto Once = Light;
         Require(SetRTXPTDirectionalLightAngularSize(Light, Degrees * DegreesToRadians) && std::memcmp(&Once, &Light, sizeof(Light)) == 0, "reapplying an angle is stable");
         PreviousSolidAngle = Light.shaping.w;
+
+        const double QuarterAngle = static_cast<double>(Degrees) * DegreesToRadians * 0.25;
+        const double ExactAngle   = 4.0 * PI * std::sin(QuarterAngle) * std::sin(QuarterAngle);
+        const double Fp16Step     = std::max(static_cast<double>(kRTXPTDirectionalLightMinSolidAngle), ExactAngle * Fp16MantissaStep);
+        const bool   bFloor       = ExactAngle < kRTXPTDirectionalLightMinSolidAngle;
+        Require(bFloor ? Light.shaping.w == kRTXPTDirectionalLightMinSolidAngle : (Light.shaping.w <= ExactAngle && Light.shaping.w > ExactAngle - Fp16Step),
+                "solid angle is the disk's, raised to the hard-light floor and truncated to FP16");
+
+        const auto Packed = PackAnalyticLight(Light);
+        Require(UnpackLightFloat16(Packed.Base.Scalars >> 16u) == Light.shaping.w, "the packed solid angle is the one the radiance was derived from");
+        Require(std::abs(ComputeRTXPTDirectionalLightIlluminance(Packed.Base) - LargestIlluminance) <= LargestIlluminance * PackedTolerance, "the packed light keeps its illuminance");
+        const float  Radius      = ComputeRTXPTDirectionalLightAngularRadius(Light.shaping.w);
+        const double ExactRadius = 2.0 * std::asin(std::sqrt(Light.shaping.w / (4.0 * PI)));
+        Require(Radius > 0 && std::abs(Radius - ExactRadius) <= ExactRadius * RadiusTolerance, "the angular radius inverts the solid angle without cancellation");
     }
 
     constexpr float InvalidDiameters[] = {-1.0f, PI_F + 1.0f, std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()};
@@ -65,11 +84,10 @@ int main()
     Require(!SetRTXPTDirectionalLightAngularSize(Bright, 0) && std::memcmp(&OriginalBright, &Bright, sizeof(Bright)) == 0, "a small disk exceeding packed radiance range leaves the light unchanged");
 
     // The minimum log-radiance scale is not a minimum channel value: the RGB mantissa still represents dim suns.
-    constexpr float  DimIlluminance  = 0.01f;
-    constexpr float  PackedTolerance = 0.01f;
-    constexpr float  ChannelMax      = 255.0f;
-    constexpr Uint32 ChannelMask     = 0xffu;
-    auto             Dim             = Original;
+    constexpr float  DimIlluminance = 0.01f;
+    constexpr float  ChannelMax     = 255.0f;
+    constexpr Uint32 ChannelMask    = 0xffu;
+    auto             Dim            = Original;
     for (size_t Channel = 0; Channel < ColorChannels; ++Channel)
         Dim.colorType[Channel] = DimIlluminance / OriginalSolidAngle;
     Require(SetRTXPTDirectionalLightAngularSize(Dim, PI_F), "a dim hemispherical sun is representable");
