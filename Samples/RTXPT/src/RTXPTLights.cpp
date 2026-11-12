@@ -490,11 +490,12 @@ RTXPTSunConstants MakeRTXPTSunConstants(const RTXPTLights& Lights)
     const PolymorphicLightInfo* pSun = Lights.GetSunLight();
     if (pSun != nullptr)
     {
-        // The disk is the cone of the packed solid angle: cos(radius) = 1 - SolidAngle / (2 * PI).
-        const float CosRadius = std::clamp(1.0f - UnpackLightFloat16(pSun->Scalars >> 16u) / (2.0f * PI_F), 0.0f, 1.0f);
-        Sun.Light             = *pSun;
-        Sun.Enabled           = 1u;
-        Sun.TanAngularRadius  = CosRadius > 0.0f ? std::sqrt(1.0f - CosRadius * CosRadius) / CosRadius : 0.0f;
+        // The disk is the cone of the packed solid angle. Its radius comes from the solid angle directly:
+        // cos(radius) = 1 - SolidAngle / (2 * PI) rounds to 1 for a small disk, which SIGMA would take as a hard shadow.
+        const float Radius   = ComputeRTXPTDirectionalLightAngularRadius(UnpackLightFloat16(pSun->Scalars >> 16u));
+        Sun.Light            = *pSun;
+        Sun.Enabled          = 1u;
+        Sun.TanAngularRadius = Radius < PI_F * 0.5f ? std::tan(Radius) : 0.0f;
     }
     return Sun;
 }

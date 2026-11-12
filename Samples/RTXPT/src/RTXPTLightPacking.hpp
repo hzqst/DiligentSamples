@@ -31,13 +31,44 @@ constexpr float kPolymorphicLightTypeSphere      = 0.0f;
 constexpr float kPolymorphicLightTypeDirectional = 2.0f;
 constexpr float kPolymorphicLightTypePoint       = 4.0f;
 
-// Full angular diameter in radians. Keep the existing floor for the hard-shadow limit.
+inline Uint32 PackLightFloat16(float Value)
+{
+    // Match the host conversion in RTXPT-fork LightsBaker.cpp (truncation).
+    const float Biased = Value * std::ldexp(1.0f, -112);
+    Uint32      Bits   = 0;
+    std::memcpy(&Bits, &Biased, sizeof(Bits));
+    return (((Bits & 0x80000000u) >> 16u) | ((Bits & 0x0fffffffu) >> 13u)) & 0xffffu;
+}
+
+// The inverse of PackLightFloat16, as f16tof32 decodes it in the shaders.
+inline float UnpackLightFloat16(Uint32 Packed)
+{
+    const Uint32 Bits = ((Packed & 0x8000u) << 16u) | ((Packed & 0x7fffu) << 13u);
+    float        Biased;
+    std::memcpy(&Biased, &Bits, sizeof(Biased));
+    return Biased * std::ldexp(1.0f, 112);
+}
+
+// The smallest solid angle PackLightFloat16 keeps, the smallest FP16 subnormal: the disk of a hard directional light.
+// A smaller solid angle would be packed as 0, and the light would lose its illuminance.
+constexpr float kRTXPTDirectionalLightMinSolidAngle = 0x1p-24f;
+
+// The solid angle of a directional light's disk of the given full angular diameter in radians, as PackAnalyticLight
+// stores it. 4 * PI * sin^2(diameter / 4) is 2 * PI * (1 - cos(diameter / 2)) without the float cancellation that
+// rounds small disks to 0. The result is raised to the hard-light floor and rounded to its packed FP16 value, so that a
+// radiance derived from it and the packed solid angle give back the same illuminance.
 inline float ComputeRTXPTDirectionalLightSolidAngle(float AngularSizeRadians)
 {
-    constexpr float MinHalfAngle  = 0.00001f;
-    constexpr float MinSolidAngle = 1.0e-8f;
-    const float     HalfAngle     = std::max(AngularSizeRadians * 0.5f, MinHalfAngle);
-    return std::max(2.0f * PI_F * (1.0f - std::cos(HalfAngle)), MinSolidAngle);
+    const float SinQuarterAngle = std::sin(AngularSizeRadians * 0.25f);
+    const float SolidAngle      = std::max(4.0f * PI_F * SinQuarterAngle * SinQuarterAngle, kRTXPTDirectionalLightMinSolidAngle);
+    return UnpackLightFloat16(PackLightFloat16(SolidAngle));
+}
+
+// The angular radius of a directional light's disk from its solid angle, 2 * asin(sqrt(SolidAngle / (4 * PI))): the
+// inverse of ComputeRTXPTDirectionalLightSolidAngle without the cancellation of acos(1 - SolidAngle / (2 * PI)).
+inline float ComputeRTXPTDirectionalLightAngularRadius(float SolidAngle)
+{
+    return 2.0f * std::asin(std::sqrt(std::clamp(SolidAngle / (4.0f * PI_F), 0.0f, 1.0f)));
 }
 
 // Redistribute a directional light's radiance over a new disk without changing its illuminance or direction.
@@ -64,15 +95,6 @@ inline bool SetRTXPTDirectionalLightAngularSize(AnalyticLightData& Light, float 
     Updated.shaping.w = SolidAngle;
     Light             = Updated;
     return true;
-}
-
-inline Uint32 PackLightFloat16(float Value)
-{
-    // Match the host conversion in RTXPT-fork LightsBaker.cpp (truncation).
-    const float Biased = Value * std::ldexp(1.0f, -112);
-    Uint32      Bits   = 0;
-    std::memcpy(&Bits, &Biased, sizeof(Bits));
-    return (((Bits & 0x80000000u) >> 16u) | ((Bits & 0x0fffffffu) >> 13u)) & 0xffffu;
 }
 
 inline Uint32 PackLightDirection(float3 Direction)
@@ -119,15 +141,6 @@ inline float UnpackLightRadianceScale(Uint32 Packed)
                      kPolymorphicLightMinLog2Radiance);
 }
 
-// The inverse of PackLightFloat16, as f16tof32 decodes it in the shaders.
-inline float UnpackLightFloat16(Uint32 Packed)
-{
-    const Uint32 Bits = ((Packed & 0x8000u) << 16u) | ((Packed & 0x7fffu) << 13u);
-    float        Biased;
-    std::memcpy(&Biased, &Bits, sizeof(Biased));
-    return Biased * std::ldexp(1.0f, 112);
-}
-
 // The illuminance a packed directional light gives a surface facing it in its largest channel: its largest channel
 // radiance times the solid angle of its disk.
 inline float ComputeRTXPTDirectionalLightIlluminance(const PolymorphicLightInfo& Light)
@@ -169,7 +182,7 @@ inline PolymorphicLightInfoFull PackAnalyticLight(const AnalyticLightData& Sourc
     if (Type == static_cast<Uint32>(kPolymorphicLightTypeDirectional))
     {
         Light.Base.Direction1 = PackLightDirection(float3{Source.directionRange.x, Source.directionRange.y, Source.directionRange.z});
-        const float HalfAngle = std::acos(std::clamp(1.0f - Source.shaping.w / (2.0f * PI_F), -1.0f, 1.0f));
+        const float HalfAngle = ComputeRTXPTDirectionalLightAngularRadius(Source.shaping.w);
         Light.Base.Scalars    = PackLightFloat16(HalfAngle) | (PackLightFloat16(Source.shaping.w) << 16u);
     }
     else

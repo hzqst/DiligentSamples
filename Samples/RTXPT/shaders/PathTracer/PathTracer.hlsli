@@ -157,8 +157,7 @@ namespace PathTracer
         if (!tryNormalize(-sun.directionRange.xyz, axis))
             return float3(0.0, 0.0, 0.0);
 
-        const float cosThetaMax = clamp(1.0 - max(sun.shaping.w, 1.0e-8) / kLightTwoPi, -1.0, 1.0);
-        const bool  bInDisk     = dot(rayDir, axis) >= cosThetaMax;
+        const bool bInDisk = IsInDirectionalLightDisk(sun, axis, rayDir);
         return bInDisk ? max(sun.colorType.rgb, float3(0.0, 0.0, 0.0)) * g_Const.ptConsts.radianceScale : float3(0.0, 0.0, 0.0);
     }
 #if PATH_TRACER_MODE != PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
