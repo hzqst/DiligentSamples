@@ -65,6 +65,24 @@ namespace Bridge
         }
         return rayQuery.CommittedStatus() == COMMITTED_NOTHING;
     }
+
+    // The distance to the closest occluder of the ray with the visibility-ray candidate filter, or missDistance
+    // when nothing occludes it.
+    float traceVisibilityRayHitDistance(RayDesc ray, float missDistance)
+    {
+        RayQuery<RAY_FLAG_NONE> rayQuery;
+        rayQuery.TraceRayInline(t_SceneBVH, RAY_FLAG_NONE, 0xFF, ray);
+        while (rayQuery.Proceed())
+        {
+            if (rayQuery.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
+            {
+                if (AlphaTestVisibilityRay(rayQuery.CandidateInstanceID(), rayQuery.CandidateGeometryIndex(),
+                                           rayQuery.CandidatePrimitiveIndex(), rayQuery.CandidateTriangleBarycentrics()))
+                    rayQuery.CommitNonOpaqueTriangleHit();
+            }
+        }
+        return rayQuery.CommittedStatus() == COMMITTED_NOTHING ? missDistance : min(rayQuery.CommittedRayT(), missDistance);
+    }
 #endif
 }
 

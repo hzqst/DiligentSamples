@@ -8,12 +8,16 @@ set RTXPT_TEST_INCLUDES=/IDiligentCore\Platforms\interface /IDiligentCore\Platfo
 cl /nologo /c /std:c++17 /EHsc /MD /O2 /Gy /GL /DPLATFORM_WIN32=1 /DNOMINMAX %RTXPT_TEST_INCLUDES% ^
  DiligentSamples\Samples\RTXPT\src\RTXPTMaterials.cpp /Fo"%RTXPT_TEST_OUTPUT%\RTXPTMaterials.obj"
 if errorlevel 1 goto failed
+rem RTXPTMaterials reads external textures through RTXPTFileSource, which RTXPTSceneJson.cpp implements.
+cl /nologo /c /std:c++17 /EHsc /MD /O2 /Gy /GL /DPLATFORM_WIN32=1 /DNOMINMAX %RTXPT_TEST_INCLUDES% ^
+ DiligentSamples\Samples\RTXPT\src\RTXPTSceneJson.cpp /Fo"%RTXPT_TEST_OUTPUT%\RTXPTSceneJson.obj"
+if errorlevel 1 goto failed
 cl /nologo /c /std:c++17 /EHsc /MD /O2 DiligentSamples\Samples\RTXPT\src\RTXPTAgilitySDK.cpp /Fo"%RTXPT_TEST_OUTPUT%\RTXPTAgilitySDK.obj"
 if errorlevel 1 goto failed
 cl /nologo /std:c++17 /EHsc /MD /O2 /Gy /GL /DPLATFORM_WIN32=1 /DNOMINMAX %RTXPT_TEST_INCLUDES% ^
  DiligentSamples\Samples\RTXPT\tests\VisibilityRayTest.cpp ^
  /Fo"%RTXPT_TEST_OUTPUT%\VisibilityRayTest.obj" /Fe"%RTXPT_TEST_OUTPUT%\VisibilityRayTest.exe" ^
- /link /OPT:REF /LTCG "%RTXPT_TEST_OUTPUT%\RTXPTMaterials.obj" "%RTXPT_TEST_OUTPUT%\RTXPTAgilitySDK.obj" user32.lib comdlg32.lib ^
+ /link /OPT:REF /LTCG "%RTXPT_TEST_OUTPUT%\RTXPTMaterials.obj" "%RTXPT_TEST_OUTPUT%\RTXPTSceneJson.obj" "%RTXPT_TEST_OUTPUT%\RTXPTAgilitySDK.obj" user32.lib comdlg32.lib ^
  build\x64\Release\DiligentTools\TextureLoader\Release\Diligent-TextureLoader.lib ^
  build\x64\Release\DiligentTools\ThirdParty\libpng\Release\libpng16_static.lib ^
  build\x64\Release\DiligentTools\ThirdParty\libtiff\Release\LibTiff.lib ^

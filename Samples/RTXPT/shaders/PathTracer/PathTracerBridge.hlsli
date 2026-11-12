@@ -46,6 +46,9 @@ VK_IMAGE_FORMAT("r32f")    RWTexture2D<float>        u_SpecularHitT;
 VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4>       u_StableRadiance;
 VK_IMAGE_FORMAT("r32ui")   RWTexture2DArray<uint>    u_DenoisingLayersHeader;
 RWStructuredBuffer<DenoisingLayer>                      u_DenoisingLayersBuffer;
+// The inputs of the sun shadow denoiser on the surface of denoising layer 0: BUILD clears them, FILL writes them.
+VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4>       u_SunDirectLighting;
+VK_IMAGE_FORMAT("r16f")    RWTexture2D<float>        u_SunHitDistance;
 #endif
 
 #if PATH_TRACER_MODE == PATH_TRACER_MODE_FILL_DENOISING_LAYERS
@@ -205,6 +208,11 @@ namespace Bridge
     RTXPTEnvMapConstants getEnvMapConstants()
     {
         return g_Const.envMap;
+    }
+
+    RTXPTSunConstants getSun()
+    {
+        return g_Const.sun;
     }
 
     LightingControlData getLightingControl()

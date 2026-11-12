@@ -5,7 +5,8 @@ undenoised frames rendered with the same tracer settings. A Reference image, whe
 reports the realtime estimator's bias; it is not the denoiser's target.
 
 --preset native measures the denoised runs with the Sample's --realtime_native preset (the shared
-RealtimeNative pipeline, RELAX only) instead of the Sample's own NRD path; the mean and noisy runs
+RealtimeNative pipeline with --denoiser as its radiance denoiser, and SIGMA on the sun shadow of
+layer 0 unless --sun-shadow false) instead of the Sample's own NRD path; the mean and noisy runs
 are the same for both presets.
 """
 
@@ -53,7 +54,7 @@ def run_sample(args, label, denoiser, start, count, sequence):
         "--exit_after_frames", str(start + count + EXIT_MARGIN_FRAMES),
     ]
     if denoiser and args.preset == "native":
-        command += ["--realtime_native", "true"]
+        command += ["--realtime_native", "true", "--nrd_method", denoiser, "--nrd_sun_shadow", args.sun_shadow]
     elif denoiser:
         command += ["--nrd_method", denoiser]
     startup = None
@@ -115,6 +116,8 @@ def main():
     parser.add_argument("--denoiser", choices=("relax", "reblur"), default="relax")
     parser.add_argument("--preset", choices=("sample", "native"), default="sample",
                         help="Denoise with the Sample's NRD path or the --realtime_native preset.")
+    parser.add_argument("--sun-shadow", choices=("true", "false"), default="true",
+                        help="--preset native: denoise the sun shadow of layer 0 with SIGMA.")
     parser.add_argument("--warmup", type=int, default=64, help="Frames before the mean capture starts.")
     parser.add_argument("--mean-frames", type=int, default=4096)
     parser.add_argument("--frames", type=int, default=128, help="Sequence length from the first frame.")
@@ -127,12 +130,11 @@ def main():
         parser.error("Sizes, frame counts, repeats and timeout must be positive")
     if not 0 < args.tail_fraction <= 1:
         parser.error("tail-fraction must be in (0, 1]")
-    if args.preset == "native" and args.denoiser != "relax":
-        parser.error("The native preset denoises with RELAX only")
     args.output = args.output.resolve()
     # A fresh directory prevents stale files from masquerading as a successful capture.
     args.output.mkdir(parents=True, exist_ok=False)
-    manifest = {"status": "running", "api": args.api, "denoiser": args.denoiser, "preset": args.preset, "runs": {}}
+    manifest = {"status": "running", "api": args.api, "denoiser": args.denoiser, "preset": args.preset,
+                "sun_shadow": args.sun_shadow == "true" if args.preset == "native" else None, "runs": {}}
     report = args.output / "manifest.json"
     try:
         args.exe = args.exe.resolve(strict=True)

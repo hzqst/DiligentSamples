@@ -52,6 +52,10 @@ struct RTXPTNrdDenoiserFrameAttribs
     bool                            ResetHistory     = false;
     // Lets NRD reject the history of pixels whose layer path has no valid previous correspondence.
     bool HistoryConfidence = false;
+    // Layer 0 also denoises the sun shadow with SIGMA and adds the shadowed direct sunlight in its merge; requires
+    // a Prepare with SunShadow. SunDirection points from the surfaces to the sun.
+    bool   SunShadow    = false;
+    float3 SunDirection = float3{0, 0, 0};
 };
 
 // Per-layer standalone NRD shared by the Sample and embedded realtime views: one NRD instance per
@@ -61,8 +65,9 @@ class RTXPTNrdDenoiser
 public:
     void Reset();
 
-    // Keeps the layer instances that already match CreateInfo and recreates the others. A failure
-    // releases every layer, so the next successful call starts all histories from scratch.
+    // Keeps the layer instances that already match CreateInfo and recreates the others. CreateInfo.SunShadow adds
+    // SIGMA to layer 0 alone. A failure releases every layer, so the next successful call starts all histories from
+    // scratch.
     bool Prepare(IRenderDevice* pDevice, const RTXPTNrdIntegrationCreateInfo& CreateInfo);
 
     bool Denoise(IDeviceContext* pContext, RTXPTPostProcessPass& PostProcess, const RTXPTNrdDenoiserFrameAttribs& Attribs, RTXPTGpuProfiler* Profiler = nullptr);

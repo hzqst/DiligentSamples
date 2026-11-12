@@ -359,7 +359,9 @@ bool RTXPTRayTracingPass::Initialize(IRenderDevice* pDevice, IDeviceContext* pCo
             .AddVariable(DynamicStages, "u_SpecularHitT", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
             .AddVariable(DynamicStages, "u_StableRadiance", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
             .AddVariable(DynamicStages, "u_DenoisingLayersHeader", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
-            .AddVariable(DynamicStages, "u_DenoisingLayersBuffer", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC);
+            .AddVariable(DynamicStages, "u_DenoisingLayersBuffer", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
+            .AddVariable(DynamicStages, "u_SunDirectLighting", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC)
+            .AddVariable(DynamicStages, "u_SunHitDistance", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC);
 
         // Scene, lighting and environment resources are mutable: Bind creates new resource bindings when they change.
         // None of their buffers is USAGE_DYNAMIC, so they need no dynamic offsets, whose Vulkan descriptors are limited.
@@ -682,6 +684,7 @@ bool RTXPTRayTracingPass::Dispatch(IDeviceContext*                pContext,
     const bool SpecularHitTRequired        = RealtimeVariant;
     const bool StableRadianceRequired      = BuildDenoisingLayersVariant;
     const bool DenoisingLayersRequired     = RealtimeVariant;
+    const bool SunShadowInputsRequired     = RealtimeVariant;
 
     if (DispatchInfo.Width == 0 || DispatchInfo.Height == 0)
         return false;
@@ -694,7 +697,10 @@ bool RTXPTRayTracingPass::Dispatch(IDeviceContext*                pContext,
         (StableRadianceRequired && DispatchInfo.pStableRadianceUAV == nullptr) ||
         (DenoisingLayersRequired &&
          (DispatchInfo.pDenoisingLayersHeaderUAV == nullptr ||
-          DispatchInfo.pDenoisingLayersBufferUAV == nullptr)))
+          DispatchInfo.pDenoisingLayersBufferUAV == nullptr)) ||
+        (SunShadowInputsRequired &&
+         (DispatchInfo.pSunDirectLightingUAV == nullptr ||
+          DispatchInfo.pSunHitDistanceUAV == nullptr)))
         return false;
 
     auto SetDynamicForStages = [&](const char* Name, IDeviceObject* pObject, bool Required, bool* pFoundAny = nullptr) {
@@ -776,6 +782,9 @@ bool RTXPTRayTracingPass::Dispatch(IDeviceContext*                pContext,
         SetDynamicForStages("u_DenoisingLayersHeader", DispatchInfo.pDenoisingLayersHeaderUAV, DenoisingLayersRequired);
     const bool DenoisingLayersBufferBound =
         SetDynamicForStages("u_DenoisingLayersBuffer", DispatchInfo.pDenoisingLayersBufferUAV, DenoisingLayersRequired);
+    // The variables exist only where the shaders use them; the denoised modes alone write them.
+    const bool SunDirectLightingBound = SetDynamicForStages("u_SunDirectLighting", DispatchInfo.pSunDirectLightingUAV, false);
+    const bool SunHitDistanceBound    = SetDynamicForStages("u_SunHitDistance", DispatchInfo.pSunHitDistanceUAV, false);
 
     if (!OutputBound ||
         !DepthBound ||
@@ -784,7 +793,9 @@ bool RTXPTRayTracingPass::Dispatch(IDeviceContext*                pContext,
         !SpecularHitTBound ||
         !StableRadianceBound ||
         !DenoisingLayersHeaderBound ||
-        !DenoisingLayersBufferBound)
+        !DenoisingLayersBufferBound ||
+        !SunDirectLightingBound ||
+        !SunHitDistanceBound)
     {
         return false;
     }

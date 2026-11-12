@@ -35,6 +35,7 @@
 #include "GLTFLoader.hpp"
 #include "RefCntAutoPtr.hpp"
 #include "RenderDevice.h"
+#include "RTXPTFrameConstants.hpp"
 #include "RTXPTLightSourceHistory.hpp"
 #include "RTXPTLightPacking.hpp"
 #include "RTXPTSceneRuntime.hpp"
@@ -93,8 +94,12 @@ public:
     IBuffer*                                     GetEmissiveTriangleBuffer() const { return m_EmissiveTriangleBuffer; }
     Uint32                                       GetEmissiveTriangleCount() const { return m_Stats.EmissiveTriangleCount; }
     const std::vector<PolymorphicLightInfoFull>& GetAnalyticLights() const { return m_AnalyticLights; }
-    //Distant lights are baked into the environment, outside the local analytic-light sampling domain.
-    const std::vector<PolymorphicLightInfo>&  GetDirectionalLights() const { return m_DirectionalLights; }
+    //Distant lights other than the sun are baked into the environment, outside the local analytic-light sampling domain.
+    const std::vector<PolymorphicLightInfo>& GetDirectionalLights() const { return m_DirectionalLights; }
+    //The sun, the directional light that gives the most illuminance, or null without directional lights. The path
+    //tracer samples it on its own at every surface instead of through the environment, so that the denoised modes can
+    //separate its shadow on the primary surface.
+    const PolymorphicLightInfo*               GetSunLight() const { return m_HasSunLight ? &m_SunLight : nullptr; }
     float                                     GetEmissiveProxyWeight() const { return m_EmissiveProxyWeight; }
     const std::vector<RTXPTLightSourceRange>& GetAnalyticSources() const { return m_AnalyticSources; }
     const std::vector<RTXPTLightSourceRange>& GetTriangleSources() const { return m_TriangleSources; }
@@ -102,15 +107,24 @@ public:
 private:
     bool UploadLightBuffer(IRenderDevice* pDevice, std::vector<PolymorphicLightInfoFull>& Lights);
     bool UploadEmissiveTriangleBuffer(IRenderDevice* pDevice, Uint32 EmissiveTriangleCount);
+    void SelectSunLight();
 
     RefCntAutoPtr<IBuffer>                m_LightBuffer;
     RefCntAutoPtr<IBuffer>                m_LightExBuffer;
     RefCntAutoPtr<IBuffer>                m_EmissiveTriangleBuffer;
     std::vector<PolymorphicLightInfoFull> m_AnalyticLights;
     std::vector<PolymorphicLightInfo>     m_DirectionalLights;
+    PolymorphicLightInfo                  m_SunLight    = {};
+    bool                                  m_HasSunLight = false;
     std::vector<RTXPTLightSourceRange>    m_AnalyticSources, m_TriangleSources;
     float                                 m_EmissiveProxyWeight = 0.0f;
     RTXPTLightStats                       m_Stats;
 };
+
+// The sun constants of a frame lit by Lights. ShadowDenoising stays zero: the denoised pipeline sets it.
+RTXPTSunConstants MakeRTXPTSunConstants(const RTXPTLights& Lights);
+
+// The direction from the surfaces to the sun of Sun, or zero without a sun.
+float3 GetRTXPTSunDirection(const RTXPTSunConstants& Sun);
 
 } // namespace Diligent

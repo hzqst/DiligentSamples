@@ -1,6 +1,8 @@
 #ifndef __PATH_TRACER_SHARED_H__
 #define __PATH_TRACER_SHARED_H__
 
+#include "Lighting/PolymorphicLight.h"
+
 // Mirrors Diligent::kSubInstanceFlag_Indexed in RTXPTAccelerationStructures.hpp.
 static const uint kSubInstanceFlagIndexed                = 0x1u;
 static const uint kSubInstanceFlagPreviousRigidSurface   = 0x4u;
@@ -131,6 +133,18 @@ struct RTXPTEnvMapConstants
     float4 ImportanceMetadata;
 };
 
+// Mirrors Diligent::RTXPTSunConstants in RTXPTFrameConstants.hpp: the sun, sampled on its own at every surface.
+struct RTXPTSunConstants
+{
+    PolymorphicLightInfo Light;
+    uint                 Enabled;
+    // Nonzero when the primary surface separates the direct sunlight for the sun shadow denoiser.
+    uint ShadowDenoising;
+    // The tangent of the angular radius of the sun disk, which scales the penumbra of the sun shadow denoiser.
+    float TanAngularRadius;
+    uint  _padding1;
+};
+
 // Mirrors Diligent::SampleConstants in RTXPTFrameConstants.hpp.
 struct SampleConstants
 {
@@ -143,6 +157,7 @@ struct SampleConstants
     PathTracerCameraData camera;
     PathTracerConstants  ptConsts;
     RTXPTEnvMapConstants envMap;
+    RTXPTSunConstants    sun;
 };
 
 struct SampleMiniConstants

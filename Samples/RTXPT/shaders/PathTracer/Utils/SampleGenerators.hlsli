@@ -48,6 +48,7 @@ static const uint kSampleEffect_NextEventEstimation = 2u;
 static const uint kSampleEffect_NEELightSampler     = 3u;
 static const uint kSampleEffect_NEEEmissive         = 4u; // emissive-triangle NEE
 static const uint kSampleEffect_RussianRoulette     = 6u;
+static const uint kSampleEffect_SunLightSampler     = 7u; // the sun, sampled apart from the light list
 
 // Stateless per-(pixel, vertex, sample) seeding (G3): each path vertex + effect draws a decorrelated
 // sequence, so bounces and dimensions no longer share one forward hash chain. Mirrors RTXPT-fork's

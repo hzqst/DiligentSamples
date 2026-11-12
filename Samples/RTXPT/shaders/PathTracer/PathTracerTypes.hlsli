@@ -175,6 +175,8 @@ namespace PathTracer
         bool SkipEmissiveBRDF;
 #endif
         bool LightSamplingIsSSC;
+        // Whether the vertex sampled the sun, so that the sun disk is not seen by its non-delta scatter.
+        bool SunSampled;
         uint CandidateSamples;
         uint FullSamples;
 
@@ -186,6 +188,7 @@ namespace PathTracer
             ret.SkipEmissiveBRDF = false;
 #endif
             ret.LightSamplingIsSSC = false;
+            ret.SunSampled         = false;
             ret.CandidateSamples   = 0;
             ret.FullSamples        = 0;
             return ret;
@@ -199,6 +202,7 @@ namespace PathTracer
             ret.SkipEmissiveBRDF = (packed & (1 << 14)) != 0;
 #endif
             ret.LightSamplingIsSSC = (packed & (1 << 13)) != 0;
+            ret.SunSampled         = (packed & (1 << 12)) != 0;
             ret.CandidateSamples   = (packed >> 6) & 0x3f;
             ret.FullSamples        = packed & 0x3f;
             return ret;
@@ -212,6 +216,7 @@ namespace PathTracer
             packed |= (SkipEmissiveBRDF ? 1 : 0) << 14;
 #endif
             packed |= (LightSamplingIsSSC ? 1 : 0) << 13;
+            packed |= (SunSampled ? 1 : 0) << 12;
             packed |= (CandidateSamples & 0x3f) << 6;
             packed |= FullSamples & 0x3f;
             return packed;
@@ -226,6 +231,7 @@ namespace PathTracer
                 (a.SkipEmissiveBRDF == b.SkipEmissiveBRDF) &&
 #endif
                 (a.LightSamplingIsSSC == b.LightSamplingIsSSC) &&
+                (a.SunSampled == b.SunSampled) &&
                 (a.CandidateSamples == b.CandidateSamples) &&
                 (a.FullSamples == b.FullSamples);
         }

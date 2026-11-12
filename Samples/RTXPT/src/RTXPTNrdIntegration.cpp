@@ -60,15 +60,18 @@ namespace
 
 void ResetNrdStats(RTXPTNrdIntegrationStats& Stats)
 {
-    Stats.Ready                = false;
-    Stats.LastDispatchExecuted = false;
-    Stats.DispatchCount        = 0;
-    Stats.LastPlaneIndex       = 0;
-    Stats.LastDispatches       = 0;
-    Stats.Width                = 0;
-    Stats.Height               = 0;
-    Stats.PoolTextureBytes     = 0;
-    Stats.Method               = RTXPTNrdMethod::REBLUR;
+    Stats.Ready                 = false;
+    Stats.LastDispatchExecuted  = false;
+    Stats.SunShadow             = false;
+    Stats.LastSunShadowExecuted = false;
+    Stats.SunShadowDenoises     = 0;
+    Stats.DispatchCount         = 0;
+    Stats.LastPlaneIndex        = 0;
+    Stats.LastDispatches        = 0;
+    Stats.Width                 = 0;
+    Stats.Height                = 0;
+    Stats.PoolTextureBytes      = 0;
+    Stats.Method                = RTXPTNrdMethod::REBLUR;
     Stats.LastFailureReason.clear();
 }
 
@@ -95,9 +98,10 @@ void RTXPTNrdIntegration::Reset()
 
 bool RTXPTNrdIntegration::Initialize(IRenderDevice*, const RTXPTNrdIntegrationCreateInfo& CreateInfo)
 {
-    m_Stats.Method = CreateInfo.Method;
-    m_Stats.Width  = CreateInfo.Width;
-    m_Stats.Height = CreateInfo.Height;
+    m_Stats.Method    = CreateInfo.Method;
+    m_Stats.SunShadow = CreateInfo.SunShadow;
+    m_Stats.Width     = CreateInfo.Width;
+    m_Stats.Height    = CreateInfo.Height;
     return Fail(RTXPTGetNrdUnavailableReason());
 }
 
@@ -262,6 +266,10 @@ const char* GetNrdResourceTypeName(nrd::ResourceType Type)
             return "OUT_SPEC_RADIANCE_HITDIST";
         case nrd::ResourceType::OUT_VALIDATION:
             return "OUT_VALIDATION";
+        case nrd::ResourceType::IN_PENUMBRA:
+            return "IN_PENUMBRA";
+        case nrd::ResourceType::OUT_SHADOW_TRANSLUCENCY:
+            return "OUT_SHADOW_TRANSLUCENCY";
         case nrd::ResourceType::TRANSIENT_POOL:
             return "TRANSIENT_POOL";
         case nrd::ResourceType::PERMANENT_POOL:
@@ -300,9 +308,10 @@ void RTXPTNrdIntegration::Reset()
 bool RTXPTNrdIntegration::Initialize(IRenderDevice* pDevice, const RTXPTNrdIntegrationCreateInfo& CreateInfo)
 {
     Reset();
-    m_Stats.Method = CreateInfo.Method;
-    m_Stats.Width  = CreateInfo.Width;
-    m_Stats.Height = CreateInfo.Height;
+    m_Stats.Method    = CreateInfo.Method;
+    m_Stats.SunShadow = CreateInfo.SunShadow;
+    m_Stats.Width     = CreateInfo.Width;
+    m_Stats.Height    = CreateInfo.Height;
 
     if (!CreateInfo.ComputeSupported)
         return Fail("RTXPT NRD requires compute shader support");
@@ -327,7 +336,7 @@ bool RTXPTNrdIntegration::Initialize(IRenderDevice* pDevice, const RTXPTNrdInteg
         m_TransientTextures.clear();
     };
 
-    if (!CreateInstance(CreateInfo.Method) ||
+    if (!CreateInstance(CreateInfo.Method, CreateInfo.SunShadow) ||
         !CreateConstantBuffer(pDevice) ||
         !CreateSamplers(pDevice) ||
         !CreatePipelines(pDevice, CreateInfo.pEngineFactory, CreateInfo.pStateCache) ||
@@ -341,16 +350,18 @@ bool RTXPTNrdIntegration::Initialize(IRenderDevice* pDevice, const RTXPTNrdInteg
     return true;
 }
 
-bool RTXPTNrdIntegration::CreateInstance(RTXPTNrdMethod Method)
+bool RTXPTNrdIntegration::CreateInstance(RTXPTNrdMethod Method, bool SunShadow)
 {
     const nrd::DenoiserDesc DenoiserDescs[] =
         {
-            {m_Identifier, RTXPTToNrdDenoiser(Method)},
+            {kRadianceIdentifier, RTXPTToNrdDenoiser(Method)},
+            {kSunShadowIdentifier, nrd::Denoiser::SIGMA_SHADOW},
         };
+    constexpr Uint32 kRadianceOnly = 1;
 
     nrd::InstanceCreationDesc Desc = {};
     Desc.denoisers                 = DenoiserDescs;
-    Desc.denoisersNum              = 1;
+    Desc.denoisersNum              = SunShadow ? static_cast<Uint32>(std::size(DenoiserDescs)) : kRadianceOnly;
 
     const nrd::Result Result = nrd::CreateInstance(Desc, m_Instance);
     return Result == nrd::Result::SUCCESS && m_Instance != nullptr ?
@@ -658,6 +669,10 @@ bool RTXPTNrdIntegration::BindDispatchResources(IDeviceContext*,
                 return ResolveExternalView(RenderTargets.GetDenoiserOutDiffRadianceHitDistSRV(Attribs.PlaneIndex), RenderTargets.GetDenoiserOutDiffRadianceHitDistUAV(Attribs.PlaneIndex), DescriptorType, GetNrdResourceTypeName(Resource.type), pView);
             case nrd::ResourceType::OUT_VALIDATION:
                 return ResolveExternalView(RenderTargets.GetDenoiserOutValidationSRV(), RenderTargets.GetDenoiserOutValidationUAV(), DescriptorType, GetNrdResourceTypeName(Resource.type), pView);
+            case nrd::ResourceType::IN_PENUMBRA:
+                return ResolveExternalView(RenderTargets.GetSunPenumbraSRV(), RenderTargets.GetSunPenumbraUAV(), DescriptorType, GetNrdResourceTypeName(Resource.type), pView);
+            case nrd::ResourceType::OUT_SHADOW_TRANSLUCENCY:
+                return ResolveExternalView(RenderTargets.GetSunShadowSRV(), RenderTargets.GetSunShadowUAV(), DescriptorType, GetNrdResourceTypeName(Resource.type), pView);
             case nrd::ResourceType::TRANSIENT_POOL:
                 return ResolvePoolView(m_TransientTextures, Resource.indexInPool, DescriptorType, "transient", pView);
             case nrd::ResourceType::PERMANENT_POOL:
@@ -782,8 +797,9 @@ void RTXPTNrdIntegration::PopulateCommonSettings(nrd::CommonSettings& Settings, 
 
 bool RTXPTNrdIntegration::Dispatch(IDeviceContext* pContext, const RTXPTNrdFrameAttribs& Attribs)
 {
-    m_Stats.LastDispatchExecuted = false;
-    m_Stats.LastDispatches       = 0;
+    m_Stats.LastDispatchExecuted  = false;
+    m_Stats.LastSunShadowExecuted = false;
+    m_Stats.LastDispatches        = 0;
 
     if (!IsReady() || m_Instance == nullptr)
         return Fail("RTXPT NRD integration is not ready");
@@ -795,6 +811,8 @@ bool RTXPTNrdIntegration::Dispatch(IDeviceContext* pContext, const RTXPTNrdFrame
         return Fail("RTXPT NRD dispatch plane index is out of range");
     if (Attribs.pRealtime->NRDMethod != m_Stats.Method)
         return Fail("RTXPT NRD dispatch method does not match the initialized denoiser");
+    if (Attribs.SunShadow && !m_Stats.SunShadow)
+        return Fail("RTXPT NRD sun shadow dispatch requires an integration created with SunShadow");
 
     const Uint32 RenderWidth  = Attribs.pRenderTargets->GetRenderWidth();
     const Uint32 RenderHeight = Attribs.pRenderTargets->GetRenderHeight();
@@ -811,15 +829,22 @@ bool RTXPTNrdIntegration::Dispatch(IDeviceContext* pContext, const RTXPTNrdFrame
     if (m_Stats.Method == RTXPTNrdMethod::RELAX)
     {
         nrd::RelaxSettings Settings = RTXPTMakeRelaxSettings(Attribs.pRealtime->RelaxSettings);
-        Result                      = nrd::SetDenoiserSettings(*m_Instance, m_Identifier, &Settings);
+        Result                      = nrd::SetDenoiserSettings(*m_Instance, kRadianceIdentifier, &Settings);
     }
     else
     {
         nrd::ReblurSettings Settings = RTXPTMakeReblurSettings(Attribs.pRealtime->ReblurSettings);
-        Result                       = nrd::SetDenoiserSettings(*m_Instance, m_Identifier, &Settings);
+        Result                       = nrd::SetDenoiserSettings(*m_Instance, kRadianceIdentifier, &Settings);
     }
     if (Result != nrd::Result::SUCCESS)
         return Fail("Failed to set NRD denoiser settings");
+    if (Attribs.SunShadow)
+    {
+        nrd::SigmaSettings Settings = RTXPTMakeSigmaSettings(Attribs.pRealtime->SigmaSettings, Attribs.SunDirection);
+        Result                      = nrd::SetDenoiserSettings(*m_Instance, kSunShadowIdentifier, &Settings);
+        if (Result != nrd::Result::SUCCESS)
+            return Fail("Failed to set NRD sun shadow denoiser settings");
+    }
 
     nrd::CommonSettings CommonSettings;
     PopulateCommonSettings(CommonSettings, Attribs);
@@ -827,9 +852,14 @@ bool RTXPTNrdIntegration::Dispatch(IDeviceContext* pContext, const RTXPTNrdFrame
     if (Result != nrd::Result::SUCCESS)
         return Fail("Failed to set NRD common settings");
 
-    const nrd::DispatchDesc* pDispatchDescs = nullptr;
-    Uint32                   DispatchNum    = 0;
-    Result                                  = nrd::GetComputeDispatches(*m_Instance, &m_Identifier, 1, pDispatchDescs, DispatchNum);
+    // One request for both denoisers: the common settings, and NRD's frame timing with them, are set once a frame.
+    // SIGMA comes first, as in NRD-Sample; the denoisers read the same guides and write separate outputs.
+    const nrd::Identifier    SunShadowAndRadiance[] = {kSunShadowIdentifier, kRadianceIdentifier};
+    const nrd::Identifier*   pIdentifiers           = Attribs.SunShadow ? SunShadowAndRadiance : &kRadianceIdentifier;
+    const Uint32             IdentifierCount        = Attribs.SunShadow ? static_cast<Uint32>(std::size(SunShadowAndRadiance)) : 1u;
+    const nrd::DispatchDesc* pDispatchDescs         = nullptr;
+    Uint32                   DispatchNum            = 0;
+    Result                                          = nrd::GetComputeDispatches(*m_Instance, pIdentifiers, IdentifierCount, pDispatchDescs, DispatchNum);
     if (Result != nrd::Result::SUCCESS)
         return Fail("Failed to get NRD compute dispatches");
     if (DispatchNum != 0 && pDispatchDescs == nullptr)
@@ -929,8 +959,11 @@ bool RTXPTNrdIntegration::Dispatch(IDeviceContext* pContext, const RTXPTNrdFrame
         ++m_Stats.LastDispatches;
     }
 
-    m_Stats.LastDispatchExecuted = m_Stats.LastDispatches != 0;
-    m_Stats.LastPlaneIndex       = Attribs.PlaneIndex;
+    m_Stats.LastDispatchExecuted  = m_Stats.LastDispatches != 0;
+    m_Stats.LastSunShadowExecuted = Attribs.SunShadow && m_Stats.LastDispatchExecuted;
+    m_Stats.LastPlaneIndex        = Attribs.PlaneIndex;
+    if (m_Stats.LastSunShadowExecuted)
+        ++m_Stats.SunShadowDenoises;
     return true;
 }
 

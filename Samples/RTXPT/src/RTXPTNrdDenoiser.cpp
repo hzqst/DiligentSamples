@@ -48,6 +48,7 @@ void InsertDenoiserPrepareOutputBarriers(IDeviceContext* pContext, const RTXPTRe
     RTXPTRayTracingPass::InsertUAVBarrier(pContext, RenderTargets.GetDenoiserSpecRadianceHitDistUAV());
     RTXPTRayTracingPass::InsertUAVBarrier(pContext, RenderTargets.GetDenoiserDisocclusionThresholdMixUAV());
     RTXPTRayTracingPass::InsertUAVBarrier(pContext, RenderTargets.GetDenoiserHistoryConfidenceUAV(LayerIndex));
+    RTXPTRayTracingPass::InsertUAVBarrier(pContext, RenderTargets.GetSunPenumbraUAV());
 }
 
 } // namespace
@@ -87,17 +88,21 @@ Uint64 RTXPTNrdDenoiser::GetPoolTextureBytes() const
 bool RTXPTNrdDenoiser::Prepare(IRenderDevice* pDevice, const RTXPTNrdIntegrationCreateInfo& CreateInfo)
 {
     m_LastFailureReason.clear();
-    for (RTXPTNrdIntegration& Layer : m_Layers)
+    for (Uint32 LayerIndex = 0; LayerIndex < kRTXPTDenoisingLayerCount; ++LayerIndex)
     {
+        RTXPTNrdIntegration&          Layer   = m_Layers[LayerIndex];
+        RTXPTNrdIntegrationCreateInfo LayerCI = CreateInfo;
+        LayerCI.SunShadow                     = CreateInfo.SunShadow && LayerIndex == 0;
         const bool bLayerMatches =
             Layer.IsReady() &&
-            Layer.GetMethod() == CreateInfo.Method &&
-            Layer.GetWidth() == CreateInfo.Width &&
-            Layer.GetHeight() == CreateInfo.Height;
+            Layer.GetMethod() == LayerCI.Method &&
+            Layer.HasSunShadow() == LayerCI.SunShadow &&
+            Layer.GetWidth() == LayerCI.Width &&
+            Layer.GetHeight() == LayerCI.Height;
         if (bLayerMatches)
             continue;
 
-        if (!Layer.Initialize(pDevice, CreateInfo))
+        if (!Layer.Initialize(pDevice, LayerCI))
         {
             // The layer already reported the failure; keep its reason across the reset.
             const std::string Reason = Layer.GetLastFailureReason();
@@ -116,6 +121,9 @@ bool RTXPTNrdDenoiser::Prepare(IRenderDevice* pDevice, const RTXPTNrdIntegration
  *    coordinates, with rejection winning conflicts. The first prepare also initializes the merge output.
  * 2. That layer's NRD instance denoises the inputs with its own history.
  * 3. The final merge remodulates the denoised radiance and adds it to the merge output.
+ * With SunShadow, layer 0's prepare also writes the sun penumbra, its instance runs SIGMA before the radiance
+ * denoiser in the same dispatch (they share the guides of the layer), and its merge adds the direct sunlight times the
+ * denoised shadow.
  * The merge output is linear HDR. Attribs.PostProcess supplies the render targets and the merge output UAV.
  */
 bool RTXPTNrdDenoiser::Denoise(IDeviceContext* pContext, RTXPTPostProcessPass& PostProcess, const RTXPTNrdDenoiserFrameAttribs& Attribs, RTXPTGpuProfiler* Profiler)
@@ -140,10 +148,12 @@ bool RTXPTNrdDenoiser::Denoise(IDeviceContext* pContext, RTXPTPostProcessPass& P
     bool bInitOutput = true;
     for (Uint32 LayerIndex = Attribs.LayerCount; LayerIndex-- > 0;)
     {
+        const bool                      bSunShadow     = Attribs.SunShadow && LayerIndex == 0;
         RTXPTDenoiserPostProcessAttribs PrepareAttribs = Attribs.PostProcess;
         PrepareAttribs.Method                          = Method;
         PrepareAttribs.PlaneIndex                      = LayerIndex;
         PrepareAttribs.InitOutput                      = bInitOutput;
+        PrepareAttribs.SunShadow                       = bSunShadow;
         PrepareAttribs.MiniConstants.params.x          = LayerIndex;
         PrepareAttribs.MiniConstants.params.y          = bInitOutput ? 1u : 0u;
         {
@@ -164,6 +174,8 @@ bool RTXPTNrdDenoiser::Denoise(IDeviceContext* pContext, RTXPTPostProcessPass& P
         NrdAttribs.ResetHistory      = Attribs.ResetHistory;
         NrdAttribs.EnableValidation  = bEnableValidation;
         NrdAttribs.HistoryConfidence = Attribs.HistoryConfidence;
+        NrdAttribs.SunShadow         = bSunShadow;
+        NrdAttribs.SunDirection      = Attribs.SunDirection;
         {
             RTXPTGpuProfiler::Scope Timing{Profiler, pContext, DispatchStages[LayerIndex]};
             if (!m_Layers[LayerIndex].Dispatch(pContext, NrdAttribs))
@@ -178,6 +190,7 @@ bool RTXPTNrdDenoiser::Denoise(IDeviceContext* pContext, RTXPTPostProcessPass& P
         MergeAttribs.Method                          = Method;
         MergeAttribs.PlaneIndex                      = LayerIndex;
         MergeAttribs.HasValidation                   = bMergeValidation;
+        MergeAttribs.SunShadow                       = bSunShadow;
         MergeAttribs.MiniConstants.params.x          = LayerIndex;
         MergeAttribs.MiniConstants.params.y          = bMergeValidation ? 1u : 0u;
         {

@@ -63,6 +63,27 @@ float RTXPTDenoiserReblurGetNormHitDist(float HitDist, float ViewZ, float Roughn
 #endif
 }
 
+// The SIGMA penumbra of the distance to the closest occluder of a sun shadow ray: NRD_FP16_MAX where nothing
+// occludes it, 0 where the surface gets no sunlight.
+float RTXPTDenoiserSigmaPackPenumbra(float DistanceToOccluder, float TanAngularRadius)
+{
+#if RTXPT_HAS_NRD_HEADERS
+    return SIGMA_FrontEnd_PackPenumbra(DistanceToOccluder, TanAngularRadius);
+#else
+    return DistanceToOccluder;
+#endif
+}
+
+// The sun visibility in [0, 1] of the denoised SIGMA shadow.
+float RTXPTDenoiserSigmaUnpackShadow(float Shadow)
+{
+#if RTXPT_HAS_NRD_HEADERS
+    return SIGMA_BackEnd_UnpackShadow(Shadow);
+#else
+    return Shadow;
+#endif
+}
+
 void RTXPTDenoiserPostDenoiseProcess(float3 DiffBSDFEstimate,
                                      float3 SpecBSDFEstimate,
                                      inout float4 DiffRadianceHitDistDenoised,

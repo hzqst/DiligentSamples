@@ -131,6 +131,10 @@ void RTXPTRenderTargets::Reset()
     for (auto& Texture : m_DenoiserHistoryConfidence)
         Texture.Release();
     m_DenoiserAvgLayerRadianceHalfRes.Release();
+    m_SunDirectLighting.Release();
+    m_SunHitDistance.Release();
+    m_SunPenumbra.Release();
+    m_SunShadow.Release();
     m_RRDiffuseAlbedo.Release();
     m_RRSpecAlbedo.Release();
     m_RRNormalsAndRoughness.Release();
@@ -433,6 +437,7 @@ bool RTXPTRenderTargets::Resize(IRenderDevice* pDevice, const RTXPTRenderTargetC
     RefCntAutoPtr<ITexture>                                        DenoiserOutValidation;
     std::array<RefCntAutoPtr<ITexture>, kRTXPTDenoisingLayerCount> DenoiserHistoryConfidence;
     RefCntAutoPtr<ITexture>                                        DenoiserAvgLayerRadianceHalfRes;
+    RefCntAutoPtr<ITexture>                                        SunDirectLighting, SunHitDistance, SunPenumbra, SunShadow;
     RefCntAutoPtr<ITexture>                                        RRDiffuseAlbedo, RRSpecAlbedo, RRNormalsAndRoughness, RRDepth, RRMotionVectors;
     RefCntAutoPtr<ITexture>                                        RRSpecMotionVectors;
 
@@ -514,6 +519,11 @@ bool RTXPTRenderTargets::Resize(IRenderDevice* pDevice, const RTXPTRenderTargetC
             return FailResize("Failed to create RTXPT SpecularHitT");
         if (!CreateTarget(pDevice, MakeTargetDesc("RTXPT ScratchFloat1", RenderWidth, RenderHeight, Formats.ScratchFloat1, UavFlags), ScratchFloat1))
             return FailResize("Failed to create RTXPT ScratchFloat1");
+        // The path tracer binds the sun shadow denoiser inputs in every realtime mode; only the denoised modes write them.
+        if (!CreateTarget(pDevice, MakeTargetDesc("RTXPT SunDirectLighting", RenderWidth, RenderHeight, Formats.SunDirectLighting, UavFlags), SunDirectLighting))
+            return FailResize("Failed to create RTXPT SunDirectLighting");
+        if (!CreateTarget(pDevice, MakeTargetDesc("RTXPT SunHitDistance", RenderWidth, RenderHeight, Formats.SunHitDistance, UavFlags), SunHitDistance))
+            return FailResize("Failed to create RTXPT SunHitDistance");
         if (!CreateRayReconstructionResources)
         {
             // NRD reads its inputs and outputs before every texel has been written; see RTXPTCreateZeroedTexture2D.
@@ -543,6 +553,11 @@ bool RTXPTRenderTargets::Resize(IRenderDevice* pDevice, const RTXPTRenderTargetC
                 if (!CreateZeroedTarget(pDevice, MakeTargetDesc(ConfidenceName.c_str(), RenderWidth, RenderHeight, Formats.DenoiserHistoryConfidence, UavFlags), Zeros, DenoiserHistoryConfidence[PlaneIndex]))
                     return FailResize("Failed to create RTXPT DenoiserHistoryConfidence");
             }
+
+            if (!CreateZeroedTarget(pDevice, MakeTargetDesc("RTXPT SunPenumbra", RenderWidth, RenderHeight, Formats.SunPenumbra, UavFlags), Zeros, SunPenumbra))
+                return FailResize("Failed to create RTXPT SunPenumbra");
+            if (!CreateZeroedTarget(pDevice, MakeTargetDesc("RTXPT SunShadow", RenderWidth, RenderHeight, Formats.SunShadow, UavFlags), Zeros, SunShadow))
+                return FailResize("Failed to create RTXPT SunShadow");
 
             if (CreateDenoiserValidation &&
                 !CreateZeroedTarget(pDevice, MakeTargetDesc("RTXPT DenoiserOutValidation", RenderWidth, RenderHeight, Formats.DenoiserOutValidation, UavFlags), Zeros, DenoiserOutValidation))
@@ -587,6 +602,10 @@ bool RTXPTRenderTargets::Resize(IRenderDevice* pDevice, const RTXPTRenderTargetC
     m_DenoiserOutValidation               = DenoiserOutValidation;
     m_DenoiserHistoryConfidence           = DenoiserHistoryConfidence;
     m_DenoiserAvgLayerRadianceHalfRes     = DenoiserAvgLayerRadianceHalfRes;
+    m_SunDirectLighting                   = SunDirectLighting;
+    m_SunHitDistance                      = SunHitDistance;
+    m_SunPenumbra                         = SunPenumbra;
+    m_SunShadow                           = SunShadow;
     m_RRDiffuseAlbedo                     = RRDiffuseAlbedo;
     m_RRSpecAlbedo                        = RRSpecAlbedo;
     m_RRNormalsAndRoughness               = RRNormalsAndRoughness;
@@ -913,6 +932,15 @@ ITextureView* RTXPTRenderTargets::GetDenoiserSpecRadianceHitDistUAV() const { re
 ITextureView* RTXPTRenderTargets::GetDenoiserSpecRadianceHitDistSRV() const { return GetTextureSRV(m_DenoiserSpecRadianceHitDist); }
 ITextureView* RTXPTRenderTargets::GetDenoiserDisocclusionThresholdMixUAV() const { return GetTextureUAV(m_DenoiserDisocclusionThresholdMix); }
 ITextureView* RTXPTRenderTargets::GetDenoiserDisocclusionThresholdMixSRV() const { return GetTextureSRV(m_DenoiserDisocclusionThresholdMix); }
+
+ITextureView* RTXPTRenderTargets::GetSunDirectLightingUAV() const { return GetTextureUAV(m_SunDirectLighting); }
+ITextureView* RTXPTRenderTargets::GetSunDirectLightingSRV() const { return GetTextureSRV(m_SunDirectLighting); }
+ITextureView* RTXPTRenderTargets::GetSunHitDistanceUAV() const { return GetTextureUAV(m_SunHitDistance); }
+ITextureView* RTXPTRenderTargets::GetSunHitDistanceSRV() const { return GetTextureSRV(m_SunHitDistance); }
+ITextureView* RTXPTRenderTargets::GetSunPenumbraUAV() const { return GetTextureUAV(m_SunPenumbra); }
+ITextureView* RTXPTRenderTargets::GetSunPenumbraSRV() const { return GetTextureSRV(m_SunPenumbra); }
+ITextureView* RTXPTRenderTargets::GetSunShadowUAV() const { return GetTextureUAV(m_SunShadow); }
+ITextureView* RTXPTRenderTargets::GetSunShadowSRV() const { return GetTextureSRV(m_SunShadow); }
 
 ITextureView* RTXPTRenderTargets::GetDenoiserHistoryConfidenceUAV(Uint32 PlaneIndex) const
 {

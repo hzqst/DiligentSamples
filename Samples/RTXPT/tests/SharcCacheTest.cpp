@@ -79,9 +79,11 @@ try
     // A syntactically valid RT shader with no cache writes is not a training shader.
     for (bool Train : {true, false})
     {
+        // The production hit shader sizes its bindless material table with MATERIAL_TEXTURE_COUNT.
         ShaderMacro      Macros[] = {{"RTXPT_SHARC_TRAIN", Train ? "1" : "0"},
                                 {"RTXPT_SHARC_CONSUME", Train ? "0" : "1"},
-                                {"PATH_TRACER_MODE", Train ? "0" : "2"}};
+                                {"PATH_TRACER_MODE", Train ? "0" : "2"},
+                                {"MATERIAL_TEXTURE_COUNT", "1"}};
         ShaderCreateInfo S;
         S.Desc                       = {"SHaRC production hit regression", SHADER_TYPE_RAY_CLOSEST_HIT, false};
         S.SourceLanguage             = SHADER_SOURCE_LANGUAGE_HLSL;
@@ -89,7 +91,7 @@ try
         S.ShaderOptimizationLevel    = SHADER_OPTIMIZATION_LEVEL_3;
         S.CompileFlags               = SHADER_COMPILE_FLAG_ENABLE_16BIT_TYPES;
         S.HLSLVersion                = {6, 6};
-        S.Macros                     = {Macros, 3};
+        S.Macros                     = {Macros, static_cast<Uint32>(_countof(Macros))};
         S.FilePath                   = "PathTracer/PathTracerClosestHit.rchit";
         S.EntryPoint                 = "main";
         S.pShaderSourceStreamFactory = Source;

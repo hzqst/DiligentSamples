@@ -15,7 +15,8 @@ class SRCaptureTest(unittest.TestCase):
         self.manifest = dict(schema=2, mode='RealtimeDLSSSR', frame_index=4,
                              render_size=[2, 2], display_size=[4, 4], spp=1,
                              sample_base_index=3, jitter=[0.25, -0.125],
-                             dynamic_motion_validated=True, denoiser='NRD_RELAX',
+                             dynamic_motion_validated=True, denoiser='NRD_REBLUR',
+                             sun_shadow_denoiser='SIGMA_SHADOW',
                              super_resolution=dict(provider='NGX: DLSS', quality='Quality',
                                  executes=4, resets=1, failures=0,
                                  depth_encoding='forward_projection_0_1_far_1',
@@ -46,6 +47,20 @@ class SRCaptureTest(unittest.TestCase):
     def test_valid_dual_resolution_capture(self):
         self.assertEqual(4, self.run_capture()['frame_index'])
         self.assertTrue((self.directory / 'upscaled_radiance.pfm').exists())
+
+    def test_relax_without_sun_shadow_accepted(self):
+        self.manifest.update(denoiser='NRD_RELAX', sun_shadow_denoiser=None)
+        self.assertEqual(4, self.run_capture()['frame_index'])
+
+    def test_unknown_denoiser_rejected(self):
+        self.manifest['denoiser'] = 'NRD_SIGMA'
+        with self.assertRaisesRegex(ValueError, 'denoisers'):
+            self.run_capture()
+
+    def test_unknown_sun_shadow_denoiser_rejected(self):
+        self.manifest['sun_shadow_denoiser'] = 'SIGMA_SHADOW_TRANSLUCENCY'
+        with self.assertRaisesRegex(ValueError, 'sun shadow denoiser'):
+            self.run_capture()
 
     def test_missing_sr_input_rejected(self):
         self.manifest['resources'] = [r for r in self.manifest['resources'] if r['name'] != 'sr_motion']
@@ -277,6 +292,11 @@ class RRCaptureTest(unittest.TestCase):
     def test_nrd_instance_rejected(self):
         self.manifest['nrd_instances'] = 1
         with self.assertRaisesRegex(ValueError, 'NRD'):
+            self.run_capture()
+
+    def test_sun_shadow_denoiser_rejected(self):
+        self.manifest['sun_shadow_denoiser'] = 'SIGMA_SHADOW'
+        with self.assertRaisesRegex(ValueError, 'sun shadow denoiser'):
             self.run_capture()
 
     def test_rr_reported_unavailable_rejected(self):

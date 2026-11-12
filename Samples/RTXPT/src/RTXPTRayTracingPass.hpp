@@ -79,6 +79,9 @@ struct RTXPTRayTracingDispatch
     const SampleMiniConstants* pMiniConstants            = nullptr;
     Uint32                     Width                     = 0;
     Uint32                     Height                    = 0;
+    // The sun shadow denoiser inputs of RTXPTRenderTargets, required by the realtime variants.
+    ITextureView* pSunDirectLightingUAV = nullptr;
+    ITextureView* pSunHitDistanceUAV    = nullptr;
 };
 
 // How the pass compiles its pipelines. The scene, lighting and environment resources are bound later with Bind.

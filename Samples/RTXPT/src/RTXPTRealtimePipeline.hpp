@@ -22,8 +22,13 @@ enum class RTXPTRealtimeDenoiser
 {
     //Merge the noisy layers of the current frame (RealtimeRaw).
     None,
-    //Denoise each layer with its own RELAX instance and history, then merge (RealtimeNative).
+    //Denoise each layer with its own RELAX instance and history, then merge (RealtimeNative). With a sun, layer 0 also
+    //denoises the sun shadow with SIGMA (RTXPTRealtimePipelineCreateInfo::SunShadowDenoising).
     NrdRelax,
+    //NrdRelax with REBLUR as the radiance denoiser. REBLUR only limits the history of a pixel without history confidence
+    //to about one frame, and its stabilized history ignores the confidence, so a replaced surface keeps part of the old
+    //radiance for a few frames.
+    NrdReblur,
 };
 
 //What reconstructs the display-size HDR from the noisy layers instead of a denoiser and super resolution.
@@ -50,6 +55,12 @@ struct RTXPTRealtimeStats
     Uint32 NrdInstances      = 0;
     Uint64 NrdPoolBytes      = 0;
     bool   HistoryConfidence = false;
+    //The radiance denoiser of the NRD layers, whether layer 0 carries SIGMA, and the frames whose layer 0 denoised the
+    //sun shadow with it; LastSunShadowDenoised is the latest successful frame's.
+    RTXPTNrdMethod NrdMethod             = RTXPTNrdMethod::RELAX;
+    bool           SunShadowDenoising    = false;
+    Uint32         SunShadowDenoises     = 0;
+    bool           LastSunShadowDenoised = false;
     //Super resolution pipelines: accepted upscaler executions, and those that restarted its history.
     Uint32 SuperResolutionExecutes = 0;
     Uint32 SuperResolutionResets   = 0;
@@ -89,6 +100,9 @@ struct RTXPTRealtimePipelineCreateInfo
     RTXPTRealtimeReconstructor Reconstructor = RTXPTRealtimeReconstructor::None;
     //Validation control only: false makes NRD ignore the per-pixel history validity of the layers.
     bool HistoryConfidence = true;
+    //RealtimeNative: in frames with a sun, layer 0 leaves its direct sunlight out of its radiance and SIGMA denoises the
+    //sun shadow. Validation control only when false.
+    bool SunShadowDenoising = true;
     //DLSSRR validation control only (the D4 A/B): false hands RR exposure 1 instead of the display exposure.
     bool   ReconstructionDisplayExposure = true;
     bool   SuperResolution               = false;
@@ -144,6 +158,7 @@ public:
     const RTXPTDisplayBloom& GetBloom() const { return m_PostProcess.GetBloom(); }
 
 private:
+    bool           IsNrdDenoised() const { return m_Denoiser == RTXPTRealtimeDenoiser::NrdReblur || m_Denoiser == RTXPTRealtimeDenoiser::NrdRelax; }
     RTXPTErrorCode Denoise(IDeviceContext* Context, const SampleConstants& Constants, const RTXPTRealtimeHistoryAttribs& History, RTXPTGpuProfiler* Profiler);
     RTXPTErrorCode Upscale(IDeviceContext* Context, const SampleConstants& Constants, const RTXPTRealtimeHistoryAttribs& History, RTXPTGpuProfiler* Profiler);
     RTXPTErrorCode Reconstruct(IDeviceContext* Context, const SampleConstants& Constants, const RTXPTToneMappingParameters& ToneParameters, RTXPTAutoExposure* AutoExposure, const RTXPTRealtimeHistoryAttribs& History, RTXPTGpuProfiler* Profiler);
@@ -166,6 +181,7 @@ private:
     float                         m_ReconstructionExposureValue   = 0;
     bool                          m_ReconstructionDisplayExposure = true;
     bool                          m_SuperResolution               = false;
+    bool                          m_SunShadowDenoising            = false;
     bool                          m_Ready                         = false;
 };
 } // namespace Diligent

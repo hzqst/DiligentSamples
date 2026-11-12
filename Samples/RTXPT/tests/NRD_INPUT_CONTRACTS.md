@@ -36,6 +36,20 @@ The scratch allocation costs four bytes per render pixel and is reused by all
 layers. Prepare timing includes clear and resolve; NRD pool statistics do not
 include application-side scratch storage.
 
+## Sun shadow inputs (#325)
+
+In frames whose constants set `sun.ShadowDenoising`, the FILL surface of layer 0 (no bounce from the layer) writes
+`SunDirectLighting` (RGBA16F, working units, the path throughput times the BSDF at the disk centre times the sun's
+irradiance, without shadow) and `SunHitDistance` (R16F: the distance to the closest occluder of one shadow ray to a
+uniform point of the disk, 0 where the surface gets no sunlight, 65504 where nothing occludes it). BUILD clears both
+for every pixel. The prepare of layer 0 writes `IN_PENUMBRA` (`SunPenumbra`, R16F) with
+`SIGMA_FrontEnd_PackPenumbra(distance, sun.TanAngularRadius)` for every pixel; SIGMA reads the view Z, motion and
+normal/roughness guides of layer 0 and writes `OUT_SHADOW_TRANSLUCENCY` (`SunShadow`, R8_UNORM), and the final merge
+of layer 0 adds `SunDirectLighting * SIGMA_BackEnd_UnpackShadow(SunShadow)` to its surface pixels. Prepare and merge
+bind the four textures in every NRD frame; `params.z` of their mini constants enables them.
+`NrdSunShadowTest.hpp` checks the penumbra of an occluded and an unoccluded ray, the merge of layer 0 and the absence
+of sunlight on sky pixels through the production entry points.
+
 ## Consumer coordinates and the border regression
 
 The pinned NRD 4.17.4 sources use different confidence coordinates:
