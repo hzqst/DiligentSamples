@@ -67,6 +67,13 @@ radiance, finite environment miss, NaN, cancellation, missing samples with stale
 numeric contents, geometry distances beyond FP16 range, C++/shader
 structured-buffer stride, and both NRD packers.
 
+`NrdRadianceScaleTest.hpp` runs the same production entry points on layers in
+working units (`ptConsts.radianceScale`): Prepare of both packers clamps the
+demodulated radiance at `min(255, preExposedGrayLuminance * denoiserRadianceClampK * 16)`
+whatever the scale and starts the HDR with the stable radiance divided by the
+scale; the RELAX final merge and the merge without a denoiser add their radiance
+divided by the scale; each stays within FP16, and a scale of 1 changes nothing.
+
 ## Inspecting real traced inputs
 
 Select `Denoising guide debug` in the Sample, or pass

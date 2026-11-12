@@ -125,8 +125,9 @@ public:
     RTXPTErrorCode Initialize(const RTXPTRealtimePipelineCreateInfo& CreateInfo);
     //AutoExposure, when not null, is the view's auto exposure, whose frame the host has begun (BeginFrame): ray
     //reconstruction and tone mapping read its used exposure, and the HDR is metered before Bloom. ToneParameters then
-    //carry no exposure of their own, and the clamps of the traced radiance use the fixed reference of display exposure 1
-    //(RTXPTAutoExposureTraceClampExposure) instead of the exposure, which only the GPU knows.
+    //carry no exposure of their own. The clamps of the traced radiance never follow the display exposure: they use the
+    //fixed reference of display exposure 1 (RTXPTTraceClampExposure) in the working units of Constants
+    //(ptConsts.radianceScale), which the HDR this pipeline hands on is divided by.
     RTXPTErrorCode             Render(IDeviceContext* Context, RTXPTRayTracingPass& Rays, RTXPTLightsBaker& Lights, const SampleConstants& Constants, const RTXPTToneMappingParameters& ToneParameters, const RTXPTBloomParameters& Bloom, RTXPTAutoExposure* AutoExposure, const RTXPTRealtimeHistoryAttribs& History, ITextureView* DisplayRTV, RTXPTGpuProfiler* Profiler = nullptr);
     void                       InvalidateOutput() { m_Stats.OutputValid = false; }
     RTXPTRealtimeDenoiser      GetDenoiser() const { return m_Denoiser; }

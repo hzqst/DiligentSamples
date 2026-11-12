@@ -22,6 +22,7 @@
 #include "ArchiverFactoryLoader.h"
 #include "MapHelper.hpp"
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <vector>
 
@@ -84,6 +85,7 @@ struct RTXPTEmbeddedScene::Impl
     std::string            EnvironmentAssetsRoot;
     bool                   Ready{};
     bool                   EnableProfiling{};
+    float                  RadianceScale{1.0f};
     RTXPTGpuProfiler       Profiler;
 
     RTXPTErrorCode UpdateEnvironment(IDeviceContext* Context, bool ForceRebuild = false)
@@ -128,8 +130,10 @@ RTXPTErrorCode RTXPTEmbeddedScene::Initialize(IRenderDevice* Device, IDeviceCont
 {
     auto& S           = *m_Impl;
     S.EnableProfiling = CreateInfo.EnableProfiling;
-    if (!Device || !Context || !CreateInfo.Scene || !CreateInfo.Materials || !CreateInfo.Shaders || !CreateInfo.Cache)
+    if (!Device || !Context || !CreateInfo.Scene || !CreateInfo.Materials || !CreateInfo.Shaders || !CreateInfo.Cache ||
+        !std::isfinite(CreateInfo.RadianceScale) || CreateInfo.RadianceScale <= 0.0f)
         return RTXPTErrorCode::InvalidArgument;
+    S.RadianceScale = CreateInfo.RadianceScale;
     auto& Scene     = *CreateInfo.Scene;
     auto& Materials = *CreateInfo.Materials;
     if (!IsDeviceSupported(Device))
@@ -718,6 +722,9 @@ RTXPTErrorCode RTXPTEmbeddedView::Render(const PathTracerCameraData& Camera, con
         if (FeedbackReset)
             R.LightsBaker.RequestFeedbackReset();
         PT.sampleBaseIndex = PT.sampleIndex = R.FrameIndex;
+        //The realtime layers, clamps and denoiser inputs are in the working units of the scene; Reference traces in
+        //scene units.
+        PT.radianceScale = S.RadianceScale;
         RTXPTRealtimeHistoryAttribs RealtimeHistory;
         RealtimeHistory.Reset                 = ResetHistory;
         RealtimeHistory.TimeDeltaSeconds      = !ResetHistory && Time > R.PreviousTime ? static_cast<float>(Time - R.PreviousTime) : -1.0f;

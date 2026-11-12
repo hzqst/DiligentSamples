@@ -72,7 +72,7 @@ struct PathTracerConstants
     uint resetAccumulation;
 
     float denoisingLayersSplitStopThreshold;
-    float _padding3;
+    float radianceScale; // Working units of the traced radiance per scene unit; the outputs divide by it.
     uint  _padding4;
     float denoisingLayersSuppressPrimaryIndirectSpecularK;
 

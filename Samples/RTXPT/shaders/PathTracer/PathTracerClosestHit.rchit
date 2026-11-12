@@ -116,8 +116,8 @@ namespace PathTracer
         thinSurface                     = Bridge::isThinSurface(material);
         shadowNoLFadeout                = Bridge::loadShadowNoLFadeout(materialID);
         // RTXPT-fork single-sided emissives: only front-facing hits emit (PathTracerBridgeDonut.hlsli),
-        // keeping the BSDF-hit emission consistent with the one-sided NEE TriangleLight.
-        surfaceEmission                 = frontFacing ? Bridge::getEmission(material, texCoord) : float3(0.0, 0.0, 0.0);
+        // keeping the BSDF-hit emission consistent with the one-sided NEE TriangleLight. In working units, as NEE.
+        surfaceEmission                 = frontFacing ? Bridge::getEmission(material, texCoord) * g_Const.ptConsts.radianceScale : float3(0.0, 0.0, 0.0);
         // One-sided area-light pdf: only the front face can be sampled by NEE, so back-face hits carry no
         // emissive light pdf (and emit nothing via the gate above), keeping BSDF/NEE MIS consistent.
         if (!UseApproximateLightMIS() && frontFacing && (material.flags & kMaterialFlagEmissiveAreaLight) != 0u)

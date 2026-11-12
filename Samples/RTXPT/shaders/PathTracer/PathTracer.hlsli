@@ -167,7 +167,8 @@ namespace PathTracer
             const float misWeight  = ComputeLightVsBSDFMISForLightSample(picked, fullSamples, candidateSamples, thisPdf, otherPdf, bsdfPdf);
             const float fadeOut    = ComputeShadowNoLFadeout(picked.dir, faceNormal, shadowNoLFadeout);
             const float4 bsdfValue = EvalBSDFValue(bsdfData, wo, picked.dir);
-            const float3 incidentRadiance = picked.radianceOverPdf * (fadeOut * wrsScale * misWeight / float(fullSamples));
+            // Light records stay in scene units; the radiance of the path is in working units from here on.
+            const float3 incidentRadiance = picked.radianceOverPdf * (g_Const.ptConsts.radianceScale * fadeOut * wrsScale * misWeight / float(fullSamples));
             float3 contribution = bsdfValue.rgb * incidentRadiance;
             const float specularContribution = bsdfValue.w * Average(incidentRadiance) * Average(pathThroughput);
             const float3 feedbackContribution = contribution * Average(pathThroughput);
@@ -658,7 +659,7 @@ namespace PathTracer
         EnvMapSampler envSampler = RTXPTCreateEnvMapSampler(Bridge::getEnvMapConstants());
         // RTXPT-fork defaults to MIP 2 after more than one diffuse bounce.
         const float environmentMip = path.getCounter(PackedCounters::DiffuseBounces) > 1u ? 2.0 : 0.0;
-        float3 environmentEmission = envSampler.Eval(rayDir, environmentMip);
+        float3 environmentEmission = envSampler.Eval(rayDir, environmentMip) * workingContext.PtConsts.radianceScale;
 
 #if PATH_TRACER_MODE != PATH_TRACER_MODE_BUILD_DENOISING_LAYERS
         const NEEBSDFMISInfo prevMISInfo = NEEBSDFMISInfo::Unpack16bit(path.GetPackedMISInfo());

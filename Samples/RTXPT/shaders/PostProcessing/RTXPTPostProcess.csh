@@ -63,6 +63,12 @@ VK_IMAGE_FORMAT("rgba16f") RWTexture2D<float4>      u_DenoiserSpecRadianceHitDis
 VK_IMAGE_FORMAT("r8")      RWTexture2D<float>       u_DenoiserDisocclusionThresholdMix;
 VK_IMAGE_FORMAT("r8")      RWTexture2D<float>       u_CombinedHistoryClampRelax;
 
+// The scene-linear radiance of a radiance in the working units of the layers (ptConsts.radianceScale), within fp16.
+float3 RTXPTSceneRadiance(float3 Radiance)
+{
+    return min(Radiance / g_Frame.ptConsts.radianceScale, HLF_MAX.xxx);
+}
+
 #if RTXPT_POST_PROCESS_MODE == RTXPT_POST_PROCESS_DLSS_RR_PREPARE_INPUTS
 #include "../PathTracer/DenoisingGuidesRR.hlsli"
 #endif
@@ -145,7 +151,7 @@ void main(uint3 DispatchThreadID : SV_DispatchThreadID)
 
     if (InitWithStableRadiance)
     {
-        u_OutputColor[PixelPos]               = float4(DenoisingLayers.LoadStableRadiance(PixelPos), 1.0);
+        u_OutputColor[PixelPos]               = float4(RTXPTSceneRadiance(DenoisingLayers.LoadStableRadiance(PixelPos)), 1.0);
         u_CombinedHistoryClampRelax[PixelPos] = 0.0;
     }
 
@@ -256,7 +262,8 @@ void main(uint3 DispatchThreadID : SV_DispatchThreadID)
         SpecRadiance = t_DenoiserOutSpecRadianceHitDist[PixelPos];
         RTXPTDenoiserPostDenoiseProcess(DiffBSDFEstimate, SpecBSDFEstimate, DiffRadiance, SpecRadiance);
 
-        u_OutputColor[PixelPos].xyz += max(0.0.xxx, DiffRadiance.rgb + SpecRadiance.rgb);
+        const float3 LayerRadiance = RTXPTSceneRadiance(max(0.0.xxx, DiffRadiance.rgb + SpecRadiance.rgb));
+        u_OutputColor[PixelPos].xyz = min(u_OutputColor[PixelPos].xyz + LayerRadiance, HLF_MAX.xxx);
     }
 
     if (HasValidation)
@@ -270,7 +277,7 @@ void main(uint3 DispatchThreadID : SV_DispatchThreadID)
 #if RTXPT_POST_PROCESS_MODE == RTXPT_POST_PROCESS_NO_DENOISER_FINAL_MERGE
     DenoisingLayersContext DenoisingLayers = DenoisingLayersContext::make(
         u_DenoisingLayersHeader, u_DenoisingLayersBuffer, u_StableRadiance, g_Frame.ptConsts);
-    u_OutputColor[PixelPos] = float4(DenoisingLayers.GetAllRadiance(PixelPos), 1.0);
+    u_OutputColor[PixelPos] = float4(RTXPTSceneRadiance(DenoisingLayers.GetAllRadiance(PixelPos)), 1.0);
 #endif
 
 #if RTXPT_POST_PROCESS_MODE == RTXPT_POST_PROCESS_DENOISING_LAYERS_DEBUG_VIZ
