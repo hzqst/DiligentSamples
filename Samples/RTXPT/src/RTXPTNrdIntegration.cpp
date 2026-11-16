@@ -935,7 +935,7 @@ bool RTXPTNrdIntegration::Dispatch(IDeviceContext* pContext, const RTXPTNrdFrame
                 }
             }
 
-            return FallbackIndex < m_Samplers.size() ? m_Samplers[FallbackIndex] : nullptr;
+            return FallbackIndex < m_Samplers.size() ? m_Samplers[FallbackIndex].RawPtr() : nullptr;
         };
 
         for (Uint32 SamplerIndex = 0; SamplerIndex < Pipeline.SamplerNames.size(); ++SamplerIndex)
